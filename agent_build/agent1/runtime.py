@@ -1,5 +1,6 @@
 import os
-from typing import List
+from dataclasses import dataclass
+from typing import Any, Callable, List, Optional, Protocol
 
 from POP.embedder import Embedder
 from POP.stream import stream
@@ -46,6 +47,28 @@ from .message_utils import extract_latest_assistant_text
 from .prompting import build_system_prompt, resolve_execution_profile
 
 
+class ManualToolsmakerSubscriberFactory(Protocol):
+    def __call__(self, agent: Agent) -> Any:
+        ...
+
+
+@dataclass
+class RuntimeSession:
+    agent: Agent
+    retriever: MemoryRetriever
+    ingestion_worker: EmbeddingIngestionWorker
+    top_k: int
+    toolsmaker_manual_approval: bool
+    toolsmaker_auto_activate: bool
+    toolsmaker_auto_continue: bool
+    bash_prompt_approval: bool
+    execution_profile: str
+    include_demo_tools: bool
+    unsubscribe_log: Callable[[], None]
+    unsubscribe_memory: Callable[[], None]
+    unsubscribe_approval: Callable[[], None]
+
+
 async def _read_input(prompt: str) -> str:
     return input(prompt)
 
@@ -72,7 +95,13 @@ def build_runtime_tools(
     return tools
 
 
-async def main() -> None:
+def create_runtime_session(
+    *,
+    log_level: Optional[str] = None,
+    enable_event_logger: bool = True,
+    bash_approval_fn: Optional[Callable[[dict], Any]] = None,
+    manual_toolsmaker_subscriber_factory: Optional[ManualToolsmakerSubscriberFactory] = None,
+) -> RuntimeSession:
     agent = Agent({"stream_fn": stream})
     agent.set_model({"provider": "gemini", "id": "gemini-3-flash-preview", "api": None})
     agent.set_timeout(120)
@@ -92,6 +121,7 @@ async def main() -> None:
     workspace_root = os.path.realpath(os.getcwd())
     gmail_fetch_tool = GmailFetchTool(workspace_root=workspace_root)
     pdf_merge_tool = PdfMergeTool(workspace_root=workspace_root)
+
     bash_allowed_roots = parse_path_list_env(
         "POP_AGENT_BASH_ALLOWED_ROOTS",
         default_paths=[workspace_root],
@@ -105,7 +135,10 @@ async def main() -> None:
     bash_timeout_s = parse_float_env("POP_AGENT_BASH_TIMEOUT_S", 15.0)
     bash_max_output_chars = parse_int_env("POP_AGENT_BASH_MAX_OUTPUT_CHARS", 20_000)
     bash_prompt_approval = parse_bool_env("POP_AGENT_BASH_PROMPT_APPROVAL", True)
-    bash_approval_fn = BashExecApprovalPrompter() if bash_prompt_approval else None
+    effective_bash_approval_fn = None
+    if bash_prompt_approval:
+        effective_bash_approval_fn = bash_approval_fn if bash_approval_fn is not None else BashExecApprovalPrompter()
+
     bash_exec_tool = BashExecTool(
         BashExecConfig(
             project_root=workspace_root,
@@ -119,8 +152,9 @@ async def main() -> None:
             default_max_output_chars=bash_max_output_chars,
             max_output_chars_limit=100_000,
         ),
-        approval_fn=bash_approval_fn,
+        approval_fn=effective_bash_approval_fn,
     )
+
     bash_read_csv = sorted_csv(BASH_READ_COMMANDS)
     bash_write_csv = sorted_csv(BASH_WRITE_COMMANDS)
     bash_git_csv = sorted_csv(BASH_GIT_READ_SUBCOMMANDS)
@@ -129,7 +163,7 @@ async def main() -> None:
     toolsmaker_auto_activate = parse_bool_env("POP_AGENT_TOOLSMAKER_AUTO_ACTIVATE", True)
     toolsmaker_auto_continue = parse_bool_env("POP_AGENT_TOOLSMAKER_AUTO_CONTINUE", True)
     include_demo_tools = parse_bool_env("POP_AGENT_INCLUDE_DEMO_TOOLS", False)
-    log_level = os.getenv("POP_AGENT_LOG_LEVEL", "quiet")
+
     bash_exec_tool.description = (
         "Run one safe shell command without a shell. "
         f"Allowed read commands: {bash_read_csv}. "
@@ -141,6 +175,7 @@ async def main() -> None:
             else "Without approval prompts, medium/high-risk write commands are denied."
         )
     )
+
     agent.set_system_prompt(
         build_system_prompt(
             bash_read_csv=bash_read_csv,
@@ -164,14 +199,26 @@ async def main() -> None:
         )
     )
 
-    unsubscribe_log = agent.subscribe(make_event_logger(log_level))
+    if log_level is None:
+        log_level = os.getenv("POP_AGENT_LOG_LEVEL", "quiet")
+    if enable_event_logger:
+        unsubscribe_log = agent.subscribe(make_event_logger(log_level))
+    else:
+        unsubscribe_log = lambda: None
+
     unsubscribe_memory = agent.subscribe(memory_subscriber.on_event)
+
     if toolsmaker_manual_approval:
-        approval_subscriber = ToolsmakerApprovalSubscriber(
-            agent=agent,
-            auto_activate_default=toolsmaker_auto_activate,
-        )
-        unsubscribe_approval = agent.subscribe(approval_subscriber.on_event)
+        if manual_toolsmaker_subscriber_factory is not None:
+            candidate = manual_toolsmaker_subscriber_factory(agent)
+            subscriber = getattr(candidate, "on_event", candidate)
+            unsubscribe_approval = agent.subscribe(subscriber)
+        else:
+            approval_subscriber = ToolsmakerApprovalSubscriber(
+                agent=agent,
+                auto_activate_default=toolsmaker_auto_activate,
+            )
+            unsubscribe_approval = agent.subscribe(approval_subscriber.on_event)
     elif toolsmaker_auto_continue:
         auto_continue_subscriber = ToolsmakerAutoContinueSubscriber(agent=agent)
         unsubscribe_approval = agent.subscribe(auto_continue_subscriber.on_event)
@@ -183,26 +230,87 @@ async def main() -> None:
     except Exception:
         top_k = 3
 
+    return RuntimeSession(
+        agent=agent,
+        retriever=retriever,
+        ingestion_worker=ingestion_worker,
+        top_k=top_k,
+        toolsmaker_manual_approval=toolsmaker_manual_approval,
+        toolsmaker_auto_activate=toolsmaker_auto_activate,
+        toolsmaker_auto_continue=toolsmaker_auto_continue,
+        bash_prompt_approval=bash_prompt_approval,
+        execution_profile=execution_profile,
+        include_demo_tools=include_demo_tools,
+        unsubscribe_log=unsubscribe_log,
+        unsubscribe_memory=unsubscribe_memory,
+        unsubscribe_approval=unsubscribe_approval,
+    )
+
+
+async def run_user_turn(
+    session: RuntimeSession,
+    user_message: str,
+    on_warning: Optional[Callable[[str], None]] = None,
+) -> str:
+    await session.ingestion_worker.flush()
+
+    memory_text = "(no relevant memories)"
+    try:
+        short_hits, long_hits = session.retriever.retrieve_sections(user_message, top_k=session.top_k, scope="both")
+        memory_text = format_memory_sections(short_hits, long_hits)
+    except Exception as exc:
+        memory_text = "(no relevant memories)"
+        if on_warning is not None:
+            on_warning(f"[memory] retrieval warning: {exc}")
+
+    augmented_prompt = build_augmented_prompt(user_message, memory_text)
+    await session.agent.prompt(augmented_prompt)
+
+    reply = extract_latest_assistant_text(session.agent)
+    if not reply:
+        reply = "(no assistant text returned)"
+    return reply
+
+
+async def shutdown_runtime_session(session: RuntimeSession) -> None:
+    shutdown_error: Optional[Exception] = None
+    try:
+        await session.ingestion_worker.shutdown()
+    except Exception as exc:
+        shutdown_error = exc
+    finally:
+        session.unsubscribe_memory()
+        session.unsubscribe_log()
+        session.unsubscribe_approval()
+
+    if shutdown_error is not None:
+        raise shutdown_error
+
+
+async def main() -> None:
+    session = create_runtime_session()
+
     print("POP Chatroom Agent (tools + embedding memory)")
-    if toolsmaker_manual_approval:
+    if session.toolsmaker_manual_approval:
         print(
             "[toolsmaker] manual approval prompts: on "
-            f"(default auto-activate={'on' if toolsmaker_auto_activate else 'off'})"
+            f"(default auto-activate={'on' if session.toolsmaker_auto_activate else 'off'})"
         )
         print("[toolsmaker] auto-continue: off (manual approval mode)")
     else:
         print("[toolsmaker] manual approval prompts: off")
-        if toolsmaker_auto_continue:
+        if session.toolsmaker_auto_continue:
             print("[toolsmaker] auto-continue: on")
         else:
             print("[toolsmaker] auto-continue: off")
-    print(f"[agent] execution profile: {execution_profile}")
-    print(f"[tools] demo tools: {'on' if include_demo_tools else 'off'}")
-    if bash_prompt_approval:
+    print(f"[agent] execution profile: {session.execution_profile}")
+    print(f"[tools] demo tools: {'on' if session.include_demo_tools else 'off'}")
+    if session.bash_prompt_approval:
         print("[bash_exec] approval prompts: on")
     else:
         print("[bash_exec] approval prompts: off (medium/high commands will be denied)")
     print("Type 'exit' or 'quit' to stop.\n")
+
     try:
         while True:
             try:
@@ -217,31 +325,15 @@ async def main() -> None:
                 print("Goodbye!")
                 break
 
-            await ingestion_worker.flush()
-
-            memory_text = "(no relevant memories)"
             try:
-                short_hits, long_hits = retriever.retrieve_sections(user_message, top_k=top_k, scope="both")
-                memory_text = format_memory_sections(short_hits, long_hits)
-            except Exception as exc:
-                print(f"[memory] retrieval warning: {exc}")
-
-            augmented_prompt = build_augmented_prompt(user_message, memory_text)
-            try:
-                await agent.prompt(augmented_prompt)
+                reply = await run_user_turn(session, user_message, on_warning=print)
             except Exception as exc:
                 print(f"Assistant error: {exc}\n")
                 continue
 
-            reply = extract_latest_assistant_text(agent)
-            if not reply:
-                reply = "(no assistant text returned)"
             print(f"Assistant: {reply}\n")
     finally:
         try:
-            await ingestion_worker.shutdown()
+            await shutdown_runtime_session(session)
         except Exception as exc:
             print(f"[memory] shutdown warning: {exc}")
-        unsubscribe_memory()
-        unsubscribe_log()
-        unsubscribe_approval()

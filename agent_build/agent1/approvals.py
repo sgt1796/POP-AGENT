@@ -3,7 +3,10 @@ from typing import Any, Dict, Optional, Set, Tuple
 from agent import Agent
 
 
-def _extract_result_details(result: Any) -> Optional[Dict[str, Any]]:
+DEFAULT_TOOL_REJECT_REASON = "rejected_by_reviewer"
+
+
+def extract_result_details(result: Any) -> Optional[Dict[str, Any]]:
     details = getattr(result, "details", None)
     if isinstance(details, dict):
         return details
@@ -14,12 +17,12 @@ def _extract_result_details(result: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _read_toolsmaker_create_details(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def read_toolsmaker_create_details(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if event.get("type") != "tool_execution_end":
         return None
     if str(event.get("toolName", "")).strip() != "toolsmaker":
         return None
-    details = _extract_result_details(event.get("result"))
+    details = extract_result_details(event.get("result"))
     if not isinstance(details, dict):
         return None
     if not bool(details.get("ok")):
@@ -40,7 +43,7 @@ class ToolsmakerApprovalSubscriber:
         self._handled: Set[Tuple[str, int]] = set()
 
     def _read_details(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        return _read_toolsmaker_create_details(event)
+        return read_toolsmaker_create_details(event)
 
     def on_event(self, event: Dict[str, Any]) -> None:
         try:
@@ -87,7 +90,7 @@ class ToolsmakerApprovalSubscriber:
                 else:
                     print("[toolsmaker] activation skipped")
             else:
-                reason = input("[toolsmaker] Reject reason (enter for default): ").strip() or "rejected_by_reviewer"
+                reason = input("[toolsmaker] Reject reason (enter for default): ").strip() or DEFAULT_TOOL_REJECT_REASON
                 rejected = self.agent.reject_dynamic_tool(name=name, version=version, reason=reason)
                 print(f"[toolsmaker] rejected status={rejected.status} reason={reason}")
         except Exception as exc:
@@ -102,7 +105,7 @@ class ToolsmakerAutoContinueSubscriber:
         self._handled: Set[Tuple[str, int]] = set()
 
     def _read_details(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        return _read_toolsmaker_create_details(event)
+        return read_toolsmaker_create_details(event)
 
     def on_event(self, event: Dict[str, Any]) -> None:
         try:

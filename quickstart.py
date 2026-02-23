@@ -1,4 +1,4 @@
-# This file is taken from the Google API Python Quickstart to generate credentials for Gmail API access. It is included here as a quickstart example for users to test their credentials and understand how to use the Gmail API with Python.
+# This file is taken from the Google API Python Quickstart to generate credentials for Gmail API access. It is included here for users to test/generate their credentials and understand how to use the Gmail API with Python.
 from pathlib import Path
 
 from google.auth.transport.requests import Request

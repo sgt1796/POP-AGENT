@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import shlex
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from ..agent_types import AgentTool, AgentToolResult, TextContent
 
-ApprovalFn = Callable[[Dict[str, Any]], bool]
+ApprovalFn = Callable[[Dict[str, Any]], bool | Awaitable[bool]]
 
 
 @dataclass
@@ -307,7 +308,10 @@ class BashExecTool(AgentTool):
                     "justification": justification,
                 }
                 try:
-                    approved = bool(self._approval_fn(approval_payload))
+                    decision = self._approval_fn(approval_payload)
+                    if inspect.isawaitable(decision):
+                        decision = await decision
+                    approved = bool(decision)
                 except Exception:
                     approved = False
             if not approved:

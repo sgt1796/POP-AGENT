@@ -140,6 +140,20 @@ Run modular agent:
 python agent_build/agent1/agent1.py
 ```
 
+Run Textual TUI frontend:
+
+```bash
+python test_ui.py
+python -m agent_build.agent1.tui
+```
+
+TUI notes:
+
+* `textual` must be installed in the active Python environment.
+* In TUI mode, `bash_exec` and `toolsmaker` manual approvals are presented as in-app modals.
+* Closing an approval modal (including `Esc`) defaults to reject/deny.
+* Press `Ctrl+S` to open runtime settings (model, timeout, execution profile, memory top-k, activity level).
+
 Basic integrity checks:
 
 ```bash

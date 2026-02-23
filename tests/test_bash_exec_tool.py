@@ -149,6 +149,48 @@ def test_write_command_executes_when_approved(tmp_path: Path, monkeypatch):
     assert calls[0]["justification"] == "needed for test"
 
 
+def test_write_command_executes_when_async_approval_returns_true(tmp_path: Path, monkeypatch):
+    calls = []
+
+    async def _approval(request: Dict[str, Any]) -> bool:
+        calls.append(request)
+        await asyncio.sleep(0)
+        return True
+
+    async def _fake_create_subprocess_exec(*argv, **kwargs):
+        cwd = Path(str(kwargs.get("cwd", "")))
+        if len(argv) >= 2 and str(argv[0]) == "touch":
+            (cwd / str(argv[1])).touch()
+        return _FakeProcess(returncode=0)
+
+    monkeypatch.setattr("agent.tools.bash_exec_tool.asyncio.create_subprocess_exec", _fake_create_subprocess_exec)
+    tool = _make_tool(tmp_path, approval_fn=_approval)
+    result = _run(tool, {"cmd": "touch approved_async.txt", "justification": "async approve"})
+
+    assert result.details["blocked"] is False
+    assert result.details["ok"] is True
+    assert result.details["risk"] == "medium"
+    assert result.details["approved"] is True
+    assert (tmp_path / "approved_async.txt").exists()
+    assert len(calls) == 1
+
+
+def test_write_command_blocks_when_async_approval_returns_false(tmp_path: Path):
+    async def _approval(_: Dict[str, Any]) -> bool:
+        await asyncio.sleep(0)
+        return False
+
+    tool = _make_tool(tmp_path, approval_fn=_approval)
+    result = _run(tool, {"cmd": "touch denied_async.txt"})
+
+    assert result.details["ok"] is False
+    assert result.details["blocked"] is True
+    assert result.details["risk"] == "medium"
+    assert result.details["approved"] is False
+    assert result.details["block_reason"] == "approval_required_or_denied"
+    assert not (tmp_path / "denied_async.txt").exists()
+
+
 def test_rm_is_high_risk_and_approval_required(tmp_path: Path):
     tool = _make_tool(tmp_path, approval_fn=None)
     target = tmp_path / "delete_me.txt"
