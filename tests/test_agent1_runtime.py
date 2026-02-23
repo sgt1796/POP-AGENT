@@ -248,3 +248,50 @@ def test_shutdown_runtime_session_unsubscribes_even_when_worker_raises():
         assert str(exc) == "boom"
 
     assert calls == ["memory", "log", "approval"]
+
+
+def test_build_turn_usage_line_reports_delta_when_calls_increase():
+    class _UsageAgent:
+        def get_usage_summary(self):
+            return {
+                "calls": 3,
+                "input_tokens": 120,
+                "output_tokens": 40,
+                "total_tokens": 160,
+                "provider_calls": 2,
+                "estimated_calls": 1,
+                "hybrid_calls": 0,
+                "anomaly_calls": 0,
+            }
+
+        def get_last_usage(self):
+            return {"source": "provider"}
+
+    before = {
+        "calls": 2,
+        "input_tokens": 100,
+        "output_tokens": 30,
+        "total_tokens": 130,
+        "provider_calls": 1,
+        "estimated_calls": 1,
+        "hybrid_calls": 0,
+        "anomaly_calls": 0,
+    }
+    line = runtime._build_turn_usage_line(_UsageAgent(), before)  # type: ignore[arg-type]
+
+    assert line.startswith("[usage] turn")
+    assert "calls=1" in line
+    assert "total=30" in line
+    assert "source=provider" in line
+
+
+def test_build_turn_usage_line_returns_empty_when_no_usage_calls():
+    class _UsageAgent:
+        def get_usage_summary(self):
+            return {"calls": 1, "total_tokens": 10}
+
+        def get_last_usage(self):
+            return {"source": "estimate"}
+
+    line = runtime._build_turn_usage_line(_UsageAgent(), {"calls": 1, "total_tokens": 10})  # type: ignore[arg-type]
+    assert line == ""

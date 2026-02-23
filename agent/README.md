@@ -139,6 +139,34 @@ In a real application you would replace `dummy_stream_fn` with
 `POP.get_model(...)`.  You can also define tools that call
 external services or your own business logic.
 
+## Token Usage Tracking
+
+The `Agent` now keeps in-memory usage accounting for assistant calls.
+
+Public APIs:
+
+- `agent.get_last_usage() -> Optional[dict]`
+- `agent.get_usage_history(limit: Optional[int] = None) -> list[dict]`
+- `agent.get_usage_summary() -> dict`
+- `agent.reset_usage_tracking() -> None`
+
+Behavior:
+
+- Usage is tracked per assistant completion (success and error paths).
+- Usage records are normalized into one schema (provider-first with estimate fallback).
+- History is bounded (`maxlen=200`) and totals are cumulative for the current process.
+- `agent.reset()` clears conversation/runtime state only. Usage is preserved.
+- `agent.reset_usage_tracking()` explicitly clears usage counters/history.
+
+Record keys (typical):
+
+- `provider`, `model`, `source`
+- `input_tokens`, `output_tokens`, `total_tokens`
+- `estimate_input_tokens`, `estimate_output_tokens`, `estimate_total_tokens`
+- `cached_tokens`, `reasoning_tokens`
+- `anomaly_flag`, `anomaly_ratio`, `anomaly_threshold`
+- `latency_ms`, `timestamp`
+
 ## Project Structure
 
 - **`agent.py`** – High level `Agent` class that maintains the state

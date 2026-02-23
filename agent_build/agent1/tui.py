@@ -16,6 +16,7 @@ from .tui_runtime import (
     ToolsmakerDecision,
     format_activity_event,
 )
+from .usage_reporting import format_cumulative_usage_fragment, format_turn_usage_line, usage_delta
 
 
 def _textual_import_error_hint() -> None:
@@ -347,6 +348,7 @@ def run_tui() -> int:
             self._stream_buffer = ""
             self._activity_log_level = self._normalize_activity_level(os.getenv("POP_AGENT_LOG_LEVEL", "stream"))
             self._pending_tool_calls: Dict[str, _PendingToolCallRecord] = {}
+            self._turn_usage_before: Dict[str, Any] = {}
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=False)
@@ -425,14 +427,26 @@ def run_tui() -> int:
             if self._session is None:
                 self._set_status(prefix)
                 return
+            usage_fragment = format_cumulative_usage_fragment(self._current_usage_summary())
             self._set_status(
                 f"{prefix} | model={self._model_summary()} | profile={self._session.execution_profile} "
                 f"| activity={self._activity_log_level} | toolsmaker={self._toolsmaker_mode_text()} "
-                f"| bash={self._bash_mode_text()}"
+                f"| bash={self._bash_mode_text()} | {usage_fragment}"
             )
 
         def _set_status(self, text: str) -> None:
             self._status.update(text)
+
+        def _current_usage_summary(self) -> Dict[str, Any]:
+            if self._session is None:
+                return {}
+            get_summary = getattr(self._session.agent, "get_usage_summary", None)
+            if not callable(get_summary):
+                return {}
+            summary = get_summary()
+            if not isinstance(summary, dict):
+                return {}
+            return summary
 
         def _append_transcript(self, role: str, text: str) -> None:
             if role == "Assistant" and _looks_like_markdown_text(text):
@@ -810,6 +824,7 @@ def run_tui() -> int:
                 return
 
             self._append_transcript("User", user_text)
+            self._turn_usage_before = self._current_usage_summary()
             self._chat_input.disabled = True
             self._set_status("Running...")
             self._turn_task = asyncio.create_task(self._run_turn(user_text))
@@ -826,6 +841,17 @@ def run_tui() -> int:
                 self._append_transcript("Assistant", f"(error) {exc}")
             finally:
                 self._flush_pending_tool_lines()
+                if self._session is not None:
+                    after_summary = self._current_usage_summary()
+                    delta = usage_delta(self._turn_usage_before, after_summary)
+                    if int(delta.get("calls", 0)) > 0:
+                        get_last = getattr(self._session.agent, "get_last_usage", None)
+                        last_usage_raw = get_last() if callable(get_last) else None
+                        last_usage = last_usage_raw if isinstance(last_usage_raw, dict) else None
+                        usage_line = format_turn_usage_line(delta, last_usage)
+                        if usage_line:
+                            self._append_activity(usage_line)
+                self._turn_usage_before = {}
                 self._chat_input.disabled = False
                 self._chat_input.focus()
                 self._refresh_status("Ready")

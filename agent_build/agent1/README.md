@@ -132,6 +132,18 @@ General:
 * `POP_AGENT_INCLUDE_DEMO_TOOLS`
   Default: `false` (enables `slow` and `fast` when set to true)
 
+## 5.5. Token Usage Tracking
+
+Agent1 now surfaces usage from core `Agent` tracking.
+
+Highlights:
+
+* Usage is tracked per assistant turn in memory (session scoped; no disk persistence).
+* Runtime CLI prints one compact `[usage]` line after each completed user turn when calls increase.
+* TUI status line shows cumulative token usage and source mix.
+* TUI activity log appends one per-turn usage line after each run.
+* UI stays token-focused (`in`, `out`, `total`, source mix, anomaly count). Cost fields are not shown.
+
 ## 6. Commands for next session
 
 Run modular agent:

@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from POP.embedder import Embedder
 from POP.stream import stream
@@ -45,6 +45,7 @@ from .memory import (
 )
 from .message_utils import extract_latest_assistant_text
 from .prompting import build_system_prompt, resolve_execution_profile
+from .usage_reporting import format_turn_usage_line, usage_delta
 
 
 class ManualToolsmakerSubscriberFactory(Protocol):
@@ -272,6 +273,22 @@ async def run_user_turn(
     return reply
 
 
+def _build_turn_usage_line(agent: Agent, before_summary: Dict[str, Any]) -> str:
+    get_summary = getattr(agent, "get_usage_summary", None)
+    if not callable(get_summary):
+        return ""
+    after_summary_raw = get_summary()
+    if not isinstance(after_summary_raw, dict):
+        return ""
+    delta = usage_delta(before_summary, after_summary_raw)
+    if int(delta.get("calls", 0)) <= 0:
+        return ""
+    get_last = getattr(agent, "get_last_usage", None)
+    last_usage_raw = get_last() if callable(get_last) else None
+    last_usage = last_usage_raw if isinstance(last_usage_raw, dict) else None
+    return format_turn_usage_line(delta, last_usage)
+
+
 async def shutdown_runtime_session(session: RuntimeSession) -> None:
     shutdown_error: Optional[Exception] = None
     try:
@@ -325,6 +342,13 @@ async def main() -> None:
                 print("Goodbye!")
                 break
 
+            before_summary: Dict[str, Any] = {}
+            get_summary = getattr(session.agent, "get_usage_summary", None)
+            if callable(get_summary):
+                summary = get_summary()
+                if isinstance(summary, dict):
+                    before_summary = summary
+
             try:
                 reply = await run_user_turn(session, user_message, on_warning=print)
             except Exception as exc:
@@ -332,6 +356,9 @@ async def main() -> None:
                 continue
 
             print(f"Assistant: {reply}\n")
+            usage_line = _build_turn_usage_line(session.agent, before_summary)
+            if usage_line:
+                print(f"{usage_line}\n")
     finally:
         try:
             await shutdown_runtime_session(session)

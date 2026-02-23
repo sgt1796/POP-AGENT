@@ -30,6 +30,7 @@ function which proxies requests through an external server.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple, Union
@@ -48,6 +49,7 @@ from .agent_types import (
     ToolCallContent,
 )
 from .toolsmaker.registry import append_audit_event
+from .usage_tracking import ensure_usage_record
 
 # Attempt to import POP for the default LLM transport.  If
 # unavailable the user must supply their own `stream_fn`.
@@ -176,14 +178,26 @@ def _coerce_timeout(value: Optional[float]) -> Optional[float]:
 
 def _build_error_message(exc: Exception, model: Dict[str, Any], aborted: bool = False) -> AgentMessage:
     """Create an assistant error message from an exception."""
+    provider = model.get("provider") if isinstance(model, dict) else None
+    model_id = model.get("id") if isinstance(model, dict) else None
+    timestamp = time.time()
+    usage = ensure_usage_record(
+        usage={},
+        messages=[],
+        reply_text="",
+        provider=str(provider or ""),
+        model=str(model_id or ""),
+        latency_ms=0,
+        timestamp=timestamp,
+    )
     return AgentMessage(
         role="assistant",
         content=[TextContent(type="text", text="")],
-        timestamp=time.time(),
+        timestamp=timestamp,
         api=model.get("api") if isinstance(model, dict) else None,
-        provider=model.get("provider") if isinstance(model, dict) else None,
-        model=model.get("id") if isinstance(model, dict) else None,
-        usage={},
+        provider=provider,
+        model=model_id,
+        usage=usage,
         stop_reason="aborted" if aborted else "error",
         error_message=str(exc),
     )
@@ -318,6 +332,30 @@ def _copy_message(msg: AgentMessage) -> AgentMessage:
         is_error=msg.is_error,
         extras=dict(msg.extras),
     )
+
+
+def _assistant_reply_text(message: AgentMessage) -> str:
+    """Serialize assistant content into a stable text payload for usage estimation."""
+    parts: List[str] = []
+    for item in message.content:
+        if isinstance(item, TextContent):
+            parts.append(str(item.text or ""))
+        elif isinstance(item, ThinkingContent):
+            parts.append(str(item.thinking or ""))
+        elif isinstance(item, ToolCallContent):
+            try:
+                serialized = json.dumps(
+                    {"id": item.id, "name": item.name, "arguments": item.arguments},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            except Exception:
+                serialized = f"{item.name}:{item.arguments}"
+            parts.append(serialized)
+        else:
+            parts.append(str(item))
+    return "\n".join([part for part in parts if part]).strip()
 
 
 ###############################################################################
@@ -710,9 +748,27 @@ async def _stream_assistant_response(
 
     partial_message: Optional[AgentMessage] = None
     added_partial = False
+    request_start = time.time()
+
+    def _normalize_usage(message: AgentMessage) -> None:
+        provider_name = str(message.provider or config.model.get("provider") or config.model.get("api") or "")
+        model_name = str(message.model or config.model.get("id") or "")
+        latency_ms = int((time.time() - request_start) * 1000)
+        message.usage = ensure_usage_record(
+            usage=message.usage if isinstance(message.usage, dict) else {},
+            messages=list(llm_messages),
+            reply_text=_assistant_reply_text(message),
+            provider=provider_name,
+            model=model_name,
+            tools=llm_context.get("tools"),
+            response_format=options.get("response_format"),
+            latency_ms=latency_ms,
+            timestamp=time.time(),
+        )
 
     def _finalize_error(exc: Exception) -> AgentMessage:
         error_msg = _build_error_message(exc, config.model, aborted=bool(signal and signal.is_set()))
+        _normalize_usage(error_msg)
         if added_partial and context.messages:
             context.messages[-1] = error_msg
         else:
@@ -793,6 +849,7 @@ async def _stream_assistant_response(
                         "stopReason": etype,
                     }
                 final_message = _dict_to_agent_message(full_msg)
+                _normalize_usage(final_message)
                 # Replace or append final message in the context
                 if added_partial and context.messages:
                     context.messages[-1] = final_message
@@ -821,6 +878,7 @@ async def _stream_assistant_response(
                 "stopReason": "error",
             }
         final_message = _dict_to_agent_message(final)
+        _normalize_usage(final_message)
         if added_partial and context.messages:
             context.messages[-1] = final_message
         else:

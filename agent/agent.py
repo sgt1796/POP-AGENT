@@ -11,8 +11,10 @@ lifting to the functions in :mod:`pop_agent.agent_loop`.
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import time
+from collections import deque
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from .agent_loop import AgentLoopConfig, agent_loop, agent_loop_continue
@@ -36,6 +38,7 @@ from .toolsmaker.registry import (
     DEFAULT_TOOLSMAKER_DIR,
     set_default_audit_path,
 )
+from .usage_tracking import accumulate_totals, ensure_usage_record, init_usage_totals
 
 # Attempt to import POP to obtain a default model and stream function
 try:
@@ -179,6 +182,10 @@ class Agent:
         self._thinking_budgets: Optional[Dict[str, Any]] = opts.get("thinking_budgets")
         self._max_retry_delay_ms: Optional[int] = opts.get("max_retry_delay_ms")
         self._request_timeout_s: Optional[float] = opts.get("request_timeout_s", 120.0)
+        # Usage tracking state (session-memory only)
+        self._last_usage: Optional[Dict[str, Any]] = None
+        self._usage_history: "deque[Dict[str, Any]]" = deque(maxlen=200)
+        self._usage_totals: Dict[str, Any] = init_usage_totals()
         # Internal synchronization primitives
         self._idle_event = asyncio.Event()
         self._idle_event.set()  # agent starts idle
@@ -230,6 +237,31 @@ class Agent:
     @request_timeout_s.setter
     def request_timeout_s(self, value: Optional[float]) -> None:
         self._request_timeout_s = value
+
+    def get_last_usage(self) -> Optional[Dict[str, Any]]:
+        if self._last_usage is None:
+            return None
+        return copy.deepcopy(self._last_usage)
+
+    def get_usage_history(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        history = list(self._usage_history)
+        if limit is not None:
+            try:
+                n = int(limit)
+            except Exception:
+                n = len(history)
+            if n <= 0:
+                return []
+            history = history[-n:]
+        return [copy.deepcopy(item) for item in history]
+
+    def get_usage_summary(self) -> Dict[str, Any]:
+        return copy.deepcopy(self._usage_totals)
+
+    def reset_usage_tracking(self) -> None:
+        self._last_usage = None
+        self._usage_history.clear()
+        self._usage_totals = init_usage_totals()
 
     # ---------------------------------------------------------------------
     # Event subscription
@@ -487,6 +519,8 @@ class Agent:
                     msg = event.get("message")
                     if isinstance(msg, AgentMessage):
                         self._state.messages.append(msg)
+                        if msg.role == "assistant" and isinstance(msg.usage, dict):
+                            self._record_usage(msg.usage)
                 elif etype == "tool_execution_start":
                     call_id = event.get("toolCallId")
                     if call_id:
@@ -516,11 +550,21 @@ class Agent:
                 api=model.get("api") if isinstance(model, dict) else None,
                 provider=model.get("provider") if isinstance(model, dict) else None,
                 model=model.get("id") if isinstance(model, dict) else None,
-                usage={},
+                usage=ensure_usage_record(
+                    usage={},
+                    messages=[],
+                    reply_text="",
+                    provider=str(model.get("provider") if isinstance(model, dict) else ""),
+                    model=str(model.get("id") if isinstance(model, dict) else ""),
+                    latency_ms=0,
+                    timestamp=time.time(),
+                ),
                 stop_reason="aborted" if self._abort_event and self._abort_event.is_set() else "error",
                 error_message=str(exc),
             )
             self._state.messages.append(error_msg)
+            if isinstance(error_msg.usage, dict):
+                self._record_usage(error_msg.usage)
             self._state.error = str(exc)
             self._emit({"type": "agent_end", "messages": [error_msg]})
         finally:
@@ -545,6 +589,12 @@ class Agent:
 
     def _sync_tools_from_registry(self) -> None:
         self._state.tools = self._tool_registry.snapshot_tools()
+
+    def _record_usage(self, usage: Dict[str, Any]) -> None:
+        record = copy.deepcopy(dict(usage or {}))
+        self._last_usage = record
+        self._usage_history.append(record)
+        self._usage_totals = accumulate_totals(self._usage_totals, record)
 
     async def _get_steering_messages(self) -> List[AgentMessage]:
         """Retrieve queued steering messages according to the configured mode."""
