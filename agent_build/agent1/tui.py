@@ -202,15 +202,15 @@ def run_tui() -> int:
                 yield Input(value=self._current.execution_profile, id="settings_execution_profile", placeholder="balanced")
                 yield Static("Memory retrieval top-k (>=1)", classes="settings_label")
                 yield Input(value=self._current.memory_top_k, id="settings_memory_top_k", placeholder="3")
-                yield Static("Activity level: quiet | messages | stream | debug", classes="settings_label")
+                yield Static("Activity level: quiet | simple | full | debug", classes="settings_label")
                 if Select is None:
-                    yield Input(value=self._current.activity_level, id="settings_activity_level", placeholder="stream")
+                    yield Input(value=self._current.activity_level, id="settings_activity_level", placeholder="full")
                 else:
                     yield Select(
                         options=[
                             ("quiet", "quiet"),
-                            ("messages", "messages"),
-                            ("stream", "stream"),
+                            ("simple", "simple"),
+                            ("full", "full"),
                             ("debug", "debug"),
                         ],
                         value=self._current.activity_level,
@@ -346,7 +346,7 @@ def run_tui() -> int:
             self._unsubscribe_ui_events = lambda: None
             self._cleanup_done = False
             self._stream_buffer = ""
-            self._activity_log_level = self._normalize_activity_level(os.getenv("POP_AGENT_LOG_LEVEL", "stream"))
+            self._activity_log_level = self._normalize_activity_level(os.getenv("POP_AGENT_LOG_LEVEL", "full"))
             self._pending_tool_calls: Dict[str, _PendingToolCallRecord] = {}
             self._turn_usage_before: Dict[str, Any] = {}
 
@@ -394,9 +394,11 @@ def run_tui() -> int:
         @staticmethod
         def _normalize_activity_level(value: str) -> str:
             key = str(value or "").strip().lower()
-            if key in LOG_LEVELS:
-                return key
-            return "stream"
+            aliases = {"messages": "simple", "stream": "full"}
+            normalized = aliases.get(key, key)
+            if normalized in LOG_LEVELS:
+                return normalized
+            return "full"
 
         def _toolsmaker_mode_text(self) -> str:
             if self._session is None:
@@ -470,8 +472,8 @@ def run_tui() -> int:
         def _allow_activity_line(self, text: str) -> bool:
             if self._activity_log_level == "quiet":
                 return False
-            if self._activity_log_level == "messages":
-                return not text.startswith("[stream]")
+            if self._activity_log_level == "simple":
+                return text.startswith("[tool:") or text.startswith("Ran ") or text.startswith("[...] Running bash:") or text.startswith("[...] Calling")
             return True
 
         def _is_turn_active(self) -> bool:
@@ -593,7 +595,9 @@ def run_tui() -> int:
             if memory_top_k < 1:
                 return None, "memory top-k must be >= 1"
 
-            activity_level = payload.activity_level.strip().lower()
+            raw_activity_level = payload.activity_level.strip().lower()
+            aliases = {"messages": "simple", "stream": "full"}
+            activity_level = aliases.get(raw_activity_level, raw_activity_level)
             if activity_level not in LOG_LEVELS:
                 allowed_levels = ", ".join(sorted(LOG_LEVELS.keys()))
                 return None, f"activity level must be one of: {allowed_levels}"
@@ -771,7 +775,7 @@ def run_tui() -> int:
             if etype in {"tool_execution_start", "tool_execution_end"}:
                 self._handle_tool_activity_event(event)
             else:
-                activity_text = format_activity_event(event)
+                activity_text = format_activity_event(event, level=self._activity_log_level)
                 if activity_text and self._allow_activity_line(activity_text):
                     self._append_activity(activity_text)
 

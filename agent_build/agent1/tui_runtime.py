@@ -58,16 +58,27 @@ class AsyncDecisionQueue(Generic[T]):
         return items
 
 
-def format_activity_event(event: Dict[str, Any]) -> Optional[str]:
+def format_activity_event(event: Dict[str, Any], level: str = "full") -> Optional[str]:
     etype = str(event.get("type", "")).strip()
 
     if etype == "tool_execution_start":
-        return f"[tool:start] {event.get('toolName')} args={event.get('args')}"
+        tool_name = str(event.get("toolName", "")).strip() or "unknown"
+        if level == "simple":
+            if tool_name == "bash_exec":
+                command = extract_bash_exec_command(event)
+                preview = " ".join(command.split()[:6]) if command else ""
+                if preview:
+                    return f"[tool:start] bash_exec cmd={preview}"
+            return f"[tool:start] {tool_name}"
+        return f"[tool:start] {tool_name} args={event.get('args')}"
 
     if etype == "tool_execution_end":
         tool_name = str(event.get("toolName", "")).strip() or "unknown"
         is_error = bool(event.get("isError"))
         command = extract_bash_exec_command(event) if tool_name == "bash_exec" else ""
+        if level == "simple" and command:
+            preview = " ".join(command.split()[:6])
+            return f"[tool:end] {tool_name} error={is_error} cmd={preview}"
         if command:
             return f"[tool:end] {tool_name} error={is_error} cmd={command}"
         return f"[tool:end] {tool_name} error={is_error}"
@@ -75,12 +86,16 @@ def format_activity_event(event: Dict[str, Any]) -> Optional[str]:
     if etype == "tool_policy_blocked":
         return f"[tool:blocked] {event.get('toolName')} error={event.get('error')}"
 
-    if etype == "message_update":
+    if etype == "message_update" and level in {"full", "debug"}:
         assistant_event = event.get("assistantMessageEvent") or {}
         if assistant_event.get("type") == "text_delta":
             delta = str(assistant_event.get("delta", "") or "")
             if delta:
                 return f"[stream] {delta}"
+
+
+    if etype in {"tool_execution_result", "tool_execution_error", "memory_context", "memory_lookup"} and level in {"full", "debug"}:
+        return f"[context] {event}"
 
     if etype == "message_end":
         message = event.get("message")
