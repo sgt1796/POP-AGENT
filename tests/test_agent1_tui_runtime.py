@@ -113,6 +113,22 @@ def test_format_activity_event_covers_tool_and_stream_events():
     assert err_text == "[assistant:error] boom"
 
 
+
+
+def test_format_activity_event_simple_mode_uses_compact_bash_preview():
+    start_text = format_activity_event(
+        {"type": "tool_execution_start", "toolName": "bash_exec", "args": {"cmd": "python app.py --mode demo --verbose"}},
+        level="simple",
+    )
+    stream_text = format_activity_event(
+        {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "hello"}},
+        level="simple",
+    )
+
+    assert start_text == "[tool:start] bash_exec cmd=python app.py --mode demo --verbose"
+    assert stream_text is None
+
+
 def test_async_toolsmaker_subscriber_approves_and_activates_once():
     agent = _FakeAgent()
 
