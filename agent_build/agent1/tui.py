@@ -1,8 +1,8 @@
 import asyncio
 import os
 import re
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 from .approvals import DEFAULT_TOOL_REJECT_REASON
 from .constants import BASH_GIT_READ_SUBCOMMANDS, BASH_READ_COMMANDS, BASH_WRITE_COMMANDS, LOG_LEVELS
@@ -92,10 +92,49 @@ class _PendingToolCallRecord:
     command: str
 
 
+@dataclass
+class _InputHistory:
+    entries: List[str] = field(default_factory=list)
+    cursor: Optional[int] = None
+    draft: str = ""
+
+    def add(self, text: str) -> None:
+        value = str(text or "").strip()
+        if not value:
+            return
+        self.entries.append(value)
+        self.cursor = None
+        self.draft = ""
+
+    def move_up(self, current_input: str) -> Optional[str]:
+        if not self.entries:
+            return None
+
+        if self.cursor is None:
+            self.cursor = len(self.entries) - 1
+            self.draft = current_input
+        elif self.cursor > 0:
+            self.cursor -= 1
+
+        return self.entries[self.cursor]
+
+    def move_down(self) -> Optional[str]:
+        if self.cursor is None:
+            return None
+
+        if self.cursor < len(self.entries) - 1:
+            self.cursor += 1
+            return self.entries[self.cursor]
+
+        self.cursor = None
+        return self.draft
+
+
 def run_tui() -> int:
     try:
         from rich.markdown import Markdown
         from rich.text import Text
+        from textual import events
         from textual.app import App, ComposeResult
         from textual.binding import Binding
         from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -334,7 +373,8 @@ def run_tui() -> int:
         BINDINGS = [
             Binding("q", "quit_app", "Quit"),
             Binding("ctrl+s", "open_settings", "Settings"),
-            Binding("ctrl+c", "abort_run", "Abort"),
+            Binding("ctrl+g", "abort_run", "Abort"),
+            Binding("ctrl+c,ctrl+shift+c", "screen.copy_text", "Copy"),
         ]
 
         def __init__(self) -> None:
@@ -349,6 +389,8 @@ def run_tui() -> int:
             self._activity_log_level = self._normalize_activity_level(os.getenv("POP_AGENT_LOG_LEVEL", "full"))
             self._pending_tool_calls: Dict[str, _PendingToolCallRecord] = {}
             self._turn_usage_before: Dict[str, Any] = {}
+            self._input_history = _InputHistory()
+            self._applying_history_value = False
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=False)
@@ -814,12 +856,57 @@ def run_tui() -> int:
             self._stream_buffer = ""
             self._update_stream_preview("")
 
+        def _set_chat_input_value(self, value: str) -> None:
+            self._applying_history_value = True
+            try:
+                self._chat_input.value = value
+                self._chat_input.cursor_position = len(value)
+            finally:
+                self._applying_history_value = False
+
+        def _navigate_input_history(self, *, direction: str) -> bool:
+            if direction == "up":
+                candidate = self._input_history.move_up(self._chat_input.value)
+            else:
+                candidate = self._input_history.move_down()
+
+            if candidate is None:
+                return False
+
+            self._set_chat_input_value(candidate)
+            return True
+
+        def on_key(self, event: events.Key) -> None:
+            if event.key not in {"up", "down"}:
+                return
+            if not hasattr(self, "_chat_input"):
+                return
+            if self.focused is not self._chat_input:
+                return
+            if self._chat_input.disabled:
+                return
+
+            if self._navigate_input_history(direction=event.key):
+                event.stop()
+                event.prevent_default()
+
+        def on_input_changed(self, event: Input.Changed) -> None:
+            if event.input.id != "chat_input":
+                return
+            if self._applying_history_value:
+                return
+            if self._input_history.cursor is not None:
+                self._input_history.cursor = None
+                self._input_history.draft = event.value
+
         async def on_input_submitted(self, event: Input.Submitted) -> None:
             user_text = event.value.strip()
             event.input.value = ""
 
             if not user_text:
                 return
+
+            self._input_history.add(user_text)
             if self._session is None:
                 self._append_activity("[runtime] session unavailable")
                 return

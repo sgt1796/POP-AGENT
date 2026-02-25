@@ -12,11 +12,13 @@ from agent.tools import (
     BashExecTool,
     FastTool,
     GmailFetchTool,
+    JinaWebSnapshotTool,
     MemorySearchTool,
+    PerplexitySearchTool,
+    PerplexityWebSnapshotTool,
     PdfMergeTool,
     SlowTool,
     ToolsmakerTool,
-    WebSnapshotTool,
 )
 
 from .approvals import (
@@ -143,7 +145,9 @@ def build_runtime_tools(
     include_demo_tools: bool,
 ) -> List[AgentTool]:
     tools: List[AgentTool] = [
-        WebSnapshotTool(),
+        JinaWebSnapshotTool(),
+        PerplexitySearchTool(),
+        PerplexityWebSnapshotTool(),
         memory_search_tool,
         toolsmaker_tool,
         bash_exec_tool,

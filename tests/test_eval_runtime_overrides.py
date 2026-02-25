@@ -81,7 +81,9 @@ def test_runtime_overrides_backward_compat(monkeypatch):
     monkeypatch.setattr(runtime, "ToolsmakerTool", lambda agent, allowed_capabilities: _dummy_tool("toolsmaker"))
     monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: _dummy_tool("gmail_fetch"))
     monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: _dummy_tool("pdf_merge"))
-    monkeypatch.setattr(runtime, "WebSnapshotTool", lambda: _dummy_tool("websnapshot"))
+    monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: _dummy_tool("jina_web_snapshot"))
+    monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: _dummy_tool("perplexity_search"))
+    monkeypatch.setattr(runtime, "PerplexityWebSnapshotTool", lambda: _dummy_tool("perplexity_web_snapshot"))
     monkeypatch.setattr(runtime, "SlowTool", lambda: _dummy_tool("slow"))
     monkeypatch.setattr(runtime, "FastTool", lambda: _dummy_tool("fast"))
 
@@ -97,7 +99,7 @@ def test_runtime_overrides_backward_compat(monkeypatch):
         enable_event_logger=False,
         overrides=runtime.RuntimeOverrides(
             enable_memory=False,
-            include_tools=["websnapshot"],
+            include_tools=["jina_web_snapshot"],
             exclude_tools=["toolsmaker"],
             model_override={"provider": "openai", "id": "gpt-test", "api": None},
             bash_prompt_approval=False,
@@ -108,7 +110,7 @@ def test_runtime_overrides_backward_compat(monkeypatch):
     )
 
     assert session_overridden.agent._model["id"] == "gpt-test"
-    assert [tool.name for tool in session_overridden.agent._tools] == ["websnapshot"]
+    assert [tool.name for tool in session_overridden.agent._tools] == ["jina_web_snapshot"]
     assert session_overridden.bash_prompt_approval is False
     assert session_overridden.toolsmaker_manual_approval is False
     assert session_overridden.toolsmaker_auto_continue is False

@@ -32,16 +32,23 @@ def _normalize_value(value: Any, *, remove_punct: bool = True) -> Any:
 def score_gaia_prediction(prediction: str, ground_truth: str) -> ScoreResult:
     pred_text = "" if prediction is None else str(prediction)
     gt_text = "" if ground_truth is None else str(ground_truth)
+    gt_is_number = _is_float_like(gt_text)
 
     correct = bool(question_scorer(model_answer=pred_text, ground_truth=gt_text))
     reason = "exact_match" if correct else "mismatch"
 
     # Keep punctuation for list elements to mirror GAIA list behavior.
     remove_punct = not any(ch in gt_text for ch in [",", ";"])
+    if gt_is_number:
+        normalized_prediction = normalize_number_str(pred_text)
+        normalized_ground_truth = normalize_number_str(gt_text)
+    else:
+        normalized_prediction = _normalize_value(pred_text, remove_punct=remove_punct)
+        normalized_ground_truth = _normalize_value(gt_text, remove_punct=remove_punct)
     return ScoreResult(
         correct=correct,
         score=1.0 if correct else 0.0,
         reason=reason,
-        normalized_prediction=_normalize_value(pred_text, remove_punct=remove_punct),
-        normalized_ground_truth=_normalize_value(gt_text, remove_punct=remove_punct),
+        normalized_prediction=normalized_prediction,
+        normalized_ground_truth=normalized_ground_truth,
     )

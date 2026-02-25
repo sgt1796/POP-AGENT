@@ -21,7 +21,16 @@ def test_build_runtime_tools_excludes_demo_tools_by_default():
     )
 
     names = [tool.name for tool in tools]
-    assert names == ["websnapshot", "memory_search", "toolsmaker", "bash_exec", "gmail_fetch", "pdf_merge"]
+    assert names == [
+        "jina_web_snapshot",
+        "perplexity_search",
+        "perplexity_web_snapshot",
+        "memory_search",
+        "toolsmaker",
+        "bash_exec",
+        "gmail_fetch",
+        "pdf_merge",
+    ]
 
 
 def test_build_runtime_tools_includes_demo_tools_when_enabled():
@@ -35,7 +44,18 @@ def test_build_runtime_tools_includes_demo_tools_when_enabled():
     )
 
     names = [tool.name for tool in tools]
-    assert names == ["websnapshot", "memory_search", "toolsmaker", "bash_exec", "gmail_fetch", "pdf_merge", "slow", "fast"]
+    assert names == [
+        "jina_web_snapshot",
+        "perplexity_search",
+        "perplexity_web_snapshot",
+        "memory_search",
+        "toolsmaker",
+        "bash_exec",
+        "gmail_fetch",
+        "pdf_merge",
+        "slow",
+        "fast",
+    ]
 
 
 class _FakeAgent:
@@ -127,7 +147,9 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     monkeypatch.setattr(runtime, "ToolsmakerTool", lambda agent, allowed_capabilities: SimpleNamespace(name="toolsmaker"))
     monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: SimpleNamespace(name="gmail_fetch"))
     monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: SimpleNamespace(name="pdf_merge"))
-    monkeypatch.setattr(runtime, "WebSnapshotTool", lambda: SimpleNamespace(name="websnapshot"))
+    monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: SimpleNamespace(name="jina_web_snapshot"))
+    monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: SimpleNamespace(name="perplexity_search"))
+    monkeypatch.setattr(runtime, "PerplexityWebSnapshotTool", lambda: SimpleNamespace(name="perplexity_web_snapshot"))
     monkeypatch.setattr(runtime, "SlowTool", lambda: SimpleNamespace(name="slow"))
     monkeypatch.setattr(runtime, "FastTool", lambda: SimpleNamespace(name="fast"))
 
@@ -149,8 +171,10 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     assert session.top_k >= 1
     assert session.toolsmaker_manual_approval is True
     assert session.bash_prompt_approval is True
-    assert [tool.name for tool in session.agent._tools][:6] == [
-        "websnapshot",
+    assert [tool.name for tool in session.agent._tools][:8] == [
+        "jina_web_snapshot",
+        "perplexity_search",
+        "perplexity_web_snapshot",
         "memory_search",
         "toolsmaker",
         "bash_exec",

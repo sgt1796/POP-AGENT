@@ -1,4 +1,4 @@
-from agent_build.agent1.tui import _looks_like_markdown_text
+from agent_build.agent1.tui import _InputHistory, _looks_like_markdown_text
 from agent_build.agent1.usage_reporting import format_cumulative_usage_fragment
 
 
@@ -31,3 +31,24 @@ def test_usage_fragment_for_status_line_is_compact():
         }
     )
     assert fragment == "usage(total=200,in=150,out=50,calls=4,p/e/h=2/1/1,anom=0)"
+
+
+def test_input_history_up_down_navigation_and_draft_restore():
+    history = _InputHistory()
+    history.add("first")
+    history.add("second")
+
+    assert history.move_up("draft now") == "second"
+    assert history.move_up("ignored while browsing") == "first"
+    assert history.move_down() == "second"
+    assert history.move_down() == "draft now"
+    assert history.move_down() is None
+
+
+def test_input_history_ignores_blank_entries():
+    history = _InputHistory()
+    history.add("   ")
+    history.add("")
+    history.add("ok")
+
+    assert history.entries == ["ok"]

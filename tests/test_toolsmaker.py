@@ -261,7 +261,7 @@ def test_static_tools_remain_compatible(tmp_path: Path):
     )
     agent.set_tools([SlowTool(), FastTool(), WebSnapshotTool()])
     names = set(agent.list_tools())
-    assert {"slow", "fast", "websnapshot"}.issubset(names)
+    assert {"slow", "fast", "jina_web_snapshot"}.issubset(names)
 
     removed = agent.remove_tool("fast")
     assert removed is True
