@@ -1,4 +1,8 @@
+import asyncio
 import os
+import re
+import uuid
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Set
 
@@ -50,6 +54,8 @@ from .message_utils import extract_latest_assistant_text
 from .prompting import build_system_prompt, resolve_execution_profile
 from .usage_reporting import format_turn_usage_line, usage_delta
 
+ConversationMemory = SessionConversationMemory
+
 
 class ManualToolsmakerSubscriberFactory(Protocol):
     def __call__(self, agent: Agent) -> Any:
@@ -73,6 +79,9 @@ class RuntimeSession:
     unsubscribe_log: Callable[[], None]
     unsubscribe_memory: Callable[[], None]
     unsubscribe_approval: Callable[[], None]
+    auto_session_id: Optional[str] = None
+    auto_title_enabled: bool = False
+    auto_title_task: Optional[asyncio.Task[None]] = None
 
 
 @dataclass
@@ -134,6 +143,70 @@ def _filter_runtime_tools(
     return filtered
 
 
+def _generate_session_id() -> str:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    suffix = uuid.uuid4().hex[:8]
+    return f"session-{timestamp}-{suffix}"
+
+
+def _normalize_session_title(raw: str) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1].strip()
+    value = " ".join(value.split())
+    if not value:
+        return ""
+    value = value[:60].strip()
+    if len(re.findall(r"[A-Za-z0-9]", value)) < 3:
+        return ""
+    return value
+
+
+def _session_id_taken(
+    candidate: str,
+    *,
+    short_memory: Optional[SessionConversationMemory],
+    long_memory: Optional[DiskMemory],
+) -> bool:
+    if not candidate:
+        return False
+    if short_memory is not None and hasattr(short_memory, "has_session"):
+        try:
+            if short_memory.has_session(candidate):
+                return True
+        except Exception:
+            pass
+    if long_memory is not None and hasattr(long_memory, "has_session"):
+        try:
+            if long_memory.has_session(candidate):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _ensure_unique_session_title(
+    title: str,
+    *,
+    short_memory: Optional[SessionConversationMemory],
+    long_memory: Optional[DiskMemory],
+) -> str:
+    base = title
+    if not _session_id_taken(base, short_memory=short_memory, long_memory=long_memory):
+        return base
+    suffix = 2
+    while True:
+        suffix_text = f"-{suffix}"
+        max_len = max(1, 60 - len(suffix_text))
+        trimmed = base[:max_len].rstrip()
+        candidate = f"{trimmed}{suffix_text}"
+        if not _session_id_taken(candidate, short_memory=short_memory, long_memory=long_memory):
+            return candidate
+        suffix += 1
+
+
 async def _read_input(prompt: str) -> str:
     return input(prompt)
 
@@ -162,6 +235,116 @@ def build_runtime_tools(
     return tools
 
 
+def _build_title_prompt(user_message: str, assistant_reply: str) -> str:
+    user_text = " ".join(str(user_message or "").strip().split())
+    assistant_text = " ".join(str(assistant_reply or "").strip().split())
+    if len(user_text) > 800:
+        user_text = user_text[:800].rstrip()
+    if len(assistant_text) > 800:
+        assistant_text = assistant_text[:800].rstrip()
+    return (
+        "Generate a short session title (3-7 words) that captures the user's request.\n"
+        "Return only the title, no quotes or extra text.\n\n"
+        f"User: {user_text}\n"
+        f"Assistant: {assistant_text}\n"
+    )
+
+
+async def _auto_title_session(
+    session: RuntimeSession,
+    *,
+    user_message: str,
+    assistant_reply: str,
+    on_warning: Optional[Callable[[str], None]] = None,
+) -> None:
+    if not session.auto_title_enabled:
+        return
+    session.auto_title_enabled = False
+    if session.auto_session_id is None:
+        return
+    if session.active_session_id != session.auto_session_id:
+        return
+
+    old_session_id = session.active_session_id
+    title_prompt = _build_title_prompt(user_message, assistant_reply)
+
+    title_agent = Agent({"stream_fn": stream})
+    model = getattr(session.agent.state, "model", {}) or {}
+    if isinstance(model, dict) and model:
+        title_agent.set_model(dict(model))
+    timeout = getattr(session.agent, "request_timeout_s", None)
+    if timeout is None:
+        timeout = 30.0
+    try:
+        title_agent.set_timeout(min(30.0, float(timeout)))
+    except Exception:
+        title_agent.set_timeout(30.0)
+    title_agent.set_system_prompt(
+        "You generate concise session titles. Output a short, descriptive title only."
+    )
+    title_agent.set_tools([])
+
+    try:
+        await title_agent.prompt(title_prompt)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        if on_warning is not None:
+            on_warning(f"[session] auto-title failed: {exc}")
+        return
+
+    raw_title = extract_latest_assistant_text(title_agent)
+    normalized = _normalize_session_title(raw_title)
+    if not normalized:
+        return
+    unique_title = _ensure_unique_session_title(
+        normalized,
+        short_memory=session.retriever.short_term,
+        long_memory=session.retriever.long_term,
+    )
+
+    session.active_session_id = unique_title
+    session.ingestion_worker.set_active_session(unique_title)
+    try:
+        session.agent.session_id = unique_title
+    except Exception:
+        pass
+    try:
+        await session.ingestion_worker.flush()
+    except Exception:
+        pass
+    if hasattr(session.retriever.short_term, "rename_session"):
+        try:
+            session.retriever.short_term.rename_session(old_session_id, unique_title)
+        except Exception:
+            pass
+    if session.retriever.long_term is not None and hasattr(session.retriever.long_term, "rename_session"):
+        try:
+            session.retriever.long_term.rename_session(old_session_id, unique_title)
+        except Exception:
+            pass
+
+    session.auto_session_id = None
+    if on_warning is not None:
+        on_warning(f"[session] auto-titled: {old_session_id} -> {unique_title}")
+
+
+def _track_auto_title_task(session: RuntimeSession, task: asyncio.Task[None]) -> None:
+    session.auto_title_task = task
+
+    def _clear(_task: asyncio.Task[None]) -> None:
+        try:
+            _task.exception()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        if session.auto_title_task is _task:
+            session.auto_title_task = None
+
+    task.add_done_callback(_clear)
+
+
 def create_runtime_session(
     *,
     log_level: Optional[str] = None,
@@ -180,13 +363,17 @@ def create_runtime_session(
     agent.set_timeout(120)
 
     embedder = Embedder(use_api="openai")
-    short_memory = SessionConversationMemory(embedder=embedder, max_entries_per_session=100, max_sessions=100)
+    short_memory = ConversationMemory(embedder=embedder, max_entries_per_session=100, max_sessions=100)
     long_memory = DiskMemory(filepath=os.path.join("agent", "mem", "chat"), embedder=embedder, max_entries=1000)
     retriever = MemoryRetriever(short_term=short_memory, long_term=long_memory)
 
     ingestion_worker = EmbeddingIngestionWorker(memory=short_memory, long_term=long_memory)
-    initial_session_id = os.getenv("POP_AGENT_SESSION_ID", "default").strip() or "default"
-    ingestion_worker.set_active_session(initial_session_id)
+    initial_session_id = _generate_session_id()
+    if hasattr(ingestion_worker, "set_active_session"):
+        try:
+            ingestion_worker.set_active_session(initial_session_id)
+        except Exception:
+            pass
     ingestion_worker.start()
     memory_subscriber = MemorySubscriber(ingestion_worker=ingestion_worker)
 
@@ -286,6 +473,10 @@ def create_runtime_session(
         exclude_tools=overrides.exclude_tools,
     )
     agent.set_tools(tools)
+    try:
+        agent.session_id = initial_session_id
+    except Exception:
+        pass
 
     effective_log_level = log_level
     if effective_log_level is None:
@@ -348,6 +539,9 @@ def create_runtime_session(
         unsubscribe_log=unsubscribe_log,
         unsubscribe_memory=unsubscribe_memory,
         unsubscribe_approval=unsubscribe_approval,
+        auto_session_id=initial_session_id,
+        auto_title_enabled=True,
+        auto_title_task=None,
     )
 
 
@@ -375,7 +569,7 @@ async def run_user_turn(
     session.context_compressor.maybe_compress(
         session.agent,
         session.active_session_id,
-        long_term=session.retriever.long_term,
+        long_term=getattr(session.retriever, "long_term", None),
     )
     augmented_prompt = build_augmented_prompt(user_message, memory_text)
     await session.agent.prompt(augmented_prompt)
@@ -383,6 +577,21 @@ async def run_user_turn(
     reply = extract_latest_assistant_text(session.agent)
     if not reply:
         reply = "(no assistant text returned)"
+    if (
+        session.auto_title_enabled
+        and session.auto_session_id is not None
+        and session.active_session_id == session.auto_session_id
+        and (session.auto_title_task is None or session.auto_title_task.done())
+    ):
+        task = asyncio.create_task(
+            _auto_title_session(
+                session,
+                user_message=user_message,
+                assistant_reply=reply,
+                on_warning=on_warning,
+            )
+        )
+        _track_auto_title_task(session, task)
     return reply
 
 
@@ -409,6 +618,16 @@ async def shutdown_runtime_session(session: RuntimeSession) -> None:
     except Exception as exc:
         shutdown_error = exc
     finally:
+        task = session.auto_title_task
+        session.auto_title_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
         session.unsubscribe_memory()
         session.unsubscribe_log()
         session.unsubscribe_approval()
@@ -461,8 +680,18 @@ async def main() -> None:
                 if not next_session:
                     print("[session] usage: /session <name>\n")
                     continue
+                task = session.auto_title_task
+                session.auto_title_task = None
+                session.auto_title_enabled = False
+                session.auto_session_id = None
+                if task is not None and not task.done():
+                    task.cancel()
                 session.active_session_id = next_session
                 session.ingestion_worker.set_active_session(next_session)
+                try:
+                    session.agent.session_id = next_session
+                except Exception:
+                    pass
                 print(f"[session] switched to '{next_session}'\n")
                 continue
 

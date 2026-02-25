@@ -72,6 +72,37 @@ class SessionConversationMemory:
                 self._sessions.pop(oldest, None)
         return self._sessions[sid]
 
+    def has_session(self, session_id: str) -> bool:
+        sid = (session_id or "").strip()
+        if not sid:
+            return False
+        return sid in self._sessions
+
+    def rename_session(self, old_id: str, new_id: str) -> bool:
+        old_sid = (old_id or "").strip()
+        new_sid = (new_id or "").strip()
+        if not old_sid or not new_sid or old_sid == new_sid:
+            return False
+        if old_sid not in self._sessions:
+            return False
+        if new_sid in self._sessions:
+            target = self._sessions[new_sid]
+            source = self._sessions[old_sid]
+            try:
+                target._entries.extend(source._entries)
+                if len(target._entries) > target.max_entries:
+                    target._entries = target._entries[-target.max_entries :]
+            except Exception:
+                pass
+            self._sessions.pop(old_sid, None)
+            self._session_order = [sid for sid in self._session_order if sid != old_sid]
+            return True
+        self._sessions[new_sid] = self._sessions.pop(old_sid)
+        self._session_order = [new_sid if sid == old_sid else sid for sid in self._session_order]
+        if new_sid not in self._session_order:
+            self._session_order.append(new_sid)
+        return True
+
     def add(self, session_id: str, text: str) -> None:
         self._ensure_session(session_id).add(text)
 
@@ -119,6 +150,62 @@ class DiskMemory:
         np.save(self.emb_path, matrix)
 
         self._prune()
+
+    def has_session(self, session_id: str) -> bool:
+        sid = (session_id or "").strip()
+        if not sid:
+            return False
+        if not os.path.exists(self.text_path):
+            return False
+        with open(self.text_path, "r", encoding="utf-8") as f:
+            for line in f:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    payload = json.loads(raw) if raw.startswith("{") else None
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict):
+                    record_session = str(payload.get("session_id", "default")).strip() or "default"
+                    if record_session == sid:
+                        return True
+        return False
+
+    def rename_session(self, old_id: str, new_id: str) -> bool:
+        old_sid = (old_id or "").strip()
+        new_sid = (new_id or "").strip()
+        if not old_sid or not new_sid or old_sid == new_sid:
+            return False
+        if not os.path.exists(self.text_path):
+            return False
+        updated = False
+        tmp_path = f"{self.text_path}.tmp"
+        with open(self.text_path, "r", encoding="utf-8") as src, open(tmp_path, "w", encoding="utf-8") as dst:
+            for line in src:
+                raw = line.rstrip("\n")
+                if not raw:
+                    continue
+                try:
+                    payload = json.loads(raw) if raw.startswith("{") else None
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict):
+                    record_session = str(payload.get("session_id", "default")).strip() or "default"
+                    if record_session == old_sid:
+                        payload["session_id"] = new_sid
+                        updated = True
+                    dst.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                else:
+                    dst.write(raw + "\n")
+        if not updated:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+            return False
+        os.replace(tmp_path, self.text_path)
+        return True
 
     def retrieve(
         self,
@@ -361,8 +448,8 @@ class ContextCompressor:
     """Compresses older message context into a lightweight summary."""
 
     def __init__(self, trigger_chars: int = 20_000, target_keep_chars: int = 12_000) -> None:
-        self.trigger_chars = max(2_000, trigger_chars)
-        self.target_keep_chars = max(1_000, min(target_keep_chars, self.trigger_chars - 500))
+        self.trigger_chars = max(1, int(trigger_chars))
+        self.target_keep_chars = max(1, min(int(target_keep_chars), self.trigger_chars - 1))
 
     def maybe_compress(self, agent: Any, session_id: str, long_term: Optional[DiskMemory] = None) -> bool:
         messages = getattr(getattr(agent, "state", None), "messages", None)

@@ -92,3 +92,24 @@ def test_ingestion_worker_writes_to_active_session(tmp_path):
 
     hits = short_memory.retrieve("remember", top_k=2, session_id="focus")
     assert hits and "remember this detail" in hits[0]
+
+
+def test_session_memory_rename_moves_entries():
+    memory = SessionConversationMemory(embedder=_FakeEmbedder(), max_entries_per_session=10)
+    memory.add("old-session", "user: remember this")
+    assert memory.has_session("old-session") is True
+    assert memory.rename_session("old-session", "new-session") is True
+    assert memory.has_session("old-session") is False
+    assert memory.has_session("new-session") is True
+    hits = memory.retrieve("remember", top_k=1, session_id="new-session")
+    assert hits == ["user: remember this"]
+
+
+def test_disk_memory_rename_updates_session_id(tmp_path):
+    embedder = _FakeEmbedder()
+    disk_memory = DiskMemory(filepath=str(tmp_path / "chat"), embedder=embedder, max_entries=20)
+    disk_memory.add("assistant: hello world", session_id="old-session")
+    assert disk_memory.has_session("old-session") is True
+    assert disk_memory.rename_session("old-session", "new-session") is True
+    assert disk_memory.has_session("old-session") is False
+    assert disk_memory.has_session("new-session") is True

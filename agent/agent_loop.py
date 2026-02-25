@@ -725,7 +725,8 @@ async def _stream_assistant_response(
     options: Dict[str, Any] = dict(config.other_options)
     if config.reasoning is not None:
         options["reasoning"] = config.reasoning
-    if config.session_id is not None:
+    provider_name = str(config.model.get("provider") or config.model.get("api") or "").lower()
+    if config.session_id is not None and provider_name not in {"gemini", "google"}:
         options["session_id"] = config.session_id
     if config.thinking_budgets is not None:
         options["thinking_budgets"] = config.thinking_budgets

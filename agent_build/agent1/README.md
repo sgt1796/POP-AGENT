@@ -35,6 +35,14 @@ Highlights:
 * Added `ContextCompressor` with configurable thresholds (`POP_AGENT_CONTEXT_TRIGGER_CHARS`, `POP_AGENT_CONTEXT_TARGET_CHARS`) to summarize old history before context overflows.
 * Compression summaries are persisted in long-term memory as `compression_summary` records so critical prior context survives pruning.
 
+## 0.2 Change note (2026-02-25, auto-session upgrade)
+
+Highlights:
+
+* Each run now starts in a unique auto-generated session id (no more `default`).
+* After the first completed turn, the runtime asynchronously generates a short session title and renames session memory.
+* Auto-title is canceled on manual `/session` changes and on shutdown.
+
 ## 1. What was requested
 
 User request:
@@ -138,6 +146,8 @@ General:
   Default: `quiet` (`simple`, `full`, `debug` also supported; legacy `messages`/`stream` aliases are accepted)
 * `POP_AGENT_MEMORY_TOP_K`
   Default: `3`
+* `POP_AGENT_SESSION_ID`
+  Note: no longer controls the initial session id; use `/session <name>` to switch manually.
 * `POP_AGENT_SESSION_ID`
   Default: `default`
 * `POP_AGENT_CONTEXT_TRIGGER_CHARS`

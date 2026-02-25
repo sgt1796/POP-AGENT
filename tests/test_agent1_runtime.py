@@ -168,6 +168,7 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
 
     monkeypatch.setattr(runtime, "BashExecTool", _FakeBashExecTool)
     monkeypatch.setattr(runtime, "build_system_prompt", lambda **kwargs: "prompt")
+    monkeypatch.setattr(runtime, "_generate_session_id", lambda: "session-test")
 
     session = runtime.create_runtime_session(enable_event_logger=False)
 
@@ -175,6 +176,9 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     assert session.top_k >= 1
     assert session.toolsmaker_manual_approval is True
     assert session.bash_prompt_approval is True
+    assert session.active_session_id == "session-test"
+    assert session.auto_session_id == "session-test"
+    assert session.auto_title_enabled is True
     assert [tool.name for tool in session.agent._tools][:8] == [
         "jina_web_snapshot",
         "perplexity_search",
@@ -216,6 +220,26 @@ def test_run_user_turn_builds_augmented_prompt_and_flushes():
     assert worker.flushed == 1
     assert retriever.calls == [("hello", 3, "both", "default")]
     assert "|Current user message|:\nhello" in agent.prompts[0]
+
+
+class _FakeMemory:
+    def __init__(self, sessions):
+        self._sessions = set(sessions)
+
+    def has_session(self, session_id):
+        return session_id in self._sessions
+
+
+def test_normalize_session_title():
+    assert runtime._normalize_session_title('  "Project kickoff"  ') == "Project kickoff"
+    assert runtime._normalize_session_title("Hi") == ""
+    assert runtime._normalize_session_title("A B C") == "A B C"
+
+
+def test_ensure_unique_session_title_suffixes():
+    short_memory = _FakeMemory({"Alpha"})
+    assert runtime._ensure_unique_session_title("Alpha", short_memory=short_memory, long_memory=None) == "Alpha-2"
+    assert runtime._ensure_unique_session_title("Beta", short_memory=short_memory, long_memory=None) == "Beta"
 
 
 def test_run_user_turn_reports_memory_warning_when_retrieval_fails():
