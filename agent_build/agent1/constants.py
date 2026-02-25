@@ -2,8 +2,8 @@ from typing import Set
 
 LOG_LEVELS = {
     "quiet": 0,
-    "messages": 1,
-    "stream": 2,
+    "simple": 1,
+    "full": 2,
     "debug": 3,
 }
 

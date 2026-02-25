@@ -73,7 +73,7 @@ Created files:
 * `message_utils.py`
   Message text extraction and formatting helpers used across runtime/logger/memory.
 * `event_logger.py`
-  Event logger factory with `quiet/messages/stream/debug` behaviors.
+  Event logger factory with `quiet/simple/full/debug` behaviors.
 * `memory.py`
   In-memory and disk-backed memory stores, retrieval logic, ingestion worker, and memory subscriber.
 * `prompting.py`
@@ -135,7 +135,7 @@ Bash exec:
 General:
 
 * `POP_AGENT_LOG_LEVEL`
-  Default: `quiet` (`messages`, `stream`, `debug` also supported)
+  Default: `quiet` (`simple`, `full`, `debug` also supported; legacy `messages`/`stream` aliases are accepted)
 * `POP_AGENT_MEMORY_TOP_K`
   Default: `3`
 * `POP_AGENT_SESSION_ID`

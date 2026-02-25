@@ -1,8 +1,8 @@
 import asyncio
 import os
 import re
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 from .approvals import DEFAULT_TOOL_REJECT_REASON
 from .constants import BASH_GIT_READ_SUBCOMMANDS, BASH_READ_COMMANDS, BASH_WRITE_COMMANDS, LOG_LEVELS
@@ -92,10 +92,49 @@ class _PendingToolCallRecord:
     command: str
 
 
+@dataclass
+class _InputHistory:
+    entries: List[str] = field(default_factory=list)
+    cursor: Optional[int] = None
+    draft: str = ""
+
+    def add(self, text: str) -> None:
+        value = str(text or "").strip()
+        if not value:
+            return
+        self.entries.append(value)
+        self.cursor = None
+        self.draft = ""
+
+    def move_up(self, current_input: str) -> Optional[str]:
+        if not self.entries:
+            return None
+
+        if self.cursor is None:
+            self.cursor = len(self.entries) - 1
+            self.draft = current_input
+        elif self.cursor > 0:
+            self.cursor -= 1
+
+        return self.entries[self.cursor]
+
+    def move_down(self) -> Optional[str]:
+        if self.cursor is None:
+            return None
+
+        if self.cursor < len(self.entries) - 1:
+            self.cursor += 1
+            return self.entries[self.cursor]
+
+        self.cursor = None
+        return self.draft
+
+
 def run_tui() -> int:
     try:
         from rich.markdown import Markdown
         from rich.text import Text
+        from textual import events
         from textual.app import App, ComposeResult
         from textual.binding import Binding
         from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -202,15 +241,15 @@ def run_tui() -> int:
                 yield Input(value=self._current.execution_profile, id="settings_execution_profile", placeholder="balanced")
                 yield Static("Memory retrieval top-k (>=1)", classes="settings_label")
                 yield Input(value=self._current.memory_top_k, id="settings_memory_top_k", placeholder="3")
-                yield Static("Activity level: quiet | messages | stream | debug", classes="settings_label")
+                yield Static("Activity level: quiet | simple | full | debug", classes="settings_label")
                 if Select is None:
-                    yield Input(value=self._current.activity_level, id="settings_activity_level", placeholder="stream")
+                    yield Input(value=self._current.activity_level, id="settings_activity_level", placeholder="full")
                 else:
                     yield Select(
                         options=[
                             ("quiet", "quiet"),
-                            ("messages", "messages"),
-                            ("stream", "stream"),
+                            ("simple", "simple"),
+                            ("full", "full"),
                             ("debug", "debug"),
                         ],
                         value=self._current.activity_level,
@@ -334,7 +373,8 @@ def run_tui() -> int:
         BINDINGS = [
             Binding("q", "quit_app", "Quit"),
             Binding("ctrl+s", "open_settings", "Settings"),
-            Binding("ctrl+c", "abort_run", "Abort"),
+            Binding("ctrl+g", "abort_run", "Abort"),
+            Binding("ctrl+c,ctrl+shift+c", "screen.copy_text", "Copy"),
         ]
 
         def __init__(self) -> None:
@@ -346,9 +386,11 @@ def run_tui() -> int:
             self._unsubscribe_ui_events = lambda: None
             self._cleanup_done = False
             self._stream_buffer = ""
-            self._activity_log_level = self._normalize_activity_level(os.getenv("POP_AGENT_LOG_LEVEL", "stream"))
+            self._activity_log_level = self._normalize_activity_level(os.getenv("POP_AGENT_LOG_LEVEL", "full"))
             self._pending_tool_calls: Dict[str, _PendingToolCallRecord] = {}
             self._turn_usage_before: Dict[str, Any] = {}
+            self._input_history = _InputHistory()
+            self._applying_history_value = False
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=False)
@@ -394,9 +436,11 @@ def run_tui() -> int:
         @staticmethod
         def _normalize_activity_level(value: str) -> str:
             key = str(value or "").strip().lower()
-            if key in LOG_LEVELS:
-                return key
-            return "stream"
+            aliases = {"messages": "simple", "stream": "full"}
+            normalized = aliases.get(key, key)
+            if normalized in LOG_LEVELS:
+                return normalized
+            return "full"
 
         def _toolsmaker_mode_text(self) -> str:
             if self._session is None:
@@ -470,8 +514,8 @@ def run_tui() -> int:
         def _allow_activity_line(self, text: str) -> bool:
             if self._activity_log_level == "quiet":
                 return False
-            if self._activity_log_level == "messages":
-                return not text.startswith("[stream]")
+            if self._activity_log_level == "simple":
+                return text.startswith("[tool:") or text.startswith("Ran ") or text.startswith("[...] Running bash:") or text.startswith("[...] Calling")
             return True
 
         def _is_turn_active(self) -> bool:
@@ -593,7 +637,9 @@ def run_tui() -> int:
             if memory_top_k < 1:
                 return None, "memory top-k must be >= 1"
 
-            activity_level = payload.activity_level.strip().lower()
+            raw_activity_level = payload.activity_level.strip().lower()
+            aliases = {"messages": "simple", "stream": "full"}
+            activity_level = aliases.get(raw_activity_level, raw_activity_level)
             if activity_level not in LOG_LEVELS:
                 allowed_levels = ", ".join(sorted(LOG_LEVELS.keys()))
                 return None, f"activity level must be one of: {allowed_levels}"
@@ -771,7 +817,7 @@ def run_tui() -> int:
             if etype in {"tool_execution_start", "tool_execution_end"}:
                 self._handle_tool_activity_event(event)
             else:
-                activity_text = format_activity_event(event)
+                activity_text = format_activity_event(event, level=self._activity_log_level)
                 if activity_text and self._allow_activity_line(activity_text):
                     self._append_activity(activity_text)
 
@@ -810,12 +856,57 @@ def run_tui() -> int:
             self._stream_buffer = ""
             self._update_stream_preview("")
 
+        def _set_chat_input_value(self, value: str) -> None:
+            self._applying_history_value = True
+            try:
+                self._chat_input.value = value
+                self._chat_input.cursor_position = len(value)
+            finally:
+                self._applying_history_value = False
+
+        def _navigate_input_history(self, *, direction: str) -> bool:
+            if direction == "up":
+                candidate = self._input_history.move_up(self._chat_input.value)
+            else:
+                candidate = self._input_history.move_down()
+
+            if candidate is None:
+                return False
+
+            self._set_chat_input_value(candidate)
+            return True
+
+        def on_key(self, event: events.Key) -> None:
+            if event.key not in {"up", "down"}:
+                return
+            if not hasattr(self, "_chat_input"):
+                return
+            if self.focused is not self._chat_input:
+                return
+            if self._chat_input.disabled:
+                return
+
+            if self._navigate_input_history(direction=event.key):
+                event.stop()
+                event.prevent_default()
+
+        def on_input_changed(self, event: Input.Changed) -> None:
+            if event.input.id != "chat_input":
+                return
+            if self._applying_history_value:
+                return
+            if self._input_history.cursor is not None:
+                self._input_history.cursor = None
+                self._input_history.draft = event.value
+
         async def on_input_submitted(self, event: Input.Submitted) -> None:
             user_text = event.value.strip()
             event.input.value = ""
 
             if not user_text:
                 return
+
+            self._input_history.add(user_text)
             if self._session is None:
                 self._append_activity("[runtime] session unavailable")
                 return
