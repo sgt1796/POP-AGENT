@@ -1,10 +1,12 @@
 import asyncio
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from agent.agent_types import AgentMessage, TextContent
 
 from POP.embedder import Embedder
 
@@ -50,6 +52,37 @@ class ConversationMemory:
         return [self._entries[i].text for i in top_indices]
 
 
+class SessionConversationMemory:
+    """Per-session short-term memory with vector retrieval."""
+
+    def __init__(self, embedder: Embedder, max_entries_per_session: int = 100, max_sessions: int = 50) -> None:
+        self.embedder = embedder
+        self.max_entries_per_session = max_entries_per_session
+        self.max_sessions = max_sessions
+        self._sessions: Dict[str, ConversationMemory] = {}
+        self._session_order: List[str] = []
+
+    def _ensure_session(self, session_id: str) -> ConversationMemory:
+        sid = session_id.strip() or "default"
+        if sid not in self._sessions:
+            self._sessions[sid] = ConversationMemory(self.embedder, max_entries=self.max_entries_per_session)
+            self._session_order.append(sid)
+            if len(self._session_order) > self.max_sessions:
+                oldest = self._session_order.pop(0)
+                self._sessions.pop(oldest, None)
+        return self._sessions[sid]
+
+    def add(self, session_id: str, text: str) -> None:
+        self._ensure_session(session_id).add(text)
+
+    def retrieve(self, query: str, top_k: int = 3, session_id: Optional[str] = None) -> List[str]:
+        sid = (session_id or "default").strip() or "default"
+        session = self._sessions.get(sid)
+        if session is None:
+            return []
+        return session.retrieve(query, top_k=top_k)
+
+
 class DiskMemory:
     """
     Persistent text+vector memory split across two files:
@@ -66,9 +99,15 @@ class DiskMemory:
         os.makedirs(os.path.dirname(self.text_path) or ".", exist_ok=True)
         self._n_text = self._count_lines(self.text_path)
 
-    def add(self, text: str) -> None:
+    def add(self, text: str, session_id: Optional[str] = None, memory_kind: str = "message") -> None:
+        record = {
+            "text": text,
+            "session_id": (session_id or "").strip() or "default",
+            "memory_kind": (memory_kind or "message").strip() or "message",
+            "timestamp": time.time(),
+        }
         with open(self.text_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
         self._n_text += 1
 
         vec = self.embedder.get_embedding([text])[0].astype("float32")
@@ -81,7 +120,13 @@ class DiskMemory:
 
         self._prune()
 
-    def retrieve(self, query: str, top_k: int = 3) -> List[str]:
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 3,
+        session_id: Optional[str] = None,
+        include_default: bool = True,
+    ) -> List[str]:
         if not os.path.exists(self.emb_path) or self._n_text == 0:
             return []
 
@@ -99,7 +144,8 @@ class DiskMemory:
         k = max(1, min(int(top_k or 1), sims.shape[0]))
         idx = np.argpartition(-sims, k - 1)[:k]
         idx = idx[np.argsort(-sims[idx])]
-        return self._read_lines_by_index(idx.tolist())
+        filtered = self._read_records_by_index(idx.tolist(), session_id=session_id, include_default=include_default)
+        return [item["text"] for item in filtered]
 
     def _count_lines(self, path: str) -> int:
         if not os.path.exists(path):
@@ -108,6 +154,16 @@ class DiskMemory:
             return sum(1 for _ in f)
 
     def _read_lines_by_index(self, indices: Sequence[int]) -> List[str]:
+        raw = self._read_raw_lines_by_index(indices)
+        parsed: List[str] = []
+        for line in raw:
+            try:
+                parsed.append(str(json.loads(line)["text"]))
+            except Exception:
+                parsed.append(line.strip())
+        return [t for t in parsed if t]
+
+    def _read_raw_lines_by_index(self, indices: Sequence[int]) -> List[str]:
         if not indices:
             return []
         wanted = set(indices)
@@ -115,14 +171,40 @@ class DiskMemory:
         with open(self.text_path, "r", encoding="utf-8") as f:
             for i, line in enumerate(f):
                 if i in wanted:
-                    try:
-                        found[i] = str(json.loads(line)["text"])
-                    except Exception:
-                        found[i] = line.strip()
+                    found[i] = line.strip()
                 if len(found) == len(wanted):
                     break
         ordered = [found.get(i, "") for i in indices]
         return [t for t in ordered if t]
+
+    def _read_records_by_index(
+        self,
+        indices: Sequence[int],
+        session_id: Optional[str],
+        include_default: bool,
+    ) -> List[Dict[str, Any]]:
+        target_session = (session_id or "").strip() or None
+        results: List[Dict[str, Any]] = []
+        ordered_records = self._read_raw_lines_by_index(indices)
+        for raw in ordered_records:
+            try:
+                payload = json.loads(raw) if raw.startswith("{") else {"text": raw}
+            except Exception:
+                payload = {"text": raw}
+            text = str(payload.get("text", "")).strip()
+            if not text:
+                continue
+            record_session = str(payload.get("session_id", "default")).strip() or "default"
+            if target_session is not None:
+                if record_session == target_session:
+                    results.append({"text": text})
+                    continue
+                if include_default and record_session == "default":
+                    results.append({"text": text})
+                    continue
+                continue
+            results.append({"text": text})
+        return results
 
     def _prune(self) -> None:
         if self._n_text <= self.max_entries:
@@ -144,11 +226,17 @@ class DiskMemory:
 class MemoryRetriever:
     """Shared retrieval service for prompt injection and memory tool calls."""
 
-    def __init__(self, short_term: ConversationMemory, long_term: Optional[DiskMemory] = None) -> None:
+    def __init__(self, short_term: SessionConversationMemory, long_term: Optional[DiskMemory] = None) -> None:
         self.short_term = short_term
         self.long_term = long_term
 
-    def retrieve_sections(self, query: str, top_k: int = 3, scope: str = "both") -> Tuple[List[str], List[str]]:
+    def retrieve_sections(
+        self,
+        query: str,
+        top_k: int = 3,
+        scope: str = "both",
+        session_id: str = "default",
+    ) -> Tuple[List[str], List[str]]:
         scope = (scope or "both").strip().lower()
         if scope not in {"short", "long", "both"}:
             scope = "both"
@@ -156,13 +244,13 @@ class MemoryRetriever:
         short_hits: List[str] = []
         long_hits: List[str] = []
         if scope in {"short", "both"}:
-            short_hits = self.short_term.retrieve(query, top_k=k)
+            short_hits = self.short_term.retrieve(query, top_k=k, session_id=session_id)
         if scope in {"long", "both"} and self.long_term is not None:
-            long_hits = self.long_term.retrieve(query, top_k=k)
+            long_hits = self.long_term.retrieve(query, top_k=k, session_id=session_id)
         return short_hits, long_hits
 
-    def retrieve(self, query: str, top_k: int = 3, scope: str = "both") -> List[str]:
-        short_hits, long_hits = self.retrieve_sections(query, top_k=top_k, scope=scope)
+    def retrieve(self, query: str, top_k: int = 3, scope: str = "both", session_id: str = "default") -> List[str]:
+        short_hits, long_hits = self.retrieve_sections(query, top_k=top_k, scope=scope, session_id=session_id)
         seen = set()
         merged: List[str] = []
         for item in short_hits + long_hits:
@@ -195,21 +283,25 @@ def build_augmented_prompt(user_message: str, memory_text: str) -> str:
 class EmbeddingIngestionWorker:
     """Background ingestion worker for embedding writes."""
 
-    def __init__(self, memory: ConversationMemory, long_term: Optional[DiskMemory] = None) -> None:
+    def __init__(self, memory: SessionConversationMemory, long_term: Optional[DiskMemory] = None) -> None:
         self.memory = memory
         self.long_term = long_term
-        self._queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+        self.active_session_id = "default"
+        self._queue: asyncio.Queue[Optional[Tuple[str, str, str]]] = asyncio.Queue()
         self._task: Optional[asyncio.Task[None]] = None
 
     def start(self) -> None:
         if self._task is None:
             self._task = asyncio.create_task(self._run())
 
+    def set_active_session(self, session_id: str) -> None:
+        self.active_session_id = session_id.strip() or "default"
+
     def enqueue(self, role: str, text: str) -> None:
         value = text.strip()
         if not value:
             return
-        self._queue.put_nowait(f"{role}: {value}")
+        self._queue.put_nowait((self.active_session_id, role, f"{role}: {value}"))
 
     async def _run(self) -> None:
         while True:
@@ -217,9 +309,10 @@ class EmbeddingIngestionWorker:
             try:
                 if item is None:
                     return
-                await asyncio.to_thread(self.memory.add, item)
+                session_id, _, text = item
+                await asyncio.to_thread(self.memory.add, session_id, text)
                 if self.long_term is not None:
-                    await asyncio.to_thread(self.long_term.add, item)
+                    await asyncio.to_thread(self.long_term.add, text, session_id, "message")
             except Exception as exc:
                 print(f"[memory] ingest warning: {exc}")
             finally:
@@ -262,3 +355,47 @@ class MemorySubscriber:
                 self.ingestion_worker.enqueue(role, text)
         except Exception as exc:
             print(f"[memory] subscriber warning: {exc}")
+
+
+class ContextCompressor:
+    """Compresses older message context into a lightweight summary."""
+
+    def __init__(self, trigger_chars: int = 20_000, target_keep_chars: int = 12_000) -> None:
+        self.trigger_chars = max(2_000, trigger_chars)
+        self.target_keep_chars = max(1_000, min(target_keep_chars, self.trigger_chars - 500))
+
+    def maybe_compress(self, agent: Any, session_id: str, long_term: Optional[DiskMemory] = None) -> bool:
+        messages = getattr(getattr(agent, "state", None), "messages", None)
+        if not isinstance(messages, list) or not messages:
+            return False
+        total_chars = sum(len("\n".join(extract_texts(msg))) for msg in messages)
+        if total_chars < self.trigger_chars:
+            return False
+
+        removed: List[Any] = []
+        while messages and total_chars > self.target_keep_chars:
+            msg = messages.pop(0)
+            removed.append(msg)
+            total_chars -= len("\n".join(extract_texts(msg)))
+        if not removed:
+            return False
+
+        summary = self._summarize_messages(removed)
+        messages.insert(
+            0,
+            AgentMessage(role="assistant", content=[TextContent(type="text", text=summary)], timestamp=time.time()),
+        )
+        if long_term is not None:
+            long_term.add(summary, session_id=session_id, memory_kind="compression_summary")
+        return True
+
+    def _summarize_messages(self, messages: Sequence[Any]) -> str:
+        lines: List[str] = ["Compressed context summary:"]
+        for msg in messages[-12:]:
+            role = str(getattr(msg, "role", "unknown"))
+            text = " ".join(extract_texts(msg)).strip().replace("\n", " ")
+            if text:
+                lines.append(f"- {role}: {text[:240]}")
+        if len(lines) == 1:
+            lines.append("- (no text content)")
+        return "\n".join(lines)
