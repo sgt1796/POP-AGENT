@@ -19,6 +19,7 @@ class MemorySearchTool(AgentTool):
                 "description": "Memory scope: short, long, or both",
                 "enum": ["short", "long", "both"],
             },
+            "session_id": {"type": "string", "description": "Optional chat session id"},
         },
         "required": ["query"],
     }
@@ -50,7 +51,8 @@ class MemorySearchTool(AgentTool):
         if scope not in {"short", "long", "both"}:
             scope = "both"
         try:
-            hits = self.retriever.retrieve(query=query, top_k=top_k, scope=scope)
+            session_id = str(params.get("session_id", "default")).strip() or "default"
+            hits = self.retriever.retrieve(query=query, top_k=top_k, scope=scope, session_id=session_id)
         except Exception as exc:
             return AgentToolResult(
                 content=[TextContent(type="text", text=f"memory_search error: {exc}")],
@@ -62,7 +64,7 @@ class MemorySearchTool(AgentTool):
             text = "Memory search results:\n" + "\n".join(f"{i + 1}. {h}" for i, h in enumerate(hits))
         return AgentToolResult(
             content=[TextContent(type="text", text=text)],
-            details={"query": query, "top_k": top_k, "scope": scope, "count": len(hits)},
+            details={"query": query, "top_k": top_k, "scope": scope, "session_id": session_id, "count": len(hits)},
         )
 
 

@@ -37,7 +37,8 @@ from .env_utils import (
 )
 from .event_logger import make_event_logger
 from .memory import (
-    ConversationMemory,
+    ContextCompressor,
+    SessionConversationMemory,
     DiskMemory,
     EmbeddingIngestionWorker,
     MemoryRetriever,
@@ -58,8 +59,10 @@ class ManualToolsmakerSubscriberFactory(Protocol):
 @dataclass
 class RuntimeSession:
     agent: Agent
-    retriever: Any
-    ingestion_worker: Any
+    retriever: MemoryRetriever
+    ingestion_worker: EmbeddingIngestionWorker
+    active_session_id: str
+    context_compressor: ContextCompressor
     top_k: int
     toolsmaker_manual_approval: bool
     toolsmaker_auto_activate: bool
@@ -176,20 +179,16 @@ def create_runtime_session(
         agent.set_model(dict(overrides.model_override))
     agent.set_timeout(120)
 
-    memory_enabled = _resolve_bool_override(overrides.enable_memory, True)
-    memory_subscriber: Optional[MemorySubscriber] = None
-    if memory_enabled:
-        embedder = Embedder(use_api="openai")
-        short_memory = ConversationMemory(embedder=embedder, max_entries=100)
-        long_memory_base_path = str(overrides.long_memory_base_path or os.path.join("agent", "mem", "chat"))
-        long_memory = DiskMemory(filepath=long_memory_base_path, embedder=embedder, max_entries=1000)
-        retriever: Any = MemoryRetriever(short_term=short_memory, long_term=long_memory)
-        ingestion_worker: Any = EmbeddingIngestionWorker(memory=short_memory, long_term=long_memory)
-        ingestion_worker.start()
-        memory_subscriber = MemorySubscriber(ingestion_worker=ingestion_worker)
-    else:
-        retriever = _NoopRetriever()
-        ingestion_worker = _NoopIngestionWorker()
+    embedder = Embedder(use_api="openai")
+    short_memory = SessionConversationMemory(embedder=embedder, max_entries_per_session=100, max_sessions=100)
+    long_memory = DiskMemory(filepath=os.path.join("agent", "mem", "chat"), embedder=embedder, max_entries=1000)
+    retriever = MemoryRetriever(short_term=short_memory, long_term=long_memory)
+
+    ingestion_worker = EmbeddingIngestionWorker(memory=short_memory, long_term=long_memory)
+    initial_session_id = os.getenv("POP_AGENT_SESSION_ID", "default").strip() or "default"
+    ingestion_worker.set_active_session(initial_session_id)
+    ingestion_worker.start()
+    memory_subscriber = MemorySubscriber(ingestion_worker=ingestion_worker)
 
     memory_search_tool = MemorySearchTool(retriever=retriever)
     toolsmaker_caps = parse_toolsmaker_allowed_capabilities(os.getenv("POP_AGENT_TOOLSMAKER_ALLOWED_CAPS"))
@@ -326,10 +325,19 @@ def create_runtime_session(
     except Exception:
         top_k = 3
 
+    compressor_trigger_chars = parse_int_env("POP_AGENT_CONTEXT_TRIGGER_CHARS", 20_000)
+    compressor_target_chars = parse_int_env("POP_AGENT_CONTEXT_TARGET_CHARS", 12_000)
+    context_compressor = ContextCompressor(
+        trigger_chars=compressor_trigger_chars,
+        target_keep_chars=compressor_target_chars,
+    )
+
     return RuntimeSession(
         agent=agent,
         retriever=retriever,
         ingestion_worker=ingestion_worker,
+        active_session_id=initial_session_id,
+        context_compressor=context_compressor,
         top_k=top_k,
         toolsmaker_manual_approval=toolsmaker_manual_approval,
         toolsmaker_auto_activate=toolsmaker_auto_activate,
@@ -352,13 +360,23 @@ async def run_user_turn(
 
     memory_text = "(no relevant memories)"
     try:
-        short_hits, long_hits = session.retriever.retrieve_sections(user_message, top_k=session.top_k, scope="both")
+        short_hits, long_hits = session.retriever.retrieve_sections(
+            user_message,
+            top_k=session.top_k,
+            scope="both",
+            session_id=session.active_session_id,
+        )
         memory_text = format_memory_sections(short_hits, long_hits)
     except Exception as exc:
         memory_text = "(no relevant memories)"
         if on_warning is not None:
             on_warning(f"[memory] retrieval warning: {exc}")
 
+    session.context_compressor.maybe_compress(
+        session.agent,
+        session.active_session_id,
+        long_term=session.retriever.long_term,
+    )
     augmented_prompt = build_augmented_prompt(user_message, memory_text)
     await session.agent.prompt(augmented_prompt)
 
@@ -421,7 +439,8 @@ async def main() -> None:
         print("[bash_exec] approval prompts: on")
     else:
         print("[bash_exec] approval prompts: off (medium/high commands will be denied)")
-    print("Type 'exit' or 'quit' to stop.\n")
+    print(f"[memory] active session: {session.active_session_id}")
+    print("Type 'exit' or 'quit' to stop. Use /session <name> to switch sessions.\n")
 
     try:
         while True:
@@ -436,6 +455,16 @@ async def main() -> None:
             if user_message.lower() in {"exit", "quit"}:
                 print("Goodbye!")
                 break
+
+            if user_message.lower().startswith("/session "):
+                next_session = user_message.split(" ", 1)[1].strip()
+                if not next_session:
+                    print("[session] usage: /session <name>\n")
+                    continue
+                session.active_session_id = next_session
+                session.ingestion_worker.set_active_session(next_session)
+                print(f"[session] switched to '{next_session}'\n")
+                continue
 
             before_summary: Dict[str, Any] = {}
             get_summary = getattr(session.agent, "get_usage_summary", None)

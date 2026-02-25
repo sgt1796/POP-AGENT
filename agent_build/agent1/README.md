@@ -24,6 +24,17 @@ Highlights:
   - `tests/test_agent1_approvals.py`
   - `tests/test_agent1_runtime.py`
 
+
+## 0.1 Change note (2026-02-24, context management upgrade)
+
+Highlights:
+
+* Added session-aware short-term memory via `SessionConversationMemory` so each chat session has isolated in-session retrieval.
+* Extended disk memory records with `session_id` metadata so long-term retrieval is scoped to the active session for cross-session persistence.
+* Added runtime chat session switching (`/session <name>`) with configurable initial session from `POP_AGENT_SESSION_ID`.
+* Added `ContextCompressor` with configurable thresholds (`POP_AGENT_CONTEXT_TRIGGER_CHARS`, `POP_AGENT_CONTEXT_TARGET_CHARS`) to summarize old history before context overflows.
+* Compression summaries are persisted in long-term memory as `compression_summary` records so critical prior context survives pruning.
+
 ## 1. What was requested
 
 User request:
@@ -77,10 +88,10 @@ Created files:
 Preserved:
 
 * Same model selection (`gemini-3-flash-preview`) and timeout.
-* Same memory architecture:
-  `ConversationMemory` + `DiskMemory` + retrieval injection into augmented prompt.
-* Same memory tool behavior:
-  `memory_search` with `query`, `top_k`, `scope`.
+* Upgraded memory architecture:
+  `SessionConversationMemory` + session-scoped `DiskMemory` + retrieval injection into augmented prompt.
+* Expanded memory tool behavior:
+  `memory_search` with `query`, `top_k`, `scope`, and optional `session_id`.
 * Same `toolsmaker` behavior:
   lifecycle actions, capability validation, intent guardrails, create->approve->activate workflow support.
 * Same `bash_exec` configuration path:
@@ -127,6 +138,12 @@ General:
   Default: `quiet` (`simple`, `full`, `debug` also supported; legacy `messages`/`stream` aliases are accepted)
 * `POP_AGENT_MEMORY_TOP_K`
   Default: `3`
+* `POP_AGENT_SESSION_ID`
+  Default: `default`
+* `POP_AGENT_CONTEXT_TRIGGER_CHARS`
+  Default: `20000`
+* `POP_AGENT_CONTEXT_TARGET_CHARS`
+  Default: `12000`
 * `POP_AGENT_EXECUTION_PROFILE`
   Default: `balanced` (`balanced`, `aggressive`, `conservative`)
 * `POP_AGENT_INCLUDE_DEMO_TOOLS`

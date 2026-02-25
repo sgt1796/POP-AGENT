@@ -105,6 +105,9 @@ class _FakeWorker:
     def start(self):
         self.started = True
 
+    def set_active_session(self, _session_id):
+        return None
+
     async def flush(self):
         self.flushed += 1
 
@@ -116,14 +119,14 @@ class _FakeRetriever:
     def __init__(self, *_, **__):
         self.calls = []
 
-    def retrieve_sections(self, query, top_k=3, scope="both"):
-        self.calls.append((query, top_k, scope))
+    def retrieve_sections(self, query, top_k=3, scope="both", session_id="default"):
+        self.calls.append((query, top_k, scope, session_id))
         return ["user: previous"], ["assistant: previous"]
 
 
 class _FailingRetriever(_FakeRetriever):
-    def retrieve_sections(self, query, top_k=3, scope="both"):
-        self.calls.append((query, top_k, scope))
+    def retrieve_sections(self, query, top_k=3, scope="both", session_id="default"):
+        self.calls.append((query, top_k, scope, session_id))
         raise RuntimeError("retrieval failed")
 
 
@@ -137,11 +140,12 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
 
     monkeypatch.setattr(runtime, "Agent", _FakeAgent)
     monkeypatch.setattr(runtime, "Embedder", lambda use_api: object())
-    monkeypatch.setattr(runtime, "ConversationMemory", lambda *a, **k: object())
+    monkeypatch.setattr(runtime, "SessionConversationMemory", lambda *a, **k: object())
     monkeypatch.setattr(runtime, "DiskMemory", lambda *a, **k: object())
     monkeypatch.setattr(runtime, "MemoryRetriever", _FakeRetriever)
     monkeypatch.setattr(runtime, "EmbeddingIngestionWorker", _FakeWorker)
     monkeypatch.setattr(runtime, "MemorySubscriber", lambda ingestion_worker: SimpleNamespace(on_event=lambda _e: None))
+    monkeypatch.setattr(runtime, "ContextCompressor", lambda *a, **k: SimpleNamespace(maybe_compress=lambda *args, **kwargs: False))
 
     monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
     monkeypatch.setattr(runtime, "ToolsmakerTool", lambda agent, allowed_capabilities: SimpleNamespace(name="toolsmaker"))
@@ -192,6 +196,8 @@ def test_run_user_turn_builds_augmented_prompt_and_flushes():
         agent=agent,
         retriever=retriever,
         ingestion_worker=worker,
+        active_session_id="default",
+        context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
         top_k=3,
         toolsmaker_manual_approval=True,
         toolsmaker_auto_activate=True,
@@ -208,7 +214,7 @@ def test_run_user_turn_builds_augmented_prompt_and_flushes():
 
     assert reply == "ok"
     assert worker.flushed == 1
-    assert retriever.calls == [("hello", 3, "both")]
+    assert retriever.calls == [("hello", 3, "both", "default")]
     assert "|Current user message|:\nhello" in agent.prompts[0]
 
 
@@ -222,6 +228,8 @@ def test_run_user_turn_reports_memory_warning_when_retrieval_fails():
         agent=agent,
         retriever=retriever,
         ingestion_worker=worker,
+        active_session_id="default",
+        context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
         top_k=3,
         toolsmaker_manual_approval=True,
         toolsmaker_auto_activate=True,
@@ -253,6 +261,8 @@ def test_shutdown_runtime_session_unsubscribes_even_when_worker_raises():
         agent=_FakeAgent(),
         retriever=_FakeRetriever(),
         ingestion_worker=_FailingWorker(),
+        active_session_id="default",
+        context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
         top_k=3,
         toolsmaker_manual_approval=True,
         toolsmaker_auto_activate=True,
