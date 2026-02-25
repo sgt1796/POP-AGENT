@@ -1,0 +1,18 @@
+benchmark: gaia
+split: validation
+limit: null
+seed: 0
+timeout_s: 120.0
+output_root: eval/runs
+run_id: null
+executor: agent1
+continue_on_error: true
+concurrency: 1
+benchmark_options: {}
+executor_options:
+  enable_memory: true
+  bash_prompt_approval: false
+  toolsmaker_manual_approval: false
+  toolsmaker_auto_continue: false
+  log_level: simple
+redact_patterns: []

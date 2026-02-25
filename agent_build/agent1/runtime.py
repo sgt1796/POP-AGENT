@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Set
 
 from POP.embedder import Embedder
 from POP.stream import stream
@@ -56,8 +56,8 @@ class ManualToolsmakerSubscriberFactory(Protocol):
 @dataclass
 class RuntimeSession:
     agent: Agent
-    retriever: MemoryRetriever
-    ingestion_worker: EmbeddingIngestionWorker
+    retriever: Any
+    ingestion_worker: Any
     top_k: int
     toolsmaker_manual_approval: bool
     toolsmaker_auto_activate: bool
@@ -68,6 +68,65 @@ class RuntimeSession:
     unsubscribe_log: Callable[[], None]
     unsubscribe_memory: Callable[[], None]
     unsubscribe_approval: Callable[[], None]
+
+
+@dataclass
+class RuntimeOverrides:
+    long_memory_base_path: Optional[str] = None
+    enable_memory: Optional[bool] = None
+    include_tools: Optional[List[str]] = None
+    exclude_tools: Optional[List[str]] = None
+    model_override: Optional[Dict[str, Any]] = None
+    bash_prompt_approval: Optional[bool] = None
+    toolsmaker_manual_approval: Optional[bool] = None
+    toolsmaker_auto_continue: Optional[bool] = None
+    log_level: Optional[str] = None
+
+
+class _NoopRetriever:
+    def retrieve_sections(self, query: str, top_k: int = 3, scope: str = "both") -> tuple[list[str], list[str]]:
+        del query, top_k, scope
+        return [], []
+
+
+class _NoopIngestionWorker:
+    def start(self) -> None:
+        return None
+
+    async def flush(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
+
+def _resolve_bool_override(value: Optional[bool], default: bool) -> bool:
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _normalize_tool_name_set(values: Optional[Sequence[str]]) -> Optional[Set[str]]:
+    if values is None:
+        return None
+    names = {str(item).strip() for item in values if str(item).strip()}
+    return names if names else None
+
+
+def _filter_runtime_tools(
+    tools: List[AgentTool],
+    include_tools: Optional[Sequence[str]],
+    exclude_tools: Optional[Sequence[str]],
+) -> List[AgentTool]:
+    include_names = _normalize_tool_name_set(include_tools)
+    exclude_names = _normalize_tool_name_set(exclude_tools) or set()
+
+    filtered = list(tools)
+    if include_names is not None:
+        filtered = [tool for tool in filtered if getattr(tool, "name", "") in include_names]
+    if exclude_names:
+        filtered = [tool for tool in filtered if getattr(tool, "name", "") not in exclude_names]
+    return filtered
 
 
 async def _read_input(prompt: str) -> str:
@@ -102,19 +161,31 @@ def create_runtime_session(
     enable_event_logger: bool = True,
     bash_approval_fn: Optional[Callable[[dict], Any]] = None,
     manual_toolsmaker_subscriber_factory: Optional[ManualToolsmakerSubscriberFactory] = None,
+    overrides: Optional[RuntimeOverrides] = None,
 ) -> RuntimeSession:
+    if overrides is None:
+        overrides = RuntimeOverrides()
+
     agent = Agent({"stream_fn": stream})
     agent.set_model({"provider": "gemini", "id": "gemini-3-flash-preview", "api": None})
+    if isinstance(overrides.model_override, dict) and overrides.model_override:
+        agent.set_model(dict(overrides.model_override))
     agent.set_timeout(120)
 
-    embedder = Embedder(use_api="openai")
-    short_memory = ConversationMemory(embedder=embedder, max_entries=100)
-    long_memory = DiskMemory(filepath=os.path.join("agent", "mem", "chat"), embedder=embedder, max_entries=1000)
-    retriever = MemoryRetriever(short_term=short_memory, long_term=long_memory)
-
-    ingestion_worker = EmbeddingIngestionWorker(memory=short_memory, long_term=long_memory)
-    ingestion_worker.start()
-    memory_subscriber = MemorySubscriber(ingestion_worker=ingestion_worker)
+    memory_enabled = _resolve_bool_override(overrides.enable_memory, True)
+    memory_subscriber: Optional[MemorySubscriber] = None
+    if memory_enabled:
+        embedder = Embedder(use_api="openai")
+        short_memory = ConversationMemory(embedder=embedder, max_entries=100)
+        long_memory_base_path = str(overrides.long_memory_base_path or os.path.join("agent", "mem", "chat"))
+        long_memory = DiskMemory(filepath=long_memory_base_path, embedder=embedder, max_entries=1000)
+        retriever: Any = MemoryRetriever(short_term=short_memory, long_term=long_memory)
+        ingestion_worker: Any = EmbeddingIngestionWorker(memory=short_memory, long_term=long_memory)
+        ingestion_worker.start()
+        memory_subscriber = MemorySubscriber(ingestion_worker=ingestion_worker)
+    else:
+        retriever = _NoopRetriever()
+        ingestion_worker = _NoopIngestionWorker()
 
     memory_search_tool = MemorySearchTool(retriever=retriever)
     toolsmaker_caps = parse_toolsmaker_allowed_capabilities(os.getenv("POP_AGENT_TOOLSMAKER_ALLOWED_CAPS"))
@@ -136,6 +207,7 @@ def create_runtime_session(
     bash_timeout_s = parse_float_env("POP_AGENT_BASH_TIMEOUT_S", 15.0)
     bash_max_output_chars = parse_int_env("POP_AGENT_BASH_MAX_OUTPUT_CHARS", 20_000)
     bash_prompt_approval = parse_bool_env("POP_AGENT_BASH_PROMPT_APPROVAL", True)
+    bash_prompt_approval = _resolve_bool_override(overrides.bash_prompt_approval, bash_prompt_approval)
     effective_bash_approval_fn = None
     if bash_prompt_approval:
         effective_bash_approval_fn = bash_approval_fn if bash_approval_fn is not None else BashExecApprovalPrompter()
@@ -163,6 +235,14 @@ def create_runtime_session(
     toolsmaker_manual_approval = parse_bool_env("POP_AGENT_TOOLSMAKER_PROMPT_APPROVAL", True)
     toolsmaker_auto_activate = parse_bool_env("POP_AGENT_TOOLSMAKER_AUTO_ACTIVATE", True)
     toolsmaker_auto_continue = parse_bool_env("POP_AGENT_TOOLSMAKER_AUTO_CONTINUE", True)
+    toolsmaker_manual_approval = _resolve_bool_override(
+        overrides.toolsmaker_manual_approval,
+        toolsmaker_manual_approval,
+    )
+    toolsmaker_auto_continue = _resolve_bool_override(
+        overrides.toolsmaker_auto_continue,
+        toolsmaker_auto_continue,
+    )
     include_demo_tools = parse_bool_env("POP_AGENT_INCLUDE_DEMO_TOOLS", False)
 
     bash_exec_tool.description = (
@@ -189,25 +269,36 @@ def create_runtime_session(
             workspace_root=workspace_root,
         )
     )
-    agent.set_tools(
-        build_runtime_tools(
-            memory_search_tool=memory_search_tool,
-            toolsmaker_tool=toolsmaker_tool,
-            bash_exec_tool=bash_exec_tool,
-            gmail_fetch_tool=gmail_fetch_tool,
-            pdf_merge_tool=pdf_merge_tool,
-            include_demo_tools=include_demo_tools,
-        )
+    tools = build_runtime_tools(
+        memory_search_tool=memory_search_tool,
+        toolsmaker_tool=toolsmaker_tool,
+        bash_exec_tool=bash_exec_tool,
+        gmail_fetch_tool=gmail_fetch_tool,
+        pdf_merge_tool=pdf_merge_tool,
+        include_demo_tools=include_demo_tools,
     )
+    tools = _filter_runtime_tools(
+        tools,
+        include_tools=overrides.include_tools,
+        exclude_tools=overrides.exclude_tools,
+    )
+    agent.set_tools(tools)
 
-    if log_level is None:
-        log_level = os.getenv("POP_AGENT_LOG_LEVEL", "quiet")
+    effective_log_level = log_level
+    if effective_log_level is None:
+        effective_log_level = os.getenv("POP_AGENT_LOG_LEVEL", "quiet")
+    if overrides.log_level is not None:
+        effective_log_level = overrides.log_level
+
     if enable_event_logger:
-        unsubscribe_log = agent.subscribe(make_event_logger(log_level))
+        unsubscribe_log = agent.subscribe(make_event_logger(effective_log_level))
     else:
         unsubscribe_log = lambda: None
 
-    unsubscribe_memory = agent.subscribe(memory_subscriber.on_event)
+    if memory_subscriber is not None:
+        unsubscribe_memory = agent.subscribe(memory_subscriber.on_event)
+    else:
+        unsubscribe_memory = lambda: None
 
     if toolsmaker_manual_approval:
         if manual_toolsmaker_subscriber_factory is not None:
