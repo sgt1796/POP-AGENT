@@ -1,6 +1,24 @@
 # POP-agent
 Agent built w/ pop-python package
 
+## Use Examples
+
+### Docker (Python 3.13)
+```bash
+docker build -t pop-agent:py313 .
+docker run --rm -it --privileged --env-file .env pop-agent:py313
+```
+
+### Run TUI directly
+```bash
+python run_tui.py
+```
+
+### Run agent module
+```bash
+python -m agent_build.agent1.agent1
+```
+
 ## Recent Changes (2026-02-26)
 - Updated `agent_build/agent1` runtime and eval behavior:
   - `RuntimeOverrides.enable_memory` now correctly enables/disables memory wiring.
