@@ -276,6 +276,7 @@ Forwarded to `agent_build.agent1.runtime.RuntimeOverrides`:
 - `toolsmaker_manual_approval` (bool)
 - `toolsmaker_auto_continue` (bool)
 - `log_level` (str)
+- `enable_event_logger` (bool, default `true`)
 
 Example:
 

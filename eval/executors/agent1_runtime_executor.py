@@ -46,10 +46,11 @@ class Agent1RuntimeExecutor(AgentExecutor):
             toolsmaker_auto_continue=self._coerce_optional_bool(opts.get("toolsmaker_auto_continue"), default=False),
             log_level=self._coerce_optional_str(opts.get("log_level"), default="quiet"),
         )
+        enable_event_logger = self._coerce_optional_bool(opts.get("enable_event_logger"), default=True)
 
         session = agent_runtime.create_runtime_session(
             log_level=overrides.log_level,
-            enable_event_logger=False,
+            enable_event_logger=bool(enable_event_logger),
             overrides=overrides,
         )
 

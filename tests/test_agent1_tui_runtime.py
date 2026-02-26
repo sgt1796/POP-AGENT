@@ -129,6 +129,27 @@ def test_format_activity_event_simple_mode_uses_compact_bash_preview():
     assert stream_text is None
 
 
+def test_format_activity_event_includes_stream_toolcall_events():
+    event = {
+        "type": "message_update",
+        "assistantMessageEvent": {
+            "type": "toolcall_start",
+            "partial": {
+                "content": [
+                    {
+                        "type": "toolCall",
+                        "id": "call-9",
+                        "name": "memory_search",
+                        "arguments": {"query": "alpha"},
+                    }
+                ]
+            },
+        },
+    }
+
+    assert format_activity_event(event, level="simple") == "[tool:call] toolcall_start memory_search id=call-9"
+
+
 def test_async_toolsmaker_subscriber_approves_and_activates_once():
     agent = _FakeAgent()
 

@@ -99,6 +99,14 @@ class RuntimeOverrides:
 
 
 class _NoopRetriever:
+    def __init__(self, default_session_id: str = "default") -> None:
+        self.default_session_id = str(default_session_id or "default").strip() or "default"
+        self.short_term = None
+        self.long_term = None
+
+    def set_default_session(self, session_id: str) -> None:
+        self.default_session_id = str(session_id or "default").strip() or "default"
+
     def retrieve_sections(
         self,
         query: str,
@@ -109,9 +117,23 @@ class _NoopRetriever:
         del query, top_k, scope, session_id
         return [], []
 
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 3,
+        scope: str = "both",
+        session_id: Optional[str] = None,
+    ) -> list[str]:
+        del query, top_k, scope, session_id
+        return []
+
 
 class _NoopIngestionWorker:
     def start(self) -> None:
+        return None
+
+    def set_active_session(self, session_id: str) -> None:
+        del session_id
         return None
 
     async def flush(self) -> None:
@@ -446,23 +468,32 @@ def create_runtime_session(
     agent.set_timeout(120)
 
     initial_session_id = _generate_session_id()
-    embedder = Embedder(use_api="openai")
-    short_memory = ConversationMemory(embedder=embedder, max_entries_per_session=100, max_sessions=100)
-    long_memory = DiskMemory(filepath=os.path.join("agent", "mem", "chat"), embedder=embedder, max_entries=1000)
-    retriever = MemoryRetriever(
-        short_term=short_memory,
-        long_term=long_memory,
-        default_session_id=initial_session_id,
-    )
+    memory_enabled = _resolve_bool_override(overrides.enable_memory, True)
+    long_memory_base_path = str(overrides.long_memory_base_path or os.path.join("agent", "mem", "chat")).strip()
+    if not long_memory_base_path:
+        long_memory_base_path = os.path.join("agent", "mem", "chat")
 
-    ingestion_worker = EmbeddingIngestionWorker(memory=short_memory, long_term=long_memory)
-    if hasattr(ingestion_worker, "set_active_session"):
-        try:
-            ingestion_worker.set_active_session(initial_session_id)
-        except Exception:
-            pass
-    ingestion_worker.start()
-    memory_subscriber = MemorySubscriber(ingestion_worker=ingestion_worker)
+    if memory_enabled:
+        embedder = Embedder(use_api="openai")
+        short_memory = ConversationMemory(embedder=embedder, max_entries_per_session=100, max_sessions=100)
+        long_memory = DiskMemory(filepath=long_memory_base_path, embedder=embedder, max_entries=1000)
+        retriever: Any = MemoryRetriever(
+            short_term=short_memory,
+            long_term=long_memory,
+            default_session_id=initial_session_id,
+        )
+        ingestion_worker: Any = EmbeddingIngestionWorker(memory=short_memory, long_term=long_memory)
+        if hasattr(ingestion_worker, "set_active_session"):
+            try:
+                ingestion_worker.set_active_session(initial_session_id)
+            except Exception:
+                pass
+        ingestion_worker.start()
+        memory_subscriber = MemorySubscriber(ingestion_worker=ingestion_worker)
+    else:
+        retriever = _NoopRetriever(default_session_id=initial_session_id)
+        ingestion_worker = _NoopIngestionWorker()
+        memory_subscriber = None
 
     memory_search_tool = MemorySearchTool(retriever=retriever)
     toolsmaker_caps = parse_toolsmaker_allowed_capabilities(os.getenv("POP_AGENT_TOOLSMAKER_ALLOWED_CAPS"))

@@ -20,3 +20,44 @@ def test_simple_level_logs_tool_and_bash_preview(capsys):
     captured = capsys.readouterr().out.strip().splitlines()
     assert captured[0] == "[tool:start] bash_exec cmd=python script.py --flag --value 1"
     assert captured[1] == "[tool:end] websnapshot error=False"
+
+
+def test_simple_level_logs_stream_toolcall_events(capsys):
+    logger = make_event_logger("simple")
+    start_event = {
+        "type": "message_update",
+        "assistantMessageEvent": {
+            "type": "toolcall_start",
+            "partial": {
+                "content": [
+                    {
+                        "type": "toolCall",
+                        "id": "call-1",
+                        "name": "bash_exec",
+                        "arguments": {"cmd": "ls"},
+                    }
+                ]
+            },
+        },
+    }
+    end_event = {
+        "type": "message_update",
+        "assistantMessageEvent": {
+            "type": "toolcall_end",
+            "partial": {
+                "content": [
+                    {
+                        "type": "toolCall",
+                        "id": "call-1",
+                        "name": "bash_exec",
+                        "arguments": {"cmd": "ls"},
+                    }
+                ]
+            },
+        },
+    }
+    logger(start_event)
+    logger(end_event)
+    captured = capsys.readouterr().out.strip().splitlines()
+    assert captured[0] == "[tool:call] toolcall_start bash_exec id=call-1"
+    assert captured[1] == "[tool:call] toolcall_end bash_exec id=call-1"

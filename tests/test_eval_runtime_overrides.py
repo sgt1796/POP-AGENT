@@ -114,3 +114,63 @@ def test_runtime_overrides_backward_compat(monkeypatch):
     assert session_overridden.bash_prompt_approval is False
     assert session_overridden.toolsmaker_manual_approval is False
     assert session_overridden.toolsmaker_auto_continue is False
+
+
+def test_runtime_overrides_memory_path_and_disable_toggle(monkeypatch, tmp_path):
+    disk_paths = []
+    retriever_builds = []
+    memory_subscriber_builds = []
+
+    class _RecordingDiskMemory:
+        def __init__(self, filepath, embedder, max_entries=1000):
+            del embedder, max_entries
+            disk_paths.append(filepath)
+
+    class _RecordingRetriever(_FakeRetriever):
+        def __init__(self, *args, **kwargs):
+            retriever_builds.append((args, kwargs))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "Agent", _FakeAgent)
+    monkeypatch.setattr(runtime, "Embedder", lambda use_api: object())
+    monkeypatch.setattr(runtime, "ConversationMemory", lambda *a, **k: object())
+    monkeypatch.setattr(runtime, "DiskMemory", _RecordingDiskMemory)
+    monkeypatch.setattr(runtime, "MemoryRetriever", _RecordingRetriever)
+    monkeypatch.setattr(runtime, "EmbeddingIngestionWorker", _FakeWorker)
+    monkeypatch.setattr(
+        runtime,
+        "MemorySubscriber",
+        lambda ingestion_worker: memory_subscriber_builds.append(ingestion_worker) or SimpleNamespace(on_event=lambda _e: None),
+    )
+    monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: _dummy_tool("memory_search"))
+    monkeypatch.setattr(runtime, "ToolsmakerTool", lambda agent, allowed_capabilities: _dummy_tool("toolsmaker"))
+    monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: _dummy_tool("gmail_fetch"))
+    monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: _dummy_tool("pdf_merge"))
+    monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: _dummy_tool("jina_web_snapshot"))
+    monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: _dummy_tool("perplexity_search"))
+    monkeypatch.setattr(runtime, "PerplexityWebSnapshotTool", lambda: _dummy_tool("perplexity_web_snapshot"))
+    monkeypatch.setattr(runtime, "SlowTool", lambda: _dummy_tool("slow"))
+    monkeypatch.setattr(runtime, "FastTool", lambda: _dummy_tool("fast"))
+    monkeypatch.setattr(runtime, "BashExecConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr(runtime, "BashExecTool", _FakeBashExecTool)
+    monkeypatch.setattr(runtime, "build_system_prompt", lambda **kwargs: "prompt")
+
+    custom_path = str(tmp_path / "memory" / "chat")
+    runtime.create_runtime_session(
+        enable_event_logger=False,
+        overrides=runtime.RuntimeOverrides(enable_memory=True, long_memory_base_path=custom_path),
+    )
+
+    assert disk_paths and disk_paths[-1] == custom_path
+    assert len(retriever_builds) == 1
+    assert len(memory_subscriber_builds) == 1
+
+    retriever_builds.clear()
+    memory_subscriber_builds.clear()
+    runtime.create_runtime_session(
+        enable_event_logger=False,
+        overrides=runtime.RuntimeOverrides(enable_memory=False),
+    )
+
+    assert retriever_builds == []
+    assert memory_subscriber_builds == []

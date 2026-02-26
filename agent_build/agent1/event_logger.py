@@ -28,6 +28,24 @@ def make_event_logger(level: str = "quiet"):
     """
     level_value = resolve_log_level(level)
 
+    def _read_toolcall_preview(assistant_event: Dict[str, Any]) -> tuple[str, str, Any]:
+        partial = assistant_event.get("partial")
+        if not isinstance(partial, dict):
+            return "", "unknown", None
+        content = partial.get("content")
+        if not isinstance(content, list):
+            return "", "unknown", None
+        for item in reversed(content):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type", "")).strip() != "toolCall":
+                continue
+            call_id = str(item.get("id", "")).strip()
+            tool_name = str(item.get("name", "")).strip() or "unknown"
+            args = item.get("arguments")
+            return call_id, tool_name, args
+        return "", "unknown", None
+
     def log(event: Dict[str, Any]) -> None:
         etype = event.get("type")
         if level_value <= LOG_LEVELS["quiet"]:
@@ -65,11 +83,28 @@ def make_event_logger(level: str = "quiet"):
             return
         if etype == "message_update" and level_value >= LOG_LEVELS["full"]:
             assistant_event = event.get("assistantMessageEvent") or {}
+            assistant_event_type = str(assistant_event.get("type", "")).strip()
+            if assistant_event_type in {"toolcall_start", "toolcall_delta", "toolcall_end"}:
+                call_id, tool_name, args = _read_toolcall_preview(assistant_event)
+                suffix = f" id={call_id}" if call_id else ""
+                if args not in (None, ""):
+                    print(f"[tool:call] {assistant_event_type} {tool_name}{suffix} args={args}")
+                else:
+                    print(f"[tool:call] {assistant_event_type} {tool_name}{suffix}")
+                return
             if assistant_event.get("type") == "text_delta":
                 delta = assistant_event.get("delta")
                 if delta:
                     print(f"[stream] {delta}")
             return
+        if etype == "message_update" and level_value >= LOG_LEVELS["simple"]:
+            assistant_event = event.get("assistantMessageEvent") or {}
+            assistant_event_type = str(assistant_event.get("type", "")).strip()
+            if assistant_event_type in {"toolcall_start", "toolcall_end"}:
+                call_id, tool_name, _ = _read_toolcall_preview(assistant_event)
+                suffix = f" id={call_id}" if call_id else ""
+                print(f"[tool:call] {assistant_event_type} {tool_name}{suffix}")
+                return
         if level_value >= LOG_LEVELS["full"]:
             if etype in {"tool_execution_result", "tool_execution_error", "memory_context", "memory_lookup"}:
                 print(f"[context] {event}")

@@ -61,6 +61,33 @@ class AsyncDecisionQueue(Generic[T]):
 def format_activity_event(event: Dict[str, Any], level: str = "full") -> Optional[str]:
     etype = str(event.get("type", "")).strip()
 
+    if etype == "message_update":
+        assistant_event = event.get("assistantMessageEvent") or {}
+        assistant_event_type = str(assistant_event.get("type", "")).strip()
+        if assistant_event_type in {"toolcall_start", "toolcall_delta", "toolcall_end"}:
+            if level == "simple" and assistant_event_type == "toolcall_delta":
+                return None
+            call_id = ""
+            tool_name = "unknown"
+            args = None
+            partial = assistant_event.get("partial")
+            if isinstance(partial, dict):
+                content = partial.get("content")
+                if isinstance(content, list):
+                    for item in reversed(content):
+                        if not isinstance(item, dict):
+                            continue
+                        if str(item.get("type", "")).strip() != "toolCall":
+                            continue
+                        call_id = str(item.get("id", "")).strip()
+                        tool_name = str(item.get("name", "")).strip() or "unknown"
+                        args = item.get("arguments")
+                        break
+            suffix = f" id={call_id}" if call_id else ""
+            if level == "simple" or args in (None, ""):
+                return f"[tool:call] {assistant_event_type} {tool_name}{suffix}"
+            return f"[tool:call] {assistant_event_type} {tool_name}{suffix} args={args}"
+
     if etype == "tool_execution_start":
         tool_name = str(event.get("toolName", "")).strip() or "unknown"
         if level == "simple":
