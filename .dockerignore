@@ -1,0 +1,15 @@
+.git
+.gitignore
+.pytest_cache
+.venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+.env.*
+tests/
+eval/
+credentials/
+credentials/**
