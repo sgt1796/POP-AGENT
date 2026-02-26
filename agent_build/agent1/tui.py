@@ -9,7 +9,7 @@ from .constants import BASH_GIT_READ_SUBCOMMANDS, BASH_READ_COMMANDS, BASH_WRITE
 from .env_utils import sorted_csv
 from .message_utils import extract_bash_exec_command, extract_texts
 from .prompting import VALID_EXECUTION_PROFILES, build_system_prompt
-from .runtime import create_runtime_session, run_user_turn, shutdown_runtime_session
+from .runtime import create_runtime_session, run_user_turn, shutdown_runtime_session, switch_session
 from .tui_runtime import (
     AsyncDecisionQueue,
     AsyncToolsmakerApprovalSubscriber,
@@ -284,10 +284,73 @@ def run_tui() -> int:
             )
             self.dismiss(payload)
 
+    class SessionSwitchScreen(ModalScreen[Optional[str]]):
+        BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+        def __init__(self, current_session: str) -> None:
+            super().__init__()
+            self._current_session = current_session
+
+        def compose(self) -> ComposeResult:
+            with VerticalScroll(id="session_modal"):
+                yield Static("Switch Session", classes="modal_title")
+                yield Static(f"Current: {self._current_session}", classes="settings_label")
+                yield Static("New session name", classes="settings_label")
+                yield Input(value="", id="session_name_input", placeholder="session name")
+                with Horizontal(classes="modal_actions"):
+                    yield Button("Switch", id="switch", variant="success")
+                    yield Button("Cancel", id="cancel", variant="primary")
+
+        def action_cancel(self) -> None:
+            self.dismiss(None)
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            if event.button.id != "switch":
+                self.dismiss(None)
+                return
+            name = self.query_one("#session_name_input", Input).value.strip()
+            if not name:
+                self.dismiss(None)
+                return
+            self.dismiss(name)
+
     class AgentTuiApp(App[None]):
         CSS = """
         Screen {
             layout: vertical;
+        }
+
+        #session_line {
+            height: 1;
+            padding: 0 1;
+            background: $panel;
+            color: $text;
+            layout: horizontal;
+        }
+
+        #session_indicator {
+            width: 2;
+            content-align: center middle;
+            text-style: bold;
+        }
+
+        #session_indicator.indicator-idle {
+            color: $success;
+            background: rgba(46, 204, 113, 0.25);
+        }
+
+        #session_indicator.indicator-running {
+            color: $warning;
+            background: rgba(241, 196, 15, 0.25);
+        }
+
+        #session_indicator.indicator-error {
+            color: $error;
+            background: rgba(231, 76, 60, 0.25);
+        }
+
+        #session_name {
+            height: 1;
         }
 
         #status_line {
@@ -354,6 +417,17 @@ def run_tui() -> int:
             overflow-y: auto;
         }
 
+        #session_modal {
+            width: 60;
+            height: auto;
+            max-height: 70%;
+            border: round $accent;
+            background: $surface;
+            padding: 1 2;
+            layout: vertical;
+            overflow-y: auto;
+        }
+
         .modal_title {
             text-style: bold;
             padding-bottom: 1;
@@ -373,6 +447,7 @@ def run_tui() -> int:
         BINDINGS = [
             Binding("q", "quit_app", "Quit"),
             Binding("ctrl+s", "open_settings", "Settings"),
+            Binding("ctrl+n", "open_session_switch", "Session"),
             Binding("ctrl+g", "abort_run", "Abort"),
             Binding("ctrl+c,ctrl+shift+c", "screen.copy_text", "Copy"),
         ]
@@ -391,9 +466,17 @@ def run_tui() -> int:
             self._turn_usage_before: Dict[str, Any] = {}
             self._input_history = _InputHistory()
             self._applying_history_value = False
+            self._session_title = "New Chat Session"
+            self._observed_title_task: Optional[asyncio.Task[None]] = None
+            self._current_run_had_error = False
+            self._last_run_had_error = False
+            self._indicator_state: Optional[str] = None
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=False)
+            with Horizontal(id="session_line"):
+                yield Static("●", id="session_indicator")
+                yield Static("New Chat Session", id="session_name")
             yield Static("Initializing...", id="status_line")
             with Horizontal(id="body"):
                 with Vertical(id="left_panel"):
@@ -409,6 +492,8 @@ def run_tui() -> int:
 
         async def on_mount(self) -> None:
             self._status = self.query_one("#status_line", Static)
+            self._session_indicator = self.query_one("#session_indicator", Static)
+            self._session_name = self.query_one("#session_name", Static)
             self._transcript = self.query_one("#transcript", RichLog)
             self._activity = self.query_one("#activity", RichLog)
             self._stream_preview = self.query_one("#stream_preview", Static)
@@ -418,6 +503,7 @@ def run_tui() -> int:
             try:
                 self._session = create_runtime_session(
                     enable_event_logger=False,
+                    debug_log=self._debug_log,
                     bash_approval_fn=self._request_bash_approval,
                     manual_toolsmaker_subscriber_factory=self._make_toolsmaker_subscriber,
                 )
@@ -431,6 +517,9 @@ def run_tui() -> int:
             self._approval_task = asyncio.create_task(self._approval_worker())
             self._append_activity(f"[settings] Ctrl+S to edit runtime settings (activity={self._activity_log_level})")
             self._refresh_status("Ready")
+            self._refresh_session_title()
+            self._update_indicator()
+            self._watch_auto_title_task()
             self._chat_input.focus()
 
         @staticmethod
@@ -481,6 +570,63 @@ def run_tui() -> int:
         def _set_status(self, text: str) -> None:
             self._status.update(text)
 
+        def _compute_session_title(self) -> str:
+            if self._session is None:
+                return "New Chat Session"
+            if (
+                self._session.auto_session_id is not None
+                and self._session.active_session_id == self._session.auto_session_id
+            ):
+                return "New Chat Session"
+            return self._session.active_session_id or "New Chat Session"
+
+        def _refresh_session_title(self) -> None:
+            title = self._compute_session_title()
+            if title == self._session_title:
+                return
+            self._session_title = title
+            if hasattr(self, "_session_name"):
+                self._session_name.update(title)
+
+        def _watch_auto_title_task(self) -> None:
+            if self._session is None:
+                return
+            task = self._session.auto_title_task
+            if task is None or task.done():
+                return
+            if task is self._observed_title_task:
+                return
+            self._observed_title_task = task
+
+            def _on_done(_: asyncio.Task[None]) -> None:
+                call_from_thread = getattr(self, "call_from_thread", None)
+                if callable(call_from_thread):
+                    call_from_thread(self._refresh_session_title)
+                else:
+                    self._refresh_session_title()
+
+            task.add_done_callback(_on_done)
+
+        def _update_indicator(self) -> None:
+            if not hasattr(self, "_session_indicator"):
+                return
+            running = self._is_turn_active()
+            if running:
+                state = "running"
+            elif self._last_run_had_error:
+                state = "error"
+            else:
+                state = "idle"
+            if state == self._indicator_state:
+                return
+            self._indicator_state = state
+            self._session_indicator.remove_class(
+                "indicator-idle",
+                "indicator-running",
+                "indicator-error",
+            )
+            self._session_indicator.add_class(f"indicator-{state}")
+
         def _current_usage_summary(self) -> Dict[str, Any]:
             if self._session is None:
                 return {}
@@ -504,6 +650,11 @@ def run_tui() -> int:
 
         def _append_activity(self, text: Any) -> None:
             self._activity.write(text)
+
+        def _debug_log(self, text: str) -> None:
+            if self._activity_log_level != "debug":
+                return
+            self._append_activity(text)
 
         def _update_stream_preview(self, text: str) -> None:
             if text and _looks_like_markdown_text(text):
@@ -678,6 +829,7 @@ def run_tui() -> int:
                 self._session.top_k = validated.memory_top_k
                 self._session.execution_profile = validated.execution_profile
                 self._activity_log_level = validated.activity_level
+                self._session.debug_log = self._debug_log
                 self._rebuild_system_prompt()
             except Exception as exc:
                 self._append_activity(f"[settings:error] apply failed: {exc}")
@@ -845,6 +997,7 @@ def run_tui() -> int:
 
             error_message = getattr(message, "error_message", None)
             if error_message:
+                self._current_run_had_error = True
                 self._append_transcript("Assistant", f"(error) {error_message}")
             else:
                 final_text = self._extract_message_text(message)
@@ -918,7 +1071,9 @@ def run_tui() -> int:
             self._turn_usage_before = self._current_usage_summary()
             self._chat_input.disabled = True
             self._set_status("Running...")
+            self._current_run_had_error = False
             self._turn_task = asyncio.create_task(self._run_turn(user_text))
+            self._update_indicator()
 
         async def _run_turn(self, user_text: str) -> None:
             if self._session is None:
@@ -928,6 +1083,7 @@ def run_tui() -> int:
             except asyncio.CancelledError:
                 self._append_activity("[abort] turn cancelled")
             except Exception as exc:
+                self._current_run_had_error = True
                 self._append_activity(f"[turn:error] {exc}")
                 self._append_transcript("Assistant", f"(error) {exc}")
             finally:
@@ -946,10 +1102,26 @@ def run_tui() -> int:
                 self._chat_input.disabled = False
                 self._chat_input.focus()
                 self._refresh_status("Ready")
+                self._last_run_had_error = self._current_run_had_error
+                self._turn_task = None
+                self._update_indicator()
+                self._refresh_session_title()
+                self._watch_auto_title_task()
 
         def _on_settings_dismissed(self, result: Optional[_SettingsPayload]) -> None:
             if isinstance(result, _SettingsPayload):
                 self._apply_settings(result)
+
+        def _on_session_switch_dismissed(self, result: Optional[str]) -> None:
+            if not result:
+                return
+            if self._session is None:
+                self._append_activity("[session:error] runtime session unavailable")
+                return
+            switch_session(self._session, result)
+            self._refresh_session_title()
+            self._refresh_status("Ready")
+            self._update_indicator()
 
         def action_open_settings(self) -> None:
             if self._session is None:
@@ -964,6 +1136,19 @@ def run_tui() -> int:
 
             payload = self._read_settings()
             self.push_screen(SettingsScreen(payload), callback=self._on_settings_dismissed)
+
+        def action_open_session_switch(self) -> None:
+            if self._session is None:
+                self._append_activity("[session] runtime unavailable")
+                return
+            if self._turn_task is not None and not self._turn_task.done():
+                self._append_activity("[session] wait for current run to finish")
+                return
+            if self._session.agent.state.is_streaming:
+                self._append_activity("[session] cannot switch while streaming")
+                return
+            current = self._session.active_session_id or "default"
+            self.push_screen(SessionSwitchScreen(current), callback=self._on_session_switch_dismissed)
 
         async def _request_bash_approval(self, request: dict) -> bool:
             loop = asyncio.get_running_loop()

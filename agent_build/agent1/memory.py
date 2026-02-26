@@ -313,30 +313,47 @@ class DiskMemory:
 class MemoryRetriever:
     """Shared retrieval service for prompt injection and memory tool calls."""
 
-    def __init__(self, short_term: SessionConversationMemory, long_term: Optional[DiskMemory] = None) -> None:
+    def __init__(
+        self,
+        short_term: SessionConversationMemory,
+        long_term: Optional[DiskMemory] = None,
+        *,
+        default_session_id: str = "default",
+    ) -> None:
         self.short_term = short_term
         self.long_term = long_term
+        self.default_session_id = str(default_session_id or "default").strip() or "default"
+
+    def set_default_session(self, session_id: str) -> None:
+        self.default_session_id = str(session_id or "default").strip() or "default"
+
+    def _resolve_session_id(self, session_id: Optional[str]) -> str:
+        sid = (session_id or "").strip()
+        if not sid:
+            sid = str(self.default_session_id or "").strip()
+        return sid or "default"
 
     def retrieve_sections(
         self,
         query: str,
         top_k: int = 3,
         scope: str = "both",
-        session_id: str = "default",
+        session_id: Optional[str] = None,
     ) -> Tuple[List[str], List[str]]:
         scope = (scope or "both").strip().lower()
         if scope not in {"short", "long", "both"}:
             scope = "both"
         k = max(1, int(top_k or 1))
+        sid = self._resolve_session_id(session_id)
         short_hits: List[str] = []
         long_hits: List[str] = []
         if scope in {"short", "both"}:
-            short_hits = self.short_term.retrieve(query, top_k=k, session_id=session_id)
+            short_hits = self.short_term.retrieve(query, top_k=k, session_id=sid)
         if scope in {"long", "both"} and self.long_term is not None:
-            long_hits = self.long_term.retrieve(query, top_k=k, session_id=session_id)
+            long_hits = self.long_term.retrieve(query, top_k=k, session_id=sid)
         return short_hits, long_hits
 
-    def retrieve(self, query: str, top_k: int = 3, scope: str = "both", session_id: str = "default") -> List[str]:
+    def retrieve(self, query: str, top_k: int = 3, scope: str = "both", session_id: Optional[str] = None) -> List[str]:
         short_hits, long_hits = self.retrieve_sections(query, top_k=top_k, scope=scope, session_id=session_id)
         seen = set()
         merged: List[str] = []
@@ -384,11 +401,15 @@ class EmbeddingIngestionWorker:
     def set_active_session(self, session_id: str) -> None:
         self.active_session_id = session_id.strip() or "default"
 
-    def enqueue(self, role: str, text: str) -> None:
+    def enqueue(self, role: str, text: str, *, session_id: Optional[str] = None) -> None:
         value = text.strip()
         if not value:
             return
-        self._queue.put_nowait((self.active_session_id, role, f"{role}: {value}"))
+        sid = self.active_session_id
+        if session_id is not None:
+            sid = session_id
+        sid = str(sid or "").strip() or "default"
+        self._queue.put_nowait((sid, role, f"{role}: {value}"))
 
     async def _run(self) -> None:
         while True:

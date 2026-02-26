@@ -51,7 +51,11 @@ class MemorySearchTool(AgentTool):
         if scope not in {"short", "long", "both"}:
             scope = "both"
         try:
-            session_id = str(params.get("session_id", "default")).strip() or "default"
+            raw_session = params.get("session_id")
+            session_id = str(raw_session).strip() if raw_session is not None else ""
+            if not session_id:
+                default_session = getattr(self.retriever, "default_session_id", "default")
+                session_id = str(default_session or "default").strip() or "default"
             hits = self.retriever.retrieve(query=query, top_k=top_k, scope=scope, session_id=session_id)
         except Exception as exc:
             return AgentToolResult(

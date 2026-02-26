@@ -113,3 +113,14 @@ def test_disk_memory_rename_updates_session_id(tmp_path):
     assert disk_memory.rename_session("old-session", "new-session") is True
     assert disk_memory.has_session("old-session") is False
     assert disk_memory.has_session("new-session") is True
+
+
+def test_retriever_uses_default_session_when_missing():
+    embedder = _FakeEmbedder()
+    short_memory = SessionConversationMemory(embedder=embedder)
+    short_memory.add("alpha", "user: alpha memory")
+    retriever = MemoryRetriever(short_term=short_memory, long_term=None, default_session_id="alpha")
+
+    hits = retriever.retrieve("alpha", top_k=1, scope="short", session_id=None)
+
+    assert hits == ["user: alpha memory"]

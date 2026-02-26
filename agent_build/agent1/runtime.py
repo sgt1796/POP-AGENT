@@ -30,7 +30,7 @@ from .approvals import (
     ToolsmakerApprovalSubscriber,
     ToolsmakerAutoContinueSubscriber,
 )
-from .constants import BASH_GIT_READ_SUBCOMMANDS, BASH_READ_COMMANDS, BASH_WRITE_COMMANDS
+from .constants import BASH_GIT_READ_SUBCOMMANDS, BASH_READ_COMMANDS, BASH_WRITE_COMMANDS, LOG_LEVELS
 from .env_utils import (
     parse_bool_env,
     parse_float_env,
@@ -39,7 +39,7 @@ from .env_utils import (
     parse_toolsmaker_allowed_capabilities,
     sorted_csv,
 )
-from .event_logger import make_event_logger
+from .event_logger import make_event_logger, resolve_log_level
 from .memory import (
     ContextCompressor,
     SessionConversationMemory,
@@ -79,6 +79,7 @@ class RuntimeSession:
     unsubscribe_log: Callable[[], None]
     unsubscribe_memory: Callable[[], None]
     unsubscribe_approval: Callable[[], None]
+    debug_log: Optional[Callable[[str], None]] = None
     auto_session_id: Optional[str] = None
     auto_title_enabled: bool = False
     auto_title_task: Optional[asyncio.Task[None]] = None
@@ -98,8 +99,14 @@ class RuntimeOverrides:
 
 
 class _NoopRetriever:
-    def retrieve_sections(self, query: str, top_k: int = 3, scope: str = "both") -> tuple[list[str], list[str]]:
-        del query, top_k, scope
+    def retrieve_sections(
+        self,
+        query: str,
+        top_k: int = 3,
+        scope: str = "both",
+        session_id: Optional[str] = None,
+    ) -> tuple[list[str], list[str]]:
+        del query, top_k, scope, session_id
         return [], []
 
 
@@ -291,11 +298,17 @@ async def _auto_title_session(
     except Exception as exc:
         if on_warning is not None:
             on_warning(f"[session] auto-title failed: {exc}")
+        if session.debug_log is not None:
+            session.debug_log(f"[session] auto-title failed: {exc}")
+        session.auto_session_id = None
         return
 
     raw_title = extract_latest_assistant_text(title_agent)
     normalized = _normalize_session_title(raw_title)
     if not normalized:
+        session.auto_session_id = None
+        if session.debug_log is not None:
+            session.debug_log("[session] auto-title failed: invalid title")
         return
     unique_title = _ensure_unique_session_title(
         normalized,
@@ -303,30 +316,66 @@ async def _auto_title_session(
         long_memory=session.retriever.long_term,
     )
 
-    session.active_session_id = unique_title
-    session.ingestion_worker.set_active_session(unique_title)
-    try:
-        session.agent.session_id = unique_title
-    except Exception:
-        pass
     try:
         await session.ingestion_worker.flush()
     except Exception:
         pass
-    if hasattr(session.retriever.short_term, "rename_session"):
-        try:
-            session.retriever.short_term.rename_session(old_session_id, unique_title)
-        except Exception:
-            pass
-    if session.retriever.long_term is not None and hasattr(session.retriever.long_term, "rename_session"):
-        try:
-            session.retriever.long_term.rename_session(old_session_id, unique_title)
-        except Exception:
-            pass
 
+    short_memory = session.retriever.short_term
+    long_memory = session.retriever.long_term
+    short_needs_rename = False
+    long_needs_rename = False
+    if short_memory is not None and hasattr(short_memory, "has_session"):
+        try:
+            short_needs_rename = short_memory.has_session(old_session_id)
+        except Exception:
+            short_needs_rename = False
+    if long_memory is not None and hasattr(long_memory, "has_session"):
+        try:
+            long_needs_rename = long_memory.has_session(old_session_id)
+        except Exception:
+            long_needs_rename = False
+
+    short_renamed = False
+    long_renamed = False
+    rename_failed = False
+
+    if short_needs_rename and hasattr(short_memory, "rename_session"):
+        try:
+            short_renamed = bool(short_memory.rename_session(old_session_id, unique_title))
+        except Exception:
+            short_renamed = False
+        if not short_renamed:
+            rename_failed = True
+
+    if long_needs_rename and long_memory is not None and hasattr(long_memory, "rename_session"):
+        try:
+            long_renamed = bool(long_memory.rename_session(old_session_id, unique_title))
+        except Exception:
+            long_renamed = False
+        if not long_renamed:
+            rename_failed = True
+
+    if rename_failed:
+        if short_renamed and hasattr(short_memory, "rename_session"):
+            try:
+                short_memory.rename_session(unique_title, old_session_id)
+            except Exception:
+                pass
+        if long_renamed and long_memory is not None and hasattr(long_memory, "rename_session"):
+            try:
+                long_memory.rename_session(unique_title, old_session_id)
+            except Exception:
+                pass
+        session.auto_session_id = None
+        if session.debug_log is not None:
+            session.debug_log("[session] auto-title failed: rename failed")
+        return
+
+    _set_active_session(session, unique_title)
     session.auto_session_id = None
-    if on_warning is not None:
-        on_warning(f"[session] auto-titled: {old_session_id} -> {unique_title}")
+    if session.debug_log is not None:
+        session.debug_log(f"[session] auto-titled: {old_session_id} -> {unique_title}")
 
 
 def _track_auto_title_task(session: RuntimeSession, task: asyncio.Task[None]) -> None:
@@ -345,10 +394,44 @@ def _track_auto_title_task(session: RuntimeSession, task: asyncio.Task[None]) ->
     task.add_done_callback(_clear)
 
 
+def _set_active_session(session: RuntimeSession, new_id: str) -> None:
+    sid = str(new_id or "").strip() or "default"
+    session.active_session_id = sid
+    try:
+        session.ingestion_worker.set_active_session(sid)
+    except Exception:
+        pass
+    if hasattr(session.retriever, "set_default_session"):
+        try:
+            session.retriever.set_default_session(sid)
+        except Exception:
+            pass
+    try:
+        session.agent.session_id = sid
+    except Exception:
+        pass
+
+
+def switch_session(session: RuntimeSession, new_id: str) -> None:
+    next_session = str(new_id or "").strip()
+    if not next_session:
+        return
+    task = session.auto_title_task
+    session.auto_title_task = None
+    session.auto_title_enabled = False
+    session.auto_session_id = None
+    if task is not None and not task.done():
+        task.cancel()
+    _set_active_session(session, next_session)
+    if session.debug_log is not None:
+        session.debug_log(f"[session] switched to '{next_session}'")
+
+
 def create_runtime_session(
     *,
     log_level: Optional[str] = None,
     enable_event_logger: bool = True,
+    debug_log: Optional[Callable[[str], None]] = None,
     bash_approval_fn: Optional[Callable[[dict], Any]] = None,
     manual_toolsmaker_subscriber_factory: Optional[ManualToolsmakerSubscriberFactory] = None,
     overrides: Optional[RuntimeOverrides] = None,
@@ -362,13 +445,17 @@ def create_runtime_session(
         agent.set_model(dict(overrides.model_override))
     agent.set_timeout(120)
 
+    initial_session_id = _generate_session_id()
     embedder = Embedder(use_api="openai")
     short_memory = ConversationMemory(embedder=embedder, max_entries_per_session=100, max_sessions=100)
     long_memory = DiskMemory(filepath=os.path.join("agent", "mem", "chat"), embedder=embedder, max_entries=1000)
-    retriever = MemoryRetriever(short_term=short_memory, long_term=long_memory)
+    retriever = MemoryRetriever(
+        short_term=short_memory,
+        long_term=long_memory,
+        default_session_id=initial_session_id,
+    )
 
     ingestion_worker = EmbeddingIngestionWorker(memory=short_memory, long_term=long_memory)
-    initial_session_id = _generate_session_id()
     if hasattr(ingestion_worker, "set_active_session"):
         try:
             ingestion_worker.set_active_session(initial_session_id)
@@ -523,7 +610,7 @@ def create_runtime_session(
         target_keep_chars=compressor_target_chars,
     )
 
-    return RuntimeSession(
+    session = RuntimeSession(
         agent=agent,
         retriever=retriever,
         ingestion_worker=ingestion_worker,
@@ -539,10 +626,14 @@ def create_runtime_session(
         unsubscribe_log=unsubscribe_log,
         unsubscribe_memory=unsubscribe_memory,
         unsubscribe_approval=unsubscribe_approval,
+        debug_log=debug_log,
         auto_session_id=initial_session_id,
         auto_title_enabled=True,
         auto_title_task=None,
     )
+    if debug_log is not None:
+        debug_log(f"[session] created id={initial_session_id}")
+    return session
 
 
 async def run_user_turn(
@@ -561,6 +652,12 @@ async def run_user_turn(
             session_id=session.active_session_id,
         )
         memory_text = format_memory_sections(short_hits, long_hits)
+        if session.debug_log is not None:
+            session.debug_log(
+                "[memory] retrieved "
+                f"session={session.active_session_id} short={len(short_hits)} "
+                f"long={len(long_hits)} top_k={session.top_k}"
+            )
     except Exception as exc:
         memory_text = "(no relevant memories)"
         if on_warning is not None:
@@ -637,7 +734,11 @@ async def shutdown_runtime_session(session: RuntimeSession) -> None:
 
 
 async def main() -> None:
-    session = create_runtime_session()
+    log_level_env = os.getenv("POP_AGENT_LOG_LEVEL", "quiet")
+    debug_log = None
+    if resolve_log_level(log_level_env) >= LOG_LEVELS["debug"]:
+        debug_log = print
+    session = create_runtime_session(debug_log=debug_log)
 
     print("POP Chatroom Agent (tools + embedding memory)")
     if session.toolsmaker_manual_approval:
@@ -680,18 +781,7 @@ async def main() -> None:
                 if not next_session:
                     print("[session] usage: /session <name>\n")
                     continue
-                task = session.auto_title_task
-                session.auto_title_task = None
-                session.auto_title_enabled = False
-                session.auto_session_id = None
-                if task is not None and not task.done():
-                    task.cancel()
-                session.active_session_id = next_session
-                session.ingestion_worker.set_active_session(next_session)
-                try:
-                    session.agent.session_id = next_session
-                except Exception:
-                    pass
+                switch_session(session, next_session)
                 print(f"[session] switched to '{next_session}'\n")
                 continue
 
