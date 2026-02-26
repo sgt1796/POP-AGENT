@@ -469,9 +469,9 @@ def create_runtime_session(
 
     initial_session_id = _generate_session_id()
     memory_enabled = _resolve_bool_override(overrides.enable_memory, True)
-    long_memory_base_path = str(overrides.long_memory_base_path or os.path.join("agent", "mem", "chat")).strip()
+    long_memory_base_path = str(overrides.long_memory_base_path or os.path.join("agent", "mem", "history.jsonl")).strip()
     if not long_memory_base_path:
-        long_memory_base_path = os.path.join("agent", "mem", "chat")
+        long_memory_base_path = os.path.join("agent", "mem", "history.jsonl")
 
     if memory_enabled:
         embedder = Embedder(use_api="openai")

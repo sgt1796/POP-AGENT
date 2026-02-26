@@ -19,9 +19,9 @@ def resolve_log_level(value: str) -> int:
 
 
 def make_event_logger(level: str = "quiet"):
-    """Create an event logger function for agent events.
+    """Create a user-visible event logger function for agent events.
     Levels:
-    - quiet: no logging
+    - quiet: no user-visible logging
     - simple: log tool calls and bash command executions
     - full: log simple output plus event context
     - debug: log all events

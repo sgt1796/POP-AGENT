@@ -11,7 +11,7 @@ from agent.agent_types import AgentMessage, TextContent
 from POP.embedder import Embedder
 
 from .constants import USER_PROMPT_MARKER
-from .message_utils import extract_original_user_message, extract_texts
+from .message_utils import extract_bash_exec_command, extract_original_user_message, extract_texts
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -117,24 +117,43 @@ class SessionConversationMemory:
 class DiskMemory:
     """
     Persistent text+vector memory split across two files:
-      - <base>.text.jsonl
+      - <base>.jsonl
       - <base>.embeddings.npy
     """
 
     def __init__(self, filepath: str, embedder: Embedder, max_entries: int = 1000) -> None:
-        self.base = os.path.splitext(filepath)[0] if filepath.endswith(".jsonl") else filepath
-        self.text_path = f"{self.base}.text.jsonl"
+        raw_path = str(filepath or "").strip()
+        if raw_path.endswith(".jsonl"):
+            self.text_path = raw_path
+            self.base = os.path.splitext(raw_path)[0]
+        else:
+            self.base = os.path.splitext(raw_path)[0] if raw_path else raw_path
+            self.text_path = f"{self.base}.jsonl"
         self.emb_path = f"{self.base}.embeddings.npy"
         self.embedder = embedder
         self.max_entries = max_entries
         os.makedirs(os.path.dirname(self.text_path) or ".", exist_ok=True)
+        legacy_text_path = f"{self.base}.text.jsonl"
+        if not os.path.exists(self.text_path) and os.path.exists(legacy_text_path):
+            try:
+                os.replace(legacy_text_path, self.text_path)
+            except Exception:
+                # If rename fails, keep using the legacy path to avoid data loss.
+                self.text_path = legacy_text_path
         self._n_text = self._count_lines(self.text_path)
 
-    def add(self, text: str, session_id: Optional[str] = None, memory_kind: str = "message") -> None:
+    def add(
+        self,
+        text: str,
+        session_id: Optional[str] = None,
+        memory_type: str = "message",
+        memory_kind: Optional[str] = None,
+    ) -> None:
+        resolved_type = str(memory_type or "").strip() or str(memory_kind or "").strip() or "message"
         record = {
             "text": text,
             "session_id": (session_id or "").strip() or "default",
-            "memory_kind": (memory_kind or "message").strip() or "message",
+            "memory_type": resolved_type,
             "timestamp": time.time(),
         }
         with open(self.text_path, "a", encoding="utf-8") as f:
@@ -270,6 +289,7 @@ class DiskMemory:
         session_id: Optional[str],
         include_default: bool,
     ) -> List[Dict[str, Any]]:
+        retrievable_kinds = {"message", "compression_summary"}
         target_session = (session_id or "").strip() or None
         results: List[Dict[str, Any]] = []
         ordered_records = self._read_raw_lines_by_index(indices)
@@ -280,6 +300,11 @@ class DiskMemory:
                 payload = {"text": raw}
             text = str(payload.get("text", "")).strip()
             if not text:
+                continue
+            memory_type = (
+                str(payload.get("memory_type", payload.get("memory_kind", "message"))).strip().lower() or "message"
+            )
+            if memory_type not in retrievable_kinds:
                 continue
             record_session = str(payload.get("session_id", "default")).strip() or "default"
             if target_session is not None:
@@ -401,15 +426,29 @@ class EmbeddingIngestionWorker:
     def set_active_session(self, session_id: str) -> None:
         self.active_session_id = session_id.strip() or "default"
 
-    def enqueue(self, role: str, text: str, *, session_id: Optional[str] = None) -> None:
+    def enqueue(
+        self,
+        role: str,
+        text: str,
+        *,
+        session_id: Optional[str] = None,
+        memory_type: str = "message",
+        memory_kind: Optional[str] = None,
+    ) -> None:
         value = text.strip()
         if not value:
             return
+        kind = str(memory_type or "").strip().lower() or str(memory_kind or "").strip().lower() or "message"
         sid = self.active_session_id
         if session_id is not None:
             sid = session_id
         sid = str(sid or "").strip() or "default"
-        self._queue.put_nowait((sid, role, f"{role}: {value}"))
+        if kind == "message":
+            role_label = str(role or "unknown").strip().lower() or "unknown"
+            payload = f"{role_label}: {value}"
+        else:
+            payload = value
+        self._queue.put_nowait((sid, payload, kind))
 
     async def _run(self) -> None:
         while True:
@@ -417,10 +456,11 @@ class EmbeddingIngestionWorker:
             try:
                 if item is None:
                     return
-                session_id, _, text = item
-                await asyncio.to_thread(self.memory.add, session_id, text)
+                session_id, text, memory_type = item
+                if memory_type == "message":
+                    await asyncio.to_thread(self.memory.add, session_id, text)
                 if self.long_term is not None:
-                    await asyncio.to_thread(self.long_term.add, text, session_id, "message")
+                    await asyncio.to_thread(self.long_term.add, text, session_id, memory_type)
             except Exception as exc:
                 print(f"[memory] ingest warning: {exc}")
             finally:
@@ -444,23 +484,145 @@ class MemorySubscriber:
     def __init__(self, ingestion_worker: EmbeddingIngestionWorker) -> None:
         self.ingestion_worker = ingestion_worker
 
+    def _read_toolcall_preview(self, assistant_event: Dict[str, Any]) -> Tuple[str, str, Any]:
+        partial = assistant_event.get("partial")
+        if not isinstance(partial, dict):
+            return "", "unknown", None
+        content = partial.get("content")
+        if not isinstance(content, list):
+            return "", "unknown", None
+        for item in reversed(content):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type", "")).strip() != "toolCall":
+                continue
+            call_id = str(item.get("id", "")).strip()
+            tool_name = str(item.get("name", "")).strip() or "unknown"
+            args = item.get("arguments")
+            return call_id, tool_name, args
+        return "", "unknown", None
+
+    def _enqueue_tool_call(self, text: str) -> None:
+        self.ingestion_worker.enqueue("system", text, memory_type="tool_call")
+
+    def _enqueue_error(self, text: str) -> None:
+        self.ingestion_worker.enqueue("system", text, memory_type="error")
+
+    def _extract_message_role(self, message: Any) -> str:
+        if isinstance(message, dict):
+            role = message.get("role", "")
+        else:
+            role = getattr(message, "role", "")
+        return str(role).strip().lower()
+
+    def _extract_message_error(self, message: Any) -> str:
+        if isinstance(message, dict):
+            value = message.get("error_message")
+        else:
+            value = getattr(message, "error_message", None)
+        return str(value).strip() if value else ""
+
+    def _extract_error_text(self, event: Dict[str, Any]) -> str:
+        for key in ("error", "message", "reason"):
+            value = event.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        result = event.get("result")
+        details = getattr(result, "details", None)
+        if isinstance(details, dict):
+            value = details.get("error")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        if isinstance(result, dict):
+            details = result.get("details")
+            if isinstance(details, dict):
+                value = details.get("error")
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    def _log_message_end(self, message: Any) -> None:
+        if message is None:
+            return
+        role = self._extract_message_role(message)
+        if role not in {"user", "assistant"}:
+            return
+        text = "\n".join([x for x in extract_texts(message) if x.strip()]).strip()
+        if not text and isinstance(message, dict):
+            raw_text = message.get("text")
+            if isinstance(raw_text, str):
+                text = raw_text.strip()
+        if not text:
+            return
+        if role == "user":
+            text = extract_original_user_message(text)
+        if text:
+            self.ingestion_worker.enqueue(role, text, memory_type="message")
+
+    def _log_message_error(self, message: Any) -> None:
+        error_message = self._extract_message_error(message)
+        if not error_message:
+            return
+        self._enqueue_error(f"assistant_error: {error_message}")
+
+    def _log_message_update_toolcall(self, event: Dict[str, Any]) -> None:
+        assistant_event = event.get("assistantMessageEvent") or {}
+        if not isinstance(assistant_event, dict):
+            return
+        assistant_event_type = str(assistant_event.get("type", "")).strip()
+        if assistant_event_type not in {"toolcall_start", "toolcall_end"}:
+            return
+        call_id, tool_name, args = self._read_toolcall_preview(assistant_event)
+        parts: List[str] = [assistant_event_type, tool_name]
+        if call_id:
+            parts.append(f"id={call_id}")
+        if args not in (None, "", {}):
+            parts.append(f"args={args}")
+        self._enqueue_tool_call(" ".join(parts))
+
+    def _log_tool_execution(self, event: Dict[str, Any]) -> None:
+        etype = str(event.get("type", "")).strip()
+        if etype not in {"tool_execution_start", "tool_execution_end", "tool_execution_error"}:
+            return
+        tool_name = str(event.get("toolName", "")).strip() or "unknown"
+        command = extract_bash_exec_command(event)
+        if etype == "tool_execution_start":
+            line = f"tool_execution_start {tool_name}"
+            if command:
+                line = f"{line} cmd={command}"
+            self._enqueue_tool_call(line)
+            return
+        if etype == "tool_execution_end":
+            is_error = bool(event.get("isError"))
+            line = f"tool_execution_end {tool_name} error={is_error}"
+            if command:
+                line = f"{line} cmd={command}"
+            self._enqueue_tool_call(line)
+            if is_error:
+                error_text = self._extract_error_text(event)
+                if error_text:
+                    self._enqueue_error(f"tool_execution_error {tool_name}: {error_text}")
+                else:
+                    self._enqueue_error(f"tool_execution_error {tool_name}")
+            return
+        error_text = self._extract_error_text(event)
+        if error_text:
+            self._enqueue_error(f"tool_execution_error {tool_name}: {error_text}")
+        else:
+            self._enqueue_error(f"tool_execution_error {tool_name}")
+
     def on_event(self, event: Dict[str, Any]) -> None:
         try:
-            if event.get("type") != "message_end":
+            etype = str(event.get("type", "")).strip()
+            if etype == "message_end":
+                message = event.get("message")
+                self._log_message_end(message)
+                self._log_message_error(message)
                 return
-            message = event.get("message")
-            if message is None:
+            if etype == "message_update":
+                self._log_message_update_toolcall(event)
                 return
-            role = str(getattr(message, "role", "")).strip().lower()
-            if role not in {"user", "assistant"}:
-                return
-            text = "\n".join([x for x in extract_texts(message) if x.strip()]).strip()
-            if not text:
-                return
-            if role == "user":
-                text = extract_original_user_message(text)
-            if text:
-                self.ingestion_worker.enqueue(role, text)
+            self._log_tool_execution(event)
         except Exception as exc:
             print(f"[memory] subscriber warning: {exc}")
 
@@ -494,7 +656,7 @@ class ContextCompressor:
             AgentMessage(role="assistant", content=[TextContent(type="text", text=summary)], timestamp=time.time()),
         )
         if long_term is not None:
-            long_term.add(summary, session_id=session_id, memory_kind="compression_summary")
+            long_term.add(summary, session_id=session_id, memory_type="compression_summary")
         return True
 
     def _summarize_messages(self, messages: Sequence[Any]) -> str:
