@@ -15,6 +15,7 @@ def test_build_runtime_tools_excludes_demo_tools_by_default():
         memory_search_tool=_dummy_tool("memory_search"),  # type: ignore[arg-type]
         toolsmaker_tool=_dummy_tool("toolsmaker"),  # type: ignore[arg-type]
         bash_exec_tool=_dummy_tool("bash_exec"),  # type: ignore[arg-type]
+        file_read_tool=_dummy_tool("file_read"),  # type: ignore[arg-type]
         gmail_fetch_tool=_dummy_tool("gmail_fetch"),  # type: ignore[arg-type]
         pdf_merge_tool=_dummy_tool("pdf_merge"),  # type: ignore[arg-type]
         include_demo_tools=False,
@@ -28,6 +29,7 @@ def test_build_runtime_tools_excludes_demo_tools_by_default():
         "memory_search",
         "toolsmaker",
         "bash_exec",
+        "file_read",
         "gmail_fetch",
         "pdf_merge",
     ]
@@ -38,6 +40,7 @@ def test_build_runtime_tools_includes_demo_tools_when_enabled():
         memory_search_tool=_dummy_tool("memory_search"),  # type: ignore[arg-type]
         toolsmaker_tool=_dummy_tool("toolsmaker"),  # type: ignore[arg-type]
         bash_exec_tool=_dummy_tool("bash_exec"),  # type: ignore[arg-type]
+        file_read_tool=_dummy_tool("file_read"),  # type: ignore[arg-type]
         gmail_fetch_tool=_dummy_tool("gmail_fetch"),  # type: ignore[arg-type]
         pdf_merge_tool=_dummy_tool("pdf_merge"),  # type: ignore[arg-type]
         include_demo_tools=True,
@@ -51,6 +54,7 @@ def test_build_runtime_tools_includes_demo_tools_when_enabled():
         "memory_search",
         "toolsmaker",
         "bash_exec",
+        "file_read",
         "gmail_fetch",
         "pdf_merge",
         "slow",
@@ -149,6 +153,7 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
 
     monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
     monkeypatch.setattr(runtime, "ToolsmakerTool", lambda agent, allowed_capabilities: SimpleNamespace(name="toolsmaker"))
+    monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root: SimpleNamespace(name="file_read"))
     monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: SimpleNamespace(name="gmail_fetch"))
     monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: SimpleNamespace(name="pdf_merge"))
     monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: SimpleNamespace(name="jina_web_snapshot"))
@@ -179,13 +184,14 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     assert session.active_session_id == "session-test"
     assert session.auto_session_id == "session-test"
     assert session.auto_title_enabled is True
-    assert [tool.name for tool in session.agent._tools][:8] == [
+    assert [tool.name for tool in session.agent._tools][:9] == [
         "jina_web_snapshot",
         "perplexity_search",
         "perplexity_web_snapshot",
         "memory_search",
         "toolsmaker",
         "bash_exec",
+        "file_read",
         "gmail_fetch",
         "pdf_merge",
     ]

@@ -15,6 +15,7 @@ from agent.agent_types import AgentTool
 from agent.tools import (
     BashExecConfig,
     BashExecTool,
+    FileReadTool,
     FastTool,
     GmailFetchTool,
     JinaWebSnapshotTool,
@@ -248,6 +249,7 @@ def build_runtime_tools(
     gmail_fetch_tool: GmailFetchTool,
     pdf_merge_tool: PdfMergeTool,
     include_demo_tools: bool,
+    file_read_tool: Optional[AgentTool] = None,
 ) -> List[AgentTool]:
     tools: List[AgentTool] = [
         JinaWebSnapshotTool(),
@@ -256,9 +258,10 @@ def build_runtime_tools(
         memory_search_tool,
         toolsmaker_tool,
         bash_exec_tool,
-        gmail_fetch_tool,
-        pdf_merge_tool,
     ]
+    if file_read_tool is not None:
+        tools.append(file_read_tool)
+    tools.extend([gmail_fetch_tool, pdf_merge_tool])
     if include_demo_tools:
         tools.extend([SlowTool(), FastTool()])
     return tools
@@ -526,6 +529,7 @@ def create_runtime_session(
     toolsmaker_caps = parse_toolsmaker_allowed_capabilities(os.getenv("POP_AGENT_TOOLSMAKER_ALLOWED_CAPS"))
     toolsmaker_tool = ToolsmakerTool(agent=agent, allowed_capabilities=toolsmaker_caps)
     workspace_root = os.path.realpath(os.getcwd())
+    file_read_tool = FileReadTool(workspace_root=workspace_root)
     gmail_fetch_tool = GmailFetchTool(workspace_root=workspace_root)
     pdf_merge_tool = PdfMergeTool(workspace_root=workspace_root)
 
@@ -608,6 +612,7 @@ def create_runtime_session(
         memory_search_tool=memory_search_tool,
         toolsmaker_tool=toolsmaker_tool,
         bash_exec_tool=bash_exec_tool,
+        file_read_tool=file_read_tool,
         gmail_fetch_tool=gmail_fetch_tool,
         pdf_merge_tool=pdf_merge_tool,
         include_demo_tools=include_demo_tools,

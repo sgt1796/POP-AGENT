@@ -48,6 +48,7 @@ def build_system_prompt(
     lines.append("Tool Policy:")
     lines.append("Prefer existing tools first before explaining limitations.")
     lines.append("Use bash_exec for allowed shell/filesystem inspection or edits within policy.")
+    lines.append("Use file_read for attachments and structured files before falling back to shell file reads.")
     lines.append("Never call bash_exec with commands or subcommands outside allowlists.")
     lines.append(f"Allowed bash_exec read commands: {bash_read_csv}.")
     lines.append(f"Allowed bash_exec write commands: {bash_write_csv}.")
