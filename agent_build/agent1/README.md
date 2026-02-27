@@ -29,7 +29,7 @@ Highlights:
 
 Highlights:
 
-* Added session-aware short-term memory via `SessionConversationMemory` so each chat session has isolated in-session retrieval.
+* Added session-aware short-term memory via `ConversationMemory` so each chat session has isolated in-session retrieval.
 * Extended disk memory records with `session_id` metadata so long-term retrieval is scoped to the active session for cross-session persistence.
 * Added runtime chat session switching (`/session <name>`) with configurable initial session from `POP_AGENT_SESSION_ID`.
 * Added `ContextCompressor` with configurable thresholds (`POP_AGENT_CONTEXT_TRIGGER_CHARS`, `POP_AGENT_CONTEXT_TARGET_CHARS`) to summarize old history before context overflows.
@@ -97,7 +97,7 @@ Preserved:
 
 * Same model selection (`gemini-3-flash-preview`) and timeout.
 * Upgraded memory architecture:
-  `SessionConversationMemory` + session-scoped `DiskMemory` + retrieval injection into augmented prompt.
+  `ConversationMemory` + session-scoped `DiskMemory` + retrieval injection into augmented prompt.
 * Expanded memory tool behavior:
   `memory_search` with `query`, `top_k`, `scope`, and optional `session_id`.
 * Same `toolsmaker` behavior:

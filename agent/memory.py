@@ -71,43 +71,38 @@ class MemoryEntry:
 
 
 class ConversationMemory:
-    """Short-term in-memory vector store."""
+    """Per-session short-term in-memory vector store."""
 
-    def __init__(self, embedder: Embedder, max_entries: int = 100) -> None:
+    def __init__(
+        self,
+        embedder: Embedder,
+        max_entries: int = 100,
+        *,
+        max_entries_per_session: Optional[int] = None,
+        max_sessions: int = 50,
+        default_session_id: str = "default",
+    ) -> None:
         self.embedder = embedder
-        self.max_entries = max_entries
-        self._entries: List[MemoryEntry] = []
-
-    def add(self, text: str) -> None:
-        embedding = self.embedder.get_embedding([text])[0]
-        self._entries.append(MemoryEntry(text=text, embedding=embedding))
-        if len(self._entries) > self.max_entries:
-            self._entries.pop(0)
-
-    def retrieve(self, query: str, top_k: int = 3) -> List[str]:
-        if not self._entries:
-            return []
-        query_emb = self.embedder.get_embedding([query])[0]
-        scores = [cosine_similarity(query_emb, entry.embedding) for entry in self._entries]
-        k = max(1, min(int(top_k or 1), len(self._entries)))
-        top_indices = np.argsort(scores)[-k:][::-1]
-        return [self._entries[i].text for i in top_indices]
-
-
-class SessionConversationMemory:
-    """Per-session short-term memory with vector retrieval."""
-
-    def __init__(self, embedder: Embedder, max_entries_per_session: int = 100, max_sessions: int = 50) -> None:
-        self.embedder = embedder
-        self.max_entries_per_session = max_entries_per_session
-        self.max_sessions = max_sessions
-        self._sessions: Dict[str, ConversationMemory] = {}
+        self.max_entries_per_session = max(
+            1,
+            int(max_entries_per_session if max_entries_per_session is not None else max_entries),
+        )
+        self.max_entries = self.max_entries_per_session
+        self.max_sessions = max(1, int(max_sessions))
+        self.default_session_id = str(default_session_id or "default").strip() or "default"
+        self._sessions: Dict[str, List[MemoryEntry]] = {}
         self._session_order: List[str] = []
 
-    def _ensure_session(self, session_id: str) -> ConversationMemory:
-        sid = session_id.strip() or "default"
+    def _normalize_session_id(self, session_id: Optional[str]) -> str:
+        sid = str(session_id or "").strip()
+        if not sid:
+            sid = self.default_session_id
+        return sid or "default"
+
+    def _ensure_session(self, session_id: Optional[str]) -> List[MemoryEntry]:
+        sid = self._normalize_session_id(session_id)
         if sid not in self._sessions:
-            self._sessions[sid] = ConversationMemory(self.embedder, max_entries=self.max_entries_per_session)
+            self._sessions[sid] = []
             self._session_order.append(sid)
             if len(self._session_order) > self.max_sessions:
                 oldest = self._session_order.pop(0)
@@ -130,12 +125,9 @@ class SessionConversationMemory:
         if new_sid in self._sessions:
             target = self._sessions[new_sid]
             source = self._sessions[old_sid]
-            try:
-                target._entries.extend(source._entries)
-                if len(target._entries) > target.max_entries:
-                    target._entries = target._entries[-target.max_entries :]
-            except Exception:
-                pass
+            target.extend(source)
+            if len(target) > self.max_entries_per_session:
+                self._sessions[new_sid] = target[-self.max_entries_per_session :]
             self._sessions.pop(old_sid, None)
             self._session_order = [sid for sid in self._session_order if sid != old_sid]
             return True
@@ -145,15 +137,35 @@ class SessionConversationMemory:
             self._session_order.append(new_sid)
         return True
 
-    def add(self, session_id: str, text: str) -> None:
-        self._ensure_session(session_id).add(text)
+    def add(self, text_or_session_id: str, text: Optional[str] = None, *, session_id: Optional[str] = None) -> None:
+        # Backward compatible forms:
+        # - add("text", session_id="alpha")
+        # - add("alpha", "text")
+        # - add("text")
+        if text is None:
+            payload = str(text_or_session_id or "")
+            sid = self._normalize_session_id(session_id)
+        else:
+            payload = str(text or "")
+            sid = self._normalize_session_id(session_id if session_id is not None else text_or_session_id)
+        if not payload:
+            return
+        embedding = self.embedder.get_embedding([payload])[0]
+        entries = self._ensure_session(sid)
+        entries.append(MemoryEntry(text=payload, embedding=embedding))
+        if len(entries) > self.max_entries_per_session:
+            self._sessions[sid] = entries[-self.max_entries_per_session :]
 
     def retrieve(self, query: str, top_k: int = 3, session_id: Optional[str] = None) -> List[str]:
-        sid = (session_id or "default").strip() or "default"
-        session = self._sessions.get(sid)
-        if session is None:
+        sid = self._normalize_session_id(session_id)
+        entries = self._sessions.get(sid)
+        if not entries:
             return []
-        return session.retrieve(query, top_k=top_k)
+        query_emb = self.embedder.get_embedding([query])[0]
+        scores = [cosine_similarity(query_emb, entry.embedding) for entry in entries]
+        k = max(1, min(int(top_k or 1), len(entries)))
+        top_indices = np.argsort(scores)[-k:][::-1]
+        return [entries[i].text for i in top_indices]
 
 
 class DiskMemory:
@@ -382,7 +394,7 @@ class MemoryRetriever:
 
     def __init__(
         self,
-        short_term: SessionConversationMemory,
+        short_term: ConversationMemory,
         long_term: Optional[DiskMemory] = None,
         *,
         default_session_id: str = "default",
@@ -454,7 +466,7 @@ def build_augmented_prompt(user_message: str, memory_text: str) -> str:
 class EmbeddingIngestionWorker:
     """Background ingestion worker for embedding writes."""
 
-    def __init__(self, memory: SessionConversationMemory, long_term: Optional[DiskMemory] = None) -> None:
+    def __init__(self, memory: ConversationMemory, long_term: Optional[DiskMemory] = None) -> None:
         self.memory = memory
         self.long_term = long_term
         self.active_session_id = "default"
@@ -500,7 +512,7 @@ class EmbeddingIngestionWorker:
                     return
                 session_id, text, memory_type = item
                 if memory_type == "message":
-                    await asyncio.to_thread(self.memory.add, session_id, text)
+                    await asyncio.to_thread(self.memory.add, text, session_id=session_id)
                 if self.long_term is not None:
                     await asyncio.to_thread(self.long_term.add, text, session_id, memory_type)
             except Exception as exc:

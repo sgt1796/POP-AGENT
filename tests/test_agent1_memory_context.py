@@ -5,12 +5,12 @@ import numpy as np
 
 from agent.agent_types import TextContent
 from agent.memory import (
+    ConversationMemory,
     ContextCompressor,
     DiskMemory,
     EmbeddingIngestionWorker,
     MemoryRetriever,
     MemorySubscriber,
-    SessionConversationMemory,
 )
 
 
@@ -39,7 +39,7 @@ class _CaptureWorker:
 
 
 def test_session_conversation_memory_isolation():
-    memory = SessionConversationMemory(embedder=_FakeEmbedder(), max_entries_per_session=10)
+    memory = ConversationMemory(embedder=_FakeEmbedder(), max_entries_per_session=10)
     memory.add("alpha", "user: project a details")
     memory.add("beta", "user: project b details")
 
@@ -52,7 +52,7 @@ def test_session_conversation_memory_isolation():
 
 def test_retriever_filters_disk_memory_by_session(tmp_path):
     embedder = _FakeEmbedder()
-    short_memory = SessionConversationMemory(embedder=embedder)
+    short_memory = ConversationMemory(embedder=embedder)
     disk_memory = DiskMemory(filepath=str(tmp_path / "chat"), embedder=embedder, max_entries=20)
 
     short_memory.add("s1", "user: session one short memory")
@@ -92,7 +92,7 @@ def test_context_compressor_replaces_old_messages_with_summary(tmp_path):
 
 def test_ingestion_worker_writes_to_active_session(tmp_path):
     embedder = _FakeEmbedder()
-    short_memory = SessionConversationMemory(embedder=embedder)
+    short_memory = ConversationMemory(embedder=embedder)
     disk_memory = DiskMemory(filepath=str(tmp_path / "chat"), embedder=embedder, max_entries=20)
     worker = EmbeddingIngestionWorker(memory=short_memory, long_term=disk_memory)
     worker.set_active_session("focus")
@@ -113,7 +113,7 @@ def test_ingestion_worker_writes_to_active_session(tmp_path):
 
 def test_ingestion_worker_persists_tool_and_error_kinds_without_short_term_noise(tmp_path):
     embedder = _FakeEmbedder()
-    short_memory = SessionConversationMemory(embedder=embedder)
+    short_memory = ConversationMemory(embedder=embedder)
     disk_memory = DiskMemory(filepath=str(tmp_path / "chat"), embedder=embedder, max_entries=20)
     worker = EmbeddingIngestionWorker(memory=short_memory, long_term=disk_memory)
     worker.set_active_session("focus")
@@ -201,7 +201,7 @@ def test_memory_subscriber_logs_message_tool_calls_and_errors():
 
 
 def test_session_memory_rename_moves_entries():
-    memory = SessionConversationMemory(embedder=_FakeEmbedder(), max_entries_per_session=10)
+    memory = ConversationMemory(embedder=_FakeEmbedder(), max_entries_per_session=10)
     memory.add("old-session", "user: remember this")
     assert memory.has_session("old-session") is True
     assert memory.rename_session("old-session", "new-session") is True
@@ -223,7 +223,7 @@ def test_disk_memory_rename_updates_session_id(tmp_path):
 
 def test_retriever_uses_default_session_when_missing():
     embedder = _FakeEmbedder()
-    short_memory = SessionConversationMemory(embedder=embedder)
+    short_memory = ConversationMemory(embedder=embedder)
     short_memory.add("alpha", "user: alpha memory")
     retriever = MemoryRetriever(short_term=short_memory, long_term=None, default_session_id="alpha")
 

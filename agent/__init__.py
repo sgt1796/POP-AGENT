@@ -37,7 +37,7 @@ from .agent_types import (
     ToolBuildResult,
 )
 from .memory import (
-    SessionConversationMemory,
+    ConversationMemory,
     DiskMemory,
     MemoryRetriever,
     EmbeddingIngestionWorker,
@@ -63,7 +63,7 @@ __all__ = [
     "ToolSpec",
     "ToolBuildRequest",
     "ToolBuildResult",
-    "SessionConversationMemory",
+    "ConversationMemory",
     "DiskMemory",
     "MemoryRetriever",
     "EmbeddingIngestionWorker",

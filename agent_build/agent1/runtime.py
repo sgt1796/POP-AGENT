@@ -42,7 +42,7 @@ from .env_utils import (
 from .event_logger import make_event_logger, resolve_log_level
 from agent.memory import (
     ContextCompressor,
-    SessionConversationMemory,
+    ConversationMemory,
     DiskMemory,
     EmbeddingIngestionWorker,
     MemoryRetriever,
@@ -53,8 +53,6 @@ from agent.memory import (
 from .message_utils import extract_latest_assistant_text
 from .prompting import build_system_prompt, resolve_execution_profile
 from .usage_reporting import format_turn_usage_line, usage_delta
-
-ConversationMemory = SessionConversationMemory
 
 
 class ManualToolsmakerSubscriberFactory(Protocol):
@@ -196,7 +194,7 @@ def _normalize_session_title(raw: str) -> str:
 def _session_id_taken(
     candidate: str,
     *,
-    short_memory: Optional[SessionConversationMemory],
+    short_memory: Optional[ConversationMemory],
     long_memory: Optional[DiskMemory],
 ) -> bool:
     if not candidate:
@@ -219,7 +217,7 @@ def _session_id_taken(
 def _ensure_unique_session_title(
     title: str,
     *,
-    short_memory: Optional[SessionConversationMemory],
+    short_memory: Optional[ConversationMemory],
     long_memory: Optional[DiskMemory],
 ) -> str:
     base = title

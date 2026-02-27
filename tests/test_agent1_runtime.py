@@ -140,7 +140,7 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
 
     monkeypatch.setattr(runtime, "Agent", _FakeAgent)
     monkeypatch.setattr(runtime, "Embedder", lambda use_api: object())
-    monkeypatch.setattr(runtime, "SessionConversationMemory", lambda *a, **k: object())
+    monkeypatch.setattr(runtime, "ConversationMemory", lambda *a, **k: object())
     monkeypatch.setattr(runtime, "DiskMemory", lambda *a, **k: object())
     monkeypatch.setattr(runtime, "MemoryRetriever", _FakeRetriever)
     monkeypatch.setattr(runtime, "EmbeddingIngestionWorker", _FakeWorker)
