@@ -15,4 +15,7 @@ executor_options:
   toolsmaker_manual_approval: false
   toolsmaker_auto_continue: false
   log_level: simple
+  model_override: 
+    provider: gemini
+    id: gemini-3-pro-preview
 redact_patterns: []

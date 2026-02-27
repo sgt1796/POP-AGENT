@@ -121,7 +121,7 @@ async def run_evaluation_async(
 
     for index, base_sample in enumerate(benchmark_samples):
         prompt = benchmark_adapter.build_prompt(base_sample)
-        eval_prefix = "You are in evaluation enviornment. Please strictly follow the instructions and do not add any extra information in the output.\n\n"
+        eval_prefix = "You are in evaluation enviornment. Please strictly follow the instructions, and return only the final answer without any extra information.\n\n"
         sample = BenchmarkSample(
             sample_id=base_sample.sample_id,
             prompt=eval_prefix + prompt,

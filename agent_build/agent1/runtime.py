@@ -493,6 +493,7 @@ def create_runtime_session(
     agent = Agent({"stream_fn": stream})
     agent.set_model({"provider": "gemini", "id": "gemini-3-flash-preview", "api": None})
     if isinstance(overrides.model_override, dict) and overrides.model_override:
+        print(f"[config] applying model override: {overrides.model_override}")
         agent.set_model(dict(overrides.model_override))
     agent.set_timeout(120)
 
