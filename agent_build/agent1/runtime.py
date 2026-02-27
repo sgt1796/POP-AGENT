@@ -629,6 +629,7 @@ def create_runtime_session(
     if overrides.log_level is not None:
         effective_log_level = overrides.log_level
 
+    ## Event subscriptions
     if enable_event_logger:
         unsubscribe_log = agent.subscribe(make_event_logger(effective_log_level))
     else:

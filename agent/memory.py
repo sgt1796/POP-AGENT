@@ -373,12 +373,17 @@ class DiskMemory:
         return results
 
     def _prune(self) -> None:
+        # simple pruning func for context management
+        # keep only the last `max_entries` entries
+        # shouldn't used if there's a context compressor function.
         if self._n_text <= self.max_entries:
             return
         keep = self.max_entries
 
         with open(self.text_path, "rb") as f:
             lines = f.readlines()[-keep:]
+
+        # keep the last `keep` lines, which correspond to the last `keep` embeddings
         with open(self.text_path, "wb") as f:
             f.writelines(lines)
         self._n_text = keep
