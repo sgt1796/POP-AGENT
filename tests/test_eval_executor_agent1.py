@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 from agent_build.agent1 import runtime as agent_runtime
@@ -140,3 +141,105 @@ def test_executor_forwards_enable_event_logger_option(monkeypatch, tmp_path):
     asyncio.run(_run())
 
     assert seen_values == [False, True]
+
+
+def test_executor_stages_required_files_and_augments_prompt(monkeypatch, tmp_path: Path):
+    prompts = []
+
+    def _fake_create_runtime_session(*, log_level=None, enable_event_logger=True, overrides=None, **kwargs):
+        del log_level, enable_event_logger, overrides, kwargs
+        return _FakeSession(agent=_FakeAgent())
+
+    async def _fake_run_user_turn(session, prompt, on_warning=None):
+        del session, on_warning
+        prompts.append(str(prompt))
+        return "pred"
+
+    async def _fake_shutdown_runtime_session(session):
+        del session
+        return None
+
+    monkeypatch.setattr(agent_runtime, "create_runtime_session", _fake_create_runtime_session)
+    monkeypatch.setattr(agent_runtime, "run_user_turn", _fake_run_user_turn)
+    monkeypatch.setattr(agent_runtime, "shutdown_runtime_session", _fake_shutdown_runtime_session)
+
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    source_file = source_dir / "report.txt"
+    source_file.write_text("hello", encoding="utf-8")
+
+    sample = BenchmarkSample(
+        sample_id="with_file",
+        prompt="Read attachment then answer.",
+        ground_truth="pred",
+        assets={
+            "required_files": [
+                {
+                    "name": "report.txt",
+                    "dataset_path": "2023/validation/report.txt",
+                    "source_uri": str(source_file),
+                }
+            ]
+        },
+    )
+    run_dir = tmp_path / "run"
+    executor = Agent1RuntimeExecutor()
+
+    async def _run():
+        return await executor.run_sample(
+            sample,
+            timeout_s=5,
+            sample_index=0,
+            run_id="run",
+            run_dir=str(run_dir),
+            executor_options={},
+        )
+
+    result = asyncio.run(_run())
+    assert result.status == "ok"
+    assert prompts
+    assert "Required attachment files are preloaded in the workspace at:" in prompts[0]
+    assert "report.txt" in prompts[0]
+
+    attachments = result.usage.get("attachments")
+    assert isinstance(attachments, list)
+    assert len(attachments) == 1
+    local_path = attachments[0].get("local_path", "")
+    assert isinstance(local_path, str) and local_path
+    assert Path(local_path).exists()
+
+
+def test_executor_timeout_error_is_human_readable(monkeypatch, tmp_path):
+    def _fake_create_runtime_session(*, log_level=None, enable_event_logger=True, overrides=None, **kwargs):
+        del log_level, enable_event_logger, overrides, kwargs
+        return _FakeSession(agent=_FakeAgent())
+
+    async def _fake_run_user_turn(session, prompt, on_warning=None):
+        del session, prompt, on_warning
+        await asyncio.sleep(0.05)
+        return "pred"
+
+    async def _fake_shutdown_runtime_session(session):
+        del session
+        return None
+
+    monkeypatch.setattr(agent_runtime, "create_runtime_session", _fake_create_runtime_session)
+    monkeypatch.setattr(agent_runtime, "run_user_turn", _fake_run_user_turn)
+    monkeypatch.setattr(agent_runtime, "shutdown_runtime_session", _fake_shutdown_runtime_session)
+
+    executor = Agent1RuntimeExecutor()
+
+    async def _run():
+        sample = BenchmarkSample(sample_id="a", prompt="q", ground_truth="g")
+        return await executor.run_sample(
+            sample,
+            timeout_s=0.01,
+            sample_index=0,
+            run_id="run",
+            run_dir=str(tmp_path),
+            executor_options={},
+        )
+
+    result = asyncio.run(_run())
+    assert result.status == "error"
+    assert result.error == "timeout after 0.01s"

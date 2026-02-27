@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
 import pandas as pd
@@ -18,6 +21,9 @@ class GaiaAdapter:
     _PROMPT_COLS = ("question", "Question")
     _GROUND_TRUTH_COLS = ("final_answer", "Final answer", "answer")
     _ID_COLS = ("task_id", "id")
+    _FILE_NAME_COLS = ("file_name", "File Name", "filename")
+    _FILE_PATH_COLS = ("file_path", "File Path", "filepath")
+    _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
     def load_samples(
         self,
@@ -37,6 +43,11 @@ class GaiaAdapter:
             if not base_uri.endswith("/"):
                 base_uri += "/"
             parquet_path = base_uri + self._SPLITS[split_key]
+        file_base_uri = self._resolve_file_base_uri(
+            split_key=split_key,
+            parquet_path=parquet_path,
+            options=options,
+        )
 
         frame = pd.read_parquet(parquet_path)
         columns = list(frame.columns)
@@ -78,6 +89,8 @@ class GaiaAdapter:
                 for key, value in row_dict.items()
                 if key not in {prompt_col, gt_col} and (id_col is None or key != id_col)
             }
+            required_files = self._extract_required_files(row_dict, file_base_uri=file_base_uri)
+            assets = {"required_files": required_files} if required_files else {}
 
             samples.append(
                 BenchmarkSample(
@@ -85,7 +98,7 @@ class GaiaAdapter:
                     prompt=prompt,
                     ground_truth=ground_truth,
                     metadata=metadata,
-                    assets={},
+                    assets=assets,
                 )
             )
 
@@ -143,6 +156,112 @@ class GaiaAdapter:
                 if value:
                     return value
         return None
+
+    def _resolve_file_base_uri(self, *, split_key: str, parquet_path: str, options: Dict[str, Any]) -> str:
+        explicit = str(options.get("file_base_uri", "") or options.get("asset_base_uri", "")).strip()
+        if explicit:
+            return self._ensure_trailing_slash(explicit)
+
+        hf_base_uri = str(options.get("hf_base_uri", "")).strip()
+        if hf_base_uri:
+            return self._ensure_trailing_slash(hf_base_uri)
+
+        normalized_parquet = str(parquet_path or "").replace("\\", "/")
+        split_suffix = self._SPLITS.get(split_key, "")
+        if split_suffix and normalized_parquet.endswith(split_suffix):
+            base = normalized_parquet[: -len(split_suffix)]
+            return self._ensure_trailing_slash(base)
+
+        if self._looks_like_uri(normalized_parquet):
+            parent = normalized_parquet.rsplit("/", 1)[0]
+            return self._ensure_trailing_slash(parent)
+
+        return ""
+
+    def _extract_required_files(self, row_dict: Dict[str, Any], *, file_base_uri: str) -> List[Dict[str, str]]:
+        names_raw = self._first_present_value(row_dict, self._FILE_NAME_COLS)
+        paths_raw = self._first_present_value(row_dict, self._FILE_PATH_COLS)
+
+        names = self._normalize_string_list(names_raw)
+        paths = self._normalize_string_list(paths_raw)
+        if not paths:
+            return []
+
+        required_files: List[Dict[str, str]] = []
+        for index, dataset_path in enumerate(paths):
+            name_value = names[index] if index < len(names) else ""
+            source_uri = self._resolve_file_source_uri(dataset_path, file_base_uri=file_base_uri)
+            name = str(name_value or os.path.basename(dataset_path) or f"attachment_{index + 1}").strip()
+            required_files.append(
+                {
+                    "name": name,
+                    "dataset_path": dataset_path,
+                    "source_uri": source_uri,
+                }
+            )
+
+        return required_files
+
+    def _first_present_value(self, row_dict: Dict[str, Any], candidates: Sequence[str]) -> Any:
+        for key in candidates:
+            if key in row_dict:
+                return row_dict.get(key)
+        return None
+
+    def _normalize_string_list(self, value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+
+        text = str(value).strip()
+        if not text:
+            return []
+
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+
+        separators = ("\n", ";", "|")
+        for separator in separators:
+            if separator in text:
+                return [item.strip() for item in text.split(separator) if item.strip()]
+
+        return [text]
+
+    def _resolve_file_source_uri(self, dataset_path: str, *, file_base_uri: str) -> str:
+        raw_path = str(dataset_path or "").strip()
+        if not raw_path:
+            return ""
+        if self._looks_like_uri(raw_path) or os.path.isabs(raw_path):
+            return raw_path
+        if file_base_uri:
+            return self._join_uri(file_base_uri, raw_path)
+        return raw_path
+
+    def _looks_like_uri(self, value: str) -> bool:
+        return bool(self._URI_SCHEME_RE.match(str(value or "").strip()))
+
+    def _join_uri(self, base: str, suffix: str) -> str:
+        base_clean = str(base or "").rstrip("/")
+        suffix_clean = str(suffix or "").lstrip("/")
+        if not base_clean:
+            return suffix_clean
+        if not suffix_clean:
+            return base_clean + "/"
+        return f"{base_clean}/{suffix_clean}"
+
+    def _ensure_trailing_slash(self, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text.endswith("/"):
+            return text
+        return text + "/"
 
     def _coerce_scalar(self, value: Any) -> Any:
         try:

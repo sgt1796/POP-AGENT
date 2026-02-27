@@ -121,9 +121,10 @@ async def run_evaluation_async(
 
     for index, base_sample in enumerate(benchmark_samples):
         prompt = benchmark_adapter.build_prompt(base_sample)
+        eval_prefix = "You are in evaluation enviornment. Please strictly follow the instructions and do not add any extra information in the output.\n\n"
         sample = BenchmarkSample(
             sample_id=base_sample.sample_id,
-            prompt=prompt,
+            prompt=eval_prefix + prompt,
             ground_truth=base_sample.ground_truth,
             metadata=dict(base_sample.metadata or {}),
             assets=dict(base_sample.assets or {}),
@@ -322,15 +323,46 @@ async def run_evaluation_async(
 
 
 def summarize_run(run_dir: str) -> Dict[str, Any]:
-    path = Path(run_dir)
-    summary_json_path = path if path.name == "summary.json" else path / "summary.json"
-    if not summary_json_path.exists():
-        raise FileNotFoundError(f"summary.json not found at {summary_json_path}")
+    summary_json_path = _resolve_summary_json_path(run_dir)
 
     payload = json.loads(summary_json_path.read_text(encoding="utf-8"))
     writer = JsonArtifactWriter(str(summary_json_path.parent))
     writer.write_summary(payload)
     return payload
+
+
+def _resolve_summary_json_path(run_dir: str) -> Path:
+    raw_input = str(run_dir or "").strip()
+    if not raw_input:
+        raise FileNotFoundError("summary.json path is empty")
+
+    raw_path = Path(raw_input)
+    candidates: list[Path] = []
+
+    def _add_candidate(path: Path) -> None:
+        summary_path = path if path.name == "summary.json" else path / "summary.json"
+        if summary_path not in candidates:
+            candidates.append(summary_path)
+
+    _add_candidate(raw_path)
+
+    if not raw_path.is_absolute():
+        lowered_parts = [part.lower() for part in raw_path.parts]
+        if lowered_parts and lowered_parts[0] == "runs":
+            _add_candidate(Path("eval") / raw_path)
+        if len(raw_path.parts) == 1 and raw_path.name != "summary.json":
+            _add_candidate(Path("eval") / "runs" / raw_path)
+
+    for path in candidates:
+        if path.exists():
+            return path
+
+    checked = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(
+        f"summary.json not found for --run-dir={run_dir!r}. "
+        f"Checked: {checked}. "
+        "If running from repo root, use --run-dir eval/runs/<timestamp_runid>."
+    )
 
 
 def _coerce_config(config: EvalConfig) -> EvalConfig:
