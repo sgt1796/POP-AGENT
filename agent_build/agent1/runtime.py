@@ -3,9 +3,10 @@ import os
 import re
 import uuid
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Set
 
+from POP import PromptFunction
 from POP.embedder import Embedder
 from POP.stream import stream
 
@@ -81,6 +82,7 @@ class RuntimeSession:
     auto_session_id: Optional[str] = None
     auto_title_enabled: bool = False
     auto_title_task: Optional[asyncio.Task[None]] = None
+    title_prompt_functions: Dict[str, PromptFunction] = field(default_factory=dict)
 
 
 @dataclass
@@ -277,6 +279,31 @@ def _build_title_prompt(user_message: str, assistant_reply: str) -> str:
     )
 
 
+def _resolve_title_model(session: RuntimeSession) -> tuple[str, Optional[str]]:
+    model = getattr(session.agent.state, "model", {}) or {}
+    if not isinstance(model, dict):
+        return "gemini", None
+    provider_value = model.get("provider") or model.get("api")
+    provider = str(provider_value or "").strip().lower() or "gemini"
+    model_value = model.get("id")
+    model_id = str(model_value or "").strip() or None
+    return provider, model_id
+
+
+def _get_title_prompt_function(session: RuntimeSession, provider: str) -> PromptFunction:
+    key = str(provider or "").strip().lower() or "gemini"
+    cached = session.title_prompt_functions.get(key)
+    if cached is not None:
+        return cached
+    prompt_fn = PromptFunction(
+        sys_prompt="You generate concise session titles. Output a short, descriptive title only.",
+        prompt="",
+        client=key,
+    )
+    session.title_prompt_functions[key] = prompt_fn
+    return prompt_fn
+
+
 async def _auto_title_session(
     session: RuntimeSession,
     *,
@@ -294,25 +321,27 @@ async def _auto_title_session(
 
     old_session_id = session.active_session_id
     title_prompt = _build_title_prompt(user_message, assistant_reply)
-
-    title_agent = Agent({"stream_fn": stream})
-    model = getattr(session.agent.state, "model", {}) or {}
-    if isinstance(model, dict) and model:
-        title_agent.set_model(dict(model))
+    provider, model_id = _resolve_title_model(session)
+    title_kwargs: Dict[str, Any] = {
+        "tools": [],
+        "tool_choice": "auto",
+    }
+    if model_id:
+        title_kwargs["model"] = model_id
     timeout = getattr(session.agent, "request_timeout_s", None)
     if timeout is None:
         timeout = 30.0
     try:
-        title_agent.set_timeout(min(30.0, float(timeout)))
+        timeout_s = min(30.0, float(timeout))
     except Exception:
-        title_agent.set_timeout(30.0)
-    title_agent.set_system_prompt(
-        "You generate concise session titles. Output a short, descriptive title only."
-    )
-    title_agent.set_tools([])
+        timeout_s = 30.0
 
     try:
-        await title_agent.prompt(title_prompt)
+        title_prompt_fn = _get_title_prompt_function(session, provider)
+        raw_title = await asyncio.wait_for(
+            asyncio.to_thread(title_prompt_fn.execute, title_prompt, **title_kwargs),
+            timeout=timeout_s,
+        )
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -323,7 +352,6 @@ async def _auto_title_session(
         session.auto_session_id = None
         return
 
-    raw_title = extract_latest_assistant_text(title_agent)
     normalized = _normalize_session_title(raw_title)
     if not normalized:
         session.auto_session_id = None
@@ -493,6 +521,7 @@ def create_runtime_session(
         ingestion_worker = _NoopIngestionWorker()
         memory_subscriber = None
 
+    ## Tools
     memory_search_tool = MemorySearchTool(retriever=retriever)
     toolsmaker_caps = parse_toolsmaker_allowed_capabilities(os.getenv("POP_AGENT_TOOLSMAKER_ALLOWED_CAPS"))
     toolsmaker_tool = ToolsmakerTool(agent=agent, allowed_capabilities=toolsmaker_caps)

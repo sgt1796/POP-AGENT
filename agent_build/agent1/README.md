@@ -40,7 +40,7 @@ Highlights:
 Highlights:
 
 * Each run now starts in a unique auto-generated session id (no more `default`).
-* After the first completed turn, the runtime asynchronously generates a short session title and renames session memory.
+* After the first completed turn, the runtime asynchronously generates a short session title via `POP.PromptFunction` and renames session memory.
 * Auto-title is canceled on manual `/session` changes and on shutdown.
 
 ## 1. What was requested

@@ -230,6 +230,90 @@ class _FakeMemory:
         return session_id in self._sessions
 
 
+class _AutoTitleMemory:
+    def __init__(self, sessions):
+        self._sessions = set(sessions)
+        self.renames = []
+
+    def has_session(self, session_id):
+        return session_id in self._sessions
+
+    def rename_session(self, old_session_id, new_session_id):
+        if old_session_id not in self._sessions:
+            return False
+        self._sessions.remove(old_session_id)
+        self._sessions.add(new_session_id)
+        self.renames.append((old_session_id, new_session_id))
+        return True
+
+
+class _AutoTitleRetriever:
+    def __init__(self, short_memory=None, long_memory=None):
+        self.short_term = short_memory
+        self.long_term = long_memory
+        self.default_sessions = []
+
+    def set_default_session(self, session_id):
+        self.default_sessions.append(session_id)
+
+
+class _AutoTitleWorker:
+    def __init__(self):
+        self.flushed = 0
+        self.active_sessions = []
+
+    def set_active_session(self, session_id):
+        self.active_sessions.append(session_id)
+
+    async def flush(self):
+        self.flushed += 1
+
+    async def shutdown(self):
+        return None
+
+
+class _AutoTitleAgent:
+    def __init__(self, provider="gemini", model_id="gemini-3-flash-preview", timeout_s=12.0):
+        self.state = SimpleNamespace(model={"provider": provider, "id": model_id})
+        self.request_timeout_s = timeout_s
+        self.session_id = None
+
+
+def _build_auto_title_session(
+    *,
+    active_session_id="session-a",
+    provider="gemini",
+    model_id="gemini-3-flash-preview",
+    short_memory=None,
+    long_memory=None,
+    timeout_s=12.0,
+):
+    worker = _AutoTitleWorker()
+    retriever = _AutoTitleRetriever(short_memory=short_memory, long_memory=long_memory)
+    debug_lines = []
+    session = RuntimeSession(
+        agent=_AutoTitleAgent(provider=provider, model_id=model_id, timeout_s=timeout_s),
+        retriever=retriever,
+        ingestion_worker=worker,
+        active_session_id=active_session_id,
+        context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
+        top_k=3,
+        toolsmaker_manual_approval=True,
+        toolsmaker_auto_activate=True,
+        toolsmaker_auto_continue=True,
+        bash_prompt_approval=True,
+        execution_profile="balanced",
+        include_demo_tools=False,
+        unsubscribe_log=lambda: None,
+        unsubscribe_memory=lambda: None,
+        unsubscribe_approval=lambda: None,
+        debug_log=debug_lines.append,
+        auto_session_id=active_session_id,
+        auto_title_enabled=True,
+    )
+    return session, worker, retriever, debug_lines
+
+
 def test_normalize_session_title():
     assert runtime._normalize_session_title('  "Project kickoff"  ') == "Project kickoff"
     assert runtime._normalize_session_title("Hi") == ""
@@ -240,6 +324,172 @@ def test_ensure_unique_session_title_suffixes():
     short_memory = _FakeMemory({"Alpha"})
     assert runtime._ensure_unique_session_title("Alpha", short_memory=short_memory, long_memory=None) == "Alpha-2"
     assert runtime._ensure_unique_session_title("Beta", short_memory=short_memory, long_memory=None) == "Beta"
+
+
+def test_auto_title_session_uses_prompt_function_without_subagent(monkeypatch):
+    class _FakePromptFunction:
+        init_calls = []
+        execute_calls = []
+
+        def __init__(self, sys_prompt="", prompt="", client=None):
+            self.client = client
+            _FakePromptFunction.init_calls.append((sys_prompt, prompt, client))
+
+        def execute(self, *args, **kwargs):
+            _FakePromptFunction.execute_calls.append((args, kwargs))
+            return "Payroll Tax Filing Help"
+
+    def _forbid_agent(*_args, **_kwargs):
+        raise AssertionError("auto-title should not instantiate Agent")
+
+    monkeypatch.setattr(runtime, "PromptFunction", _FakePromptFunction)
+    monkeypatch.setattr(runtime, "Agent", _forbid_agent)
+
+    short_memory = _AutoTitleMemory({"session-a"})
+    long_memory = _AutoTitleMemory({"session-a"})
+    session, worker, retriever, _ = _build_auto_title_session(short_memory=short_memory, long_memory=long_memory)
+
+    asyncio.run(
+        runtime._auto_title_session(
+            session,
+            user_message="Need help filing payroll tax",
+            assistant_reply="I can walk you through the filing steps.",
+        )
+    )
+
+    assert session.active_session_id == "Payroll Tax Filing Help"
+    assert session.auto_session_id is None
+    assert worker.flushed == 1
+    assert short_memory.renames == [("session-a", "Payroll Tax Filing Help")]
+    assert long_memory.renames == [("session-a", "Payroll Tax Filing Help")]
+    assert retriever.default_sessions == ["Payroll Tax Filing Help"]
+    assert session.agent.session_id == "Payroll Tax Filing Help"
+    assert _FakePromptFunction.init_calls == [
+        (
+            "You generate concise session titles. Output a short, descriptive title only.",
+            "",
+            "gemini",
+        )
+    ]
+    prompt_args, prompt_kwargs = _FakePromptFunction.execute_calls[0]
+    assert "Generate a short session title (3-7 words)" in prompt_args[0]
+    assert prompt_kwargs["tools"] == []
+    assert prompt_kwargs["tool_choice"] == "auto"
+    assert prompt_kwargs["model"] == "gemini-3-flash-preview"
+
+
+def test_auto_title_session_caches_prompt_function_per_provider(monkeypatch):
+    class _FakePromptFunction:
+        init_clients = []
+        execute_count = 0
+
+        def __init__(self, sys_prompt="", prompt="", client=None):
+            _FakePromptFunction.init_clients.append(client)
+
+        def execute(self, *_args, **_kwargs):
+            _FakePromptFunction.execute_count += 1
+            if _FakePromptFunction.execute_count == 1:
+                return "First Session Title"
+            return "Second Session Title"
+
+    monkeypatch.setattr(runtime, "PromptFunction", _FakePromptFunction)
+
+    short_memory = _AutoTitleMemory({"session-a"})
+    session, _, _, _ = _build_auto_title_session(short_memory=short_memory, long_memory=None)
+
+    asyncio.run(
+        runtime._auto_title_session(
+            session,
+            user_message="first request",
+            assistant_reply="first reply",
+        )
+    )
+
+    session.auto_title_enabled = True
+    session.auto_session_id = session.active_session_id
+    asyncio.run(
+        runtime._auto_title_session(
+            session,
+            user_message="second request",
+            assistant_reply="second reply",
+        )
+    )
+
+    assert session.active_session_id == "Second Session Title"
+    assert _FakePromptFunction.init_clients == ["gemini"]
+    assert list(session.title_prompt_functions.keys()) == ["gemini"]
+
+
+def test_auto_title_session_creates_new_prompt_function_when_provider_changes(monkeypatch):
+    class _FakePromptFunction:
+        init_clients = []
+        execute_count = 0
+
+        def __init__(self, sys_prompt="", prompt="", client=None):
+            _FakePromptFunction.init_clients.append(client)
+
+        def execute(self, *_args, **_kwargs):
+            _FakePromptFunction.execute_count += 1
+            if _FakePromptFunction.execute_count == 1:
+                return "Gemini Session Title"
+            return "OpenAI Session Title"
+
+    monkeypatch.setattr(runtime, "PromptFunction", _FakePromptFunction)
+
+    short_memory = _AutoTitleMemory({"session-a"})
+    session, _, _, _ = _build_auto_title_session(short_memory=short_memory, long_memory=None)
+
+    asyncio.run(
+        runtime._auto_title_session(
+            session,
+            user_message="first request",
+            assistant_reply="first reply",
+        )
+    )
+
+    session.agent.state.model = {"provider": "openai", "id": "gpt-5-nano"}
+    session.auto_title_enabled = True
+    session.auto_session_id = session.active_session_id
+    asyncio.run(
+        runtime._auto_title_session(
+            session,
+            user_message="second request",
+            assistant_reply="second reply",
+        )
+    )
+
+    assert session.active_session_id == "OpenAI Session Title"
+    assert _FakePromptFunction.init_clients == ["gemini", "openai"]
+    assert sorted(session.title_prompt_functions.keys()) == ["gemini", "openai"]
+
+
+def test_auto_title_session_failure_clears_auto_session_and_logs(monkeypatch):
+    class _FailingPromptFunction:
+        def __init__(self, sys_prompt="", prompt="", client=None):
+            del sys_prompt, prompt, client
+
+        def execute(self, *_args, **_kwargs):
+            raise RuntimeError("prompt failure")
+
+    monkeypatch.setattr(runtime, "PromptFunction", _FailingPromptFunction)
+
+    session, _, _, debug_lines = _build_auto_title_session(short_memory=None, long_memory=None)
+    warnings = []
+
+    asyncio.run(
+        runtime._auto_title_session(
+            session,
+            user_message="trigger failure",
+            assistant_reply="trigger failure",
+            on_warning=warnings.append,
+        )
+    )
+
+    assert session.active_session_id == "session-a"
+    assert session.auto_title_enabled is False
+    assert session.auto_session_id is None
+    assert warnings and warnings[0].startswith("[session] auto-title failed: ")
+    assert any(line.startswith("[session] auto-title failed: ") for line in debug_lines)
 
 
 def test_run_user_turn_reports_memory_warning_when_retrieval_fails():
