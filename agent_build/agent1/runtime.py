@@ -40,7 +40,7 @@ from .env_utils import (
     sorted_csv,
 )
 from .event_logger import make_event_logger, resolve_log_level
-from .memory import (
+from agent.memory import (
     ContextCompressor,
     SessionConversationMemory,
     DiskMemory,

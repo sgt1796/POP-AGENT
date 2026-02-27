@@ -36,6 +36,14 @@ from .agent_types import (
     ToolBuildRequest,
     ToolBuildResult,
 )
+from .memory import (
+    SessionConversationMemory,
+    DiskMemory,
+    MemoryRetriever,
+    EmbeddingIngestionWorker,
+    MemorySubscriber,
+    ContextCompressor,
+)
 from .toolsmaker.registry import ToolsmakerRegistry
 
 __all__ = [
@@ -55,5 +63,11 @@ __all__ = [
     "ToolSpec",
     "ToolBuildRequest",
     "ToolBuildResult",
+    "SessionConversationMemory",
+    "DiskMemory",
+    "MemoryRetriever",
+    "EmbeddingIngestionWorker",
+    "MemorySubscriber",
+    "ContextCompressor",
     "ToolsmakerRegistry",
 ]

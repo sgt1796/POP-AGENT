@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from agent.agent_types import TextContent
-from agent_build.agent1.memory import (
+from agent.memory import (
     ContextCompressor,
     DiskMemory,
     EmbeddingIngestionWorker,
