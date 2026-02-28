@@ -5,15 +5,16 @@ import csv
 import json
 import mimetypes
 import os
+from datetime import date, datetime, time
+from decimal import Decimal
 from io import StringIO
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..agent_types import AgentTool, AgentToolResult, TextContent
 
-try:
-    from pypdf import PdfReader
-except Exception:  # pragma: no cover - exercised through runtime error path
-    PdfReader = None
+from pypdf import PdfReader
+from openpyxl import load_workbook
+
 
 
 _TEXT_SUFFIXES = {".txt", ".md"}
@@ -87,12 +88,147 @@ def _detect_image_kind(path: str, suffix: str) -> bool:
     return str(mime_type or "").strip().lower().startswith("image/")
 
 
+def _safe_xlsx_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (date, datetime, time)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode("ascii")
+    return str(value)
+
+
+def _sanitize_headers(header_row: Any) -> List[str]:
+    names: List[str] = []
+    counts: Dict[str, int] = {}
+    for index, raw in enumerate(tuple(header_row or ()), start=1):
+        base = str(raw).strip() if raw is not None else ""
+        if not base:
+            base = f"column_{index}"
+        seen = counts.get(base, 0)
+        counts[base] = seen + 1
+        names.append(base if seen == 0 else f"{base}_{seen + 1}")
+    return names
+
+
+def _xlsx_sheet_to_rows(sheet: Any) -> tuple[List[str], List[Dict[str, Any]]]:
+    values = [tuple(row) for row in sheet.iter_rows(values_only=True)]
+    if not values:
+        return [], []
+
+    headers = _sanitize_headers(values[0])
+    rows: List[Dict[str, Any]] = []
+    for row in values[1:]:
+        width = max(len(headers), len(row))
+        if width == 0:
+            continue
+        if len(headers) < width:
+            start = len(headers)
+            for offset in range(start, width):
+                headers.append(f"column_{offset + 1}")
+        normalized = [_safe_xlsx_value(row[idx]) if idx < len(row) else None for idx in range(width)]
+        if not any(cell not in (None, "") for cell in normalized):
+            continue
+        record = {headers[idx]: normalized[idx] for idx in range(width)}
+        rows.append(record)
+    return headers, rows
+
+
+def _xlsx_to_json_payload(path: str, *, byte_size: int) -> Dict[str, Any]:
+    if load_workbook is None:
+        raise FileReadError("missing_dependency", "openpyxl is required to read xlsx files")
+
+    try:
+        workbook = load_workbook(path, data_only=True, read_only=True)
+    except FileReadError:
+        raise
+    except Exception as exc:
+        raise FileReadError("parse_error", f"unable to parse xlsx: {exc}") from exc
+
+    try:
+        sheets_payload: List[Dict[str, Any]] = []
+        sheets_meta: List[Dict[str, Any]] = []
+        for sheet in workbook.worksheets:
+            headers, rows = _xlsx_sheet_to_rows(sheet)
+            sheets_payload.append({"name": sheet.title, "headers": headers, "rows": rows})
+            sheets_meta.append({"name": sheet.title, "headers": headers, "row_count": len(rows)})
+    finally:
+        try:
+            workbook.close()
+        except Exception:
+            pass
+
+    total_rows = sum(item["row_count"] for item in sheets_meta)
+    return {
+        "content": {"sheets": sheets_payload},
+        "metadata": {
+            "format": "json",
+            "sheet_count": len(sheets_meta),
+            "total_row_count": total_rows,
+            "sheets": sheets_meta,
+            "byte_size": byte_size,
+        },
+    }
+
+
+def _xlsx_to_csv_payload(path: str, *, byte_size: int) -> Dict[str, Any]:
+    if load_workbook is None:
+        raise FileReadError("missing_dependency", "openpyxl is required to read xlsx files")
+
+    try:
+        workbook = load_workbook(path, data_only=True, read_only=True)
+    except FileReadError:
+        raise
+    except Exception as exc:
+        raise FileReadError("parse_error", f"unable to parse xlsx: {exc}") from exc
+
+    try:
+        parts: List[str] = []
+        sheets_meta: List[Dict[str, Any]] = []
+        include_sheet_banner = len(workbook.worksheets) > 1
+        for sheet in workbook.worksheets:
+            headers, rows = _xlsx_sheet_to_rows(sheet)
+            buffer = StringIO()
+            if headers:
+                writer = csv.DictWriter(buffer, fieldnames=headers)
+                writer.writeheader()
+                writer.writerows(rows)
+            sheet_csv = buffer.getvalue().rstrip("\n")
+            if include_sheet_banner:
+                parts.append(f"# sheet: {sheet.title}")
+            parts.append(sheet_csv)
+            sheets_meta.append({"name": sheet.title, "headers": headers, "row_count": len(rows)})
+    finally:
+        try:
+            workbook.close()
+        except Exception:
+            pass
+
+    text = "\n\n".join(parts).strip()
+    return {
+        "content": text,
+        "metadata": {
+            "format": "csv",
+            "sheet_count": len(sheets_meta),
+            "total_row_count": sum(item["row_count"] for item in sheets_meta),
+            "sheets": sheets_meta,
+            "char_count": len(text),
+            "byte_size": byte_size,
+        },
+    }
+
+
 def read(
     path: str,
     *,
     workspace_root: Optional[str] = None,
     max_chars: int = 200_000,
     max_bytes: int = 10_000_000,
+    xlsx_format: str = "json",
 ) -> Dict[str, Any]:
     root = os.path.realpath(str(workspace_root or os.getcwd()))
     try:
@@ -206,6 +342,23 @@ def read(
             "truncated": truncated,
         }
 
+    if suffix == ".xlsx":
+        normalized_xlsx_format = str(xlsx_format or "json").strip().lower()
+        if normalized_xlsx_format not in {"json", "csv"}:
+            raise FileReadError("parse_error", "xlsx_format must be one of: json, csv")
+        converter = _xlsx_to_json_payload if normalized_xlsx_format == "json" else _xlsx_to_csv_payload
+        payload = converter(absolute, byte_size=size)
+        return {
+            "ok": True,
+            "path": absolute,
+            "workspace_path": workspace_path,
+            "suffix": suffix,
+            "kind": "xlsx",
+            "content": payload["content"],
+            "metadata": payload["metadata"],
+            "truncated": False,
+        }
+
     if _detect_image_kind(absolute, suffix):
         try:
             with open(absolute, "rb") as handle:
@@ -235,13 +388,18 @@ def read(
 class FileReadTool(AgentTool):
     name = "file_read"
     description = (
-        "Read and parse workspace files by suffix. Supports txt, md, json, csv, pdf, and image-to-base64."
+        "Read and parse workspace files by suffix. Supports txt, md, json, csv, xlsx, pdf, and image-to-base64."
     )
     parameters = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "File path relative to workspace root or absolute path."},
             "max_chars": {"type": "integer", "description": "Optional max returned chars for text/pdf content."},
+            "xlsx_format": {
+                "type": "string",
+                "enum": ["json", "csv"],
+                "description": "Optional .xlsx conversion format. Defaults to json.",
+            },
         },
         "required": ["path"],
     }
@@ -276,8 +434,14 @@ class FileReadTool(AgentTool):
             return self._error(path_value, "path_not_found", "path is required")
 
         max_chars = params.get("max_chars", 200_000)
+        xlsx_format = str(params.get("xlsx_format", "json") or "json")
         try:
-            payload = read(path_value, workspace_root=self.workspace_root, max_chars=int(max_chars))
+            payload = read(
+                path_value,
+                workspace_root=self.workspace_root,
+                max_chars=int(max_chars),
+                xlsx_format=xlsx_format,
+            )
         except FileReadError as exc:
             return self._error(path_value, exc.code, exc.message)
         except Exception as exc:

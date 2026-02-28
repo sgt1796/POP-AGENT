@@ -4,7 +4,7 @@ import asyncio
 import base64
 import json
 from pathlib import Path
-
+import openpyxl
 import pytest
 
 from agent.tools.file_read_tool import FileReadError, FileReadTool, read
@@ -56,6 +56,62 @@ def test_read_csv(tmp_path: Path):
         {"name": "Alice", "age": "30"},
         {"name": "Bob", "age": "31"},
     ]
+
+
+def test_read_xlsx_json(tmp_path: Path):
+    workbook = openpyxl.Workbook()
+    movies = workbook.active
+    movies.title = "Movies"
+    movies.append(["title", "year", "in_stock"])
+    movies.append(["Inception", 2010, True])
+    movies.append(["Spirited Away", 2001, False])
+    directors = workbook.create_sheet("Directors")
+    directors.append(["name"])
+    directors.append(["Christopher Nolan"])
+    workbook.save(tmp_path / "inventory.xlsx")
+
+    result = read("inventory.xlsx", workspace_root=str(tmp_path))
+
+    assert result["ok"] is True
+    assert result["kind"] == "xlsx"
+    assert result["metadata"]["format"] == "json"
+    assert result["metadata"]["sheet_count"] == 2
+    assert result["metadata"]["total_row_count"] == 3
+    sheets = result["content"]["sheets"]
+    assert sheets[0]["name"] == "Movies"
+    assert sheets[0]["rows"][0] == {"title": "Inception", "year": 2010, "in_stock": True}
+    assert sheets[0]["rows"][1] == {"title": "Spirited Away", "year": 2001, "in_stock": False}
+    assert sheets[1]["name"] == "Directors"
+    assert sheets[1]["rows"] == [{"name": "Christopher Nolan"}]
+
+
+def test_read_xlsx_csv(tmp_path: Path):
+    openpyxl = pytest.importorskip("openpyxl")
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Movies"
+    sheet.append(["title", "year"])
+    sheet.append(["Arrival", 2016])
+    workbook.save(tmp_path / "movies.xlsx")
+
+    result = read("movies.xlsx", workspace_root=str(tmp_path), xlsx_format="csv")
+
+    assert result["ok"] is True
+    assert result["kind"] == "xlsx"
+    assert result["metadata"]["format"] == "csv"
+    assert result["metadata"]["sheet_count"] == 1
+    assert result["metadata"]["total_row_count"] == 1
+    assert "title,year" in result["content"]
+    assert "Arrival,2016" in result["content"]
+
+
+def test_read_xlsx_rejects_invalid_format(tmp_path: Path):
+    (tmp_path / "empty.xlsx").write_bytes(b"placeholder")
+
+    with pytest.raises(FileReadError) as exc:
+        read("empty.xlsx", workspace_root=str(tmp_path), xlsx_format="xml")
+
+    assert exc.value.code == "parse_error"
 
 
 def test_read_pdf_includes_page_metadata(tmp_path: Path):
