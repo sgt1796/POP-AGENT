@@ -144,6 +144,8 @@ General:
 
 * `POP_AGENT_LOG_LEVEL`
   Default: `quiet` (`simple`, `full`, `debug` also supported; legacy `messages`/`stream` aliases are accepted)
+* `POP_AGENT_DEBUG_LOG_PATH`
+  Default: unset. When set, always writes a debug-level event/session log to this file regardless of `POP_AGENT_LOG_LEVEL`.
 * `POP_AGENT_MEMORY_TOP_K`
   Default: `3`
 * `POP_AGENT_SESSION_ID`

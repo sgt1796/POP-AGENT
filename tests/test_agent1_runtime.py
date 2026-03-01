@@ -197,6 +197,60 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     ]
 
 
+def test_create_runtime_session_debug_file_logs_regardless_runtime_log_level(monkeypatch, tmp_path):
+    log_path = tmp_path / "debug" / "agent-debug.log"
+    monkeypatch.setenv("POP_AGENT_LOG_LEVEL", "quiet")
+    monkeypatch.setenv("POP_AGENT_DEBUG_LOG_PATH", str(log_path))
+    monkeypatch.setenv("POP_AGENT_TOOLSMAKER_PROMPT_APPROVAL", "false")
+    monkeypatch.setenv("POP_AGENT_TOOLSMAKER_AUTO_CONTINUE", "false")
+    monkeypatch.setenv("POP_AGENT_BASH_PROMPT_APPROVAL", "false")
+    monkeypatch.setenv("POP_AGENT_INCLUDE_DEMO_TOOLS", "false")
+    monkeypatch.setenv("POP_AGENT_MEMORY_TOP_K", "3")
+
+    monkeypatch.setattr(runtime, "Agent", _FakeAgent)
+    monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
+    monkeypatch.setattr(runtime, "ToolsmakerTool", lambda agent, allowed_capabilities: SimpleNamespace(name="toolsmaker"))
+    monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root: SimpleNamespace(name="file_read"))
+    monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: SimpleNamespace(name="gmail_fetch"))
+    monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: SimpleNamespace(name="pdf_merge"))
+    monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: SimpleNamespace(name="jina_web_snapshot"))
+    monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: SimpleNamespace(name="perplexity_search"))
+    monkeypatch.setattr(runtime, "PerplexityWebSnapshotTool", lambda: SimpleNamespace(name="perplexity_web_snapshot"))
+    monkeypatch.setattr(runtime, "SlowTool", lambda: SimpleNamespace(name="slow"))
+    monkeypatch.setattr(runtime, "FastTool", lambda: SimpleNamespace(name="fast"))
+    monkeypatch.setattr(runtime, "BashExecConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+
+    class _FakeBashExecTool:
+        def __init__(self, config, approval_fn=None):
+            self.name = "bash_exec"
+            self.config = config
+            self.approval_fn = approval_fn
+            self.description = ""
+
+    monkeypatch.setattr(runtime, "BashExecTool", _FakeBashExecTool)
+    monkeypatch.setattr(runtime, "build_system_prompt", lambda **kwargs: "prompt")
+    monkeypatch.setattr(runtime, "_generate_session_id", lambda: "session-debug-file")
+
+    session = runtime.create_runtime_session(
+        enable_event_logger=False,
+        overrides=runtime.RuntimeOverrides(enable_memory=False),
+    )
+
+    for subscriber in list(session.agent._subscribers):
+        subscriber({"type": "custom_event", "value": 1})
+
+    assert session.debug_log is not None
+    session.debug_log("[session] debug-line")
+
+    asyncio.run(shutdown_runtime_session(session))
+
+    text = log_path.read_text(encoding="utf-8")
+    assert f"[debug:file] POP_AGENT_DEBUG_LOG_PATH={log_path.resolve()}" in text
+    assert "[session] created id=session-debug-file" in text
+    assert "[debug] {'type': 'custom_event', 'value': 1}" in text
+    assert "[session] debug-line" in text
+
+
 def test_run_user_turn_builds_augmented_prompt_and_flushes():
     agent = _FakeAgent()
     retriever = _FakeRetriever()

@@ -4,7 +4,7 @@ import re
 import uuid
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Set
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Set, TextIO
 
 from POP import PromptFunction
 from POP.embedder import Embedder
@@ -80,6 +80,8 @@ class RuntimeSession:
     unsubscribe_memory: Callable[[], None]
     unsubscribe_approval: Callable[[], None]
     debug_log: Optional[Callable[[str], None]] = None
+    unsubscribe_debug_file_log: Callable[[], None] = lambda: None
+    close_debug_log_file: Optional[Callable[[], None]] = None
     auto_session_id: Optional[str] = None
     auto_title_enabled: bool = False
     auto_title_task: Optional[asyncio.Task[None]] = None
@@ -142,6 +144,68 @@ class _NoopIngestionWorker:
 
     async def shutdown(self) -> None:
         return None
+
+
+def _combine_debug_logs(
+    primary: Optional[Callable[[str], None]],
+    secondary: Optional[Callable[[str], None]],
+) -> Optional[Callable[[str], None]]:
+    if primary is None:
+        return secondary
+    if secondary is None:
+        return primary
+
+    def _log(text: str) -> None:
+        try:
+            primary(text)
+        except Exception:
+            pass
+        try:
+            secondary(text)
+        except Exception:
+            pass
+
+    return _log
+
+
+def _make_debug_file_sink(
+    raw_path: Optional[str],
+) -> tuple[Optional[Callable[[str], None]], Optional[Callable[[], None]], Optional[str], Optional[str]]:
+    path_value = str(raw_path or "").strip()
+    if not path_value:
+        return None, None, None, None
+
+    resolved_path = os.path.realpath(path_value)
+    parent_dir = os.path.dirname(resolved_path)
+    if parent_dir:
+        try:
+            os.makedirs(parent_dir, exist_ok=True)
+        except Exception as exc:
+            return None, None, resolved_path, f"unable to create directory '{parent_dir}': {exc}"
+
+    handle: Optional[TextIO] = None
+    try:
+        handle = open(resolved_path, "a", encoding="utf-8")
+    except Exception as exc:
+        return None, None, resolved_path, f"unable to open '{resolved_path}': {exc}"
+
+    def _sink(text: str) -> None:
+        try:
+            if handle is None:
+                return
+            handle.write(f"{text}\n")
+            handle.flush()
+        except Exception:
+            pass
+
+    def _close() -> None:
+        try:
+            if handle is not None:
+                handle.close()
+        except Exception:
+            pass
+
+    return _sink, _close, resolved_path, None
 
 
 def _resolve_bool_override(value: Optional[bool], default: bool) -> bool:
@@ -492,12 +556,14 @@ def create_runtime_session(
 
     agent = Agent({"stream_fn": stream})
     agent.set_model({"provider": "gemini", "id": "gemini-3-flash-preview", "api": None})
-    if isinstance(overrides.model_override, dict) and overrides.model_override:
+    if isinstance(overrides.model_override, dict) and overrides.model_override: # for eval overrides
         print(f"[config] applying model override: {overrides.model_override}")
         agent.set_model(dict(overrides.model_override))
     agent.set_timeout(120)
 
     initial_session_id = _generate_session_id()
+
+    ## Memory
     memory_enabled = _resolve_bool_override(overrides.enable_memory, True)
     long_memory_base_path = str(overrides.long_memory_base_path or os.path.join("agent", "mem", "history.jsonl")).strip()
     if not long_memory_base_path:
@@ -534,6 +600,7 @@ def create_runtime_session(
     gmail_fetch_tool = GmailFetchTool(workspace_root=workspace_root)
     pdf_merge_tool = PdfMergeTool(workspace_root=workspace_root)
 
+    ## Bash exec configuration
     bash_allowed_roots = parse_path_list_env(
         "POP_AGENT_BASH_ALLOWED_ROOTS",
         default_paths=[workspace_root],
@@ -635,11 +702,30 @@ def create_runtime_session(
     if overrides.log_level is not None:
         effective_log_level = overrides.log_level
 
+    debug_file_sink: Optional[Callable[[str], None]] = None
+    close_debug_log_file: Optional[Callable[[], None]] = None
+    debug_log_path_env = os.getenv("POP_AGENT_DEBUG_LOG_PATH", "")
+    debug_log_path = None
+    debug_log_path_error = None
+    if str(debug_log_path_env).strip():
+        debug_file_sink, close_debug_log_file, debug_log_path, debug_log_path_error = _make_debug_file_sink(
+            debug_log_path_env
+        )
+        if debug_log_path_error:
+            print(f"[debug] POP_AGENT_DEBUG_LOG_PATH warning: {debug_log_path_error}")
+
+    effective_debug_log = _combine_debug_logs(debug_log, debug_file_sink)
+
     ## Event subscriptions
     if enable_event_logger:
         unsubscribe_log = agent.subscribe(make_event_logger(effective_log_level))
     else:
         unsubscribe_log = lambda: None
+
+    if debug_file_sink is not None:
+        unsubscribe_debug_file_log = agent.subscribe(make_event_logger("debug", sink=debug_file_sink))
+    else:
+        unsubscribe_debug_file_log = lambda: None
 
     if memory_subscriber is not None:
         unsubscribe_memory = agent.subscribe(memory_subscriber.on_event)
@@ -691,13 +777,17 @@ def create_runtime_session(
         unsubscribe_log=unsubscribe_log,
         unsubscribe_memory=unsubscribe_memory,
         unsubscribe_approval=unsubscribe_approval,
-        debug_log=debug_log,
+        debug_log=effective_debug_log,
+        unsubscribe_debug_file_log=unsubscribe_debug_file_log,
+        close_debug_log_file=close_debug_log_file,
         auto_session_id=initial_session_id,
         auto_title_enabled=True,
         auto_title_task=None,
     )
-    if debug_log is not None:
-        debug_log(f"[session] created id={initial_session_id}")
+    if effective_debug_log is not None:
+        if debug_log_path is not None:
+            effective_debug_log(f"[debug:file] POP_AGENT_DEBUG_LOG_PATH={debug_log_path}")
+        effective_debug_log(f"[session] created id={initial_session_id}")
     return session
 
 
@@ -792,6 +882,10 @@ async def shutdown_runtime_session(session: RuntimeSession) -> None:
                 pass
         session.unsubscribe_memory()
         session.unsubscribe_log()
+        session.unsubscribe_debug_file_log()
+        close_debug_log_file = session.close_debug_log_file
+        if close_debug_log_file is not None:
+            close_debug_log_file()
         session.unsubscribe_approval()
 
     if shutdown_error is not None:

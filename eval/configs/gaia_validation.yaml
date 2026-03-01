@@ -2,13 +2,14 @@ benchmark: gaia
 split: validation
 limit: 3
 #seed: 0
-timeout_s: 120.0
+timeout_s: 180.0
 output_root: eval/runs
 run_id: null
 executor: agent1
 continue_on_error: true
 concurrency: 0
-benchmark_options: {shuffle: true}
+benchmark_options: 
+  shuffle: true
 executor_options:
   enable_memory: true
   bash_prompt_approval: false

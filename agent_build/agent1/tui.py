@@ -592,16 +592,19 @@ def run_tui() -> int:
             if self._session is None:
                 return
             task = self._session.auto_title_task
-            if task is None or task.done():
+            if task is None:
+                return
+            if task.done():
+                self._refresh_session_title()
                 return
             if task is self._observed_title_task:
                 return
             self._observed_title_task = task
 
             def _on_done(_: asyncio.Task[None]) -> None:
-                call_from_thread = getattr(self, "call_from_thread", None)
-                if callable(call_from_thread):
-                    call_from_thread(self._refresh_session_title)
+                call_later = getattr(self, "call_later", None)
+                if callable(call_later):
+                    call_later(self._refresh_session_title)
                 else:
                     self._refresh_session_title()
 
@@ -829,7 +832,6 @@ def run_tui() -> int:
                 self._session.top_k = validated.memory_top_k
                 self._session.execution_profile = validated.execution_profile
                 self._activity_log_level = validated.activity_level
-                self._session.debug_log = self._debug_log
                 self._rebuild_system_prompt()
             except Exception as exc:
                 self._append_activity(f"[settings:error] apply failed: {exc}")
@@ -1105,8 +1107,8 @@ def run_tui() -> int:
                 self._last_run_had_error = self._current_run_had_error
                 self._turn_task = None
                 self._update_indicator()
-                self._refresh_session_title()
                 self._watch_auto_title_task()
+                self._refresh_session_title()
 
         def _on_settings_dismissed(self, result: Optional[_SettingsPayload]) -> None:
             if isinstance(result, _SettingsPayload):

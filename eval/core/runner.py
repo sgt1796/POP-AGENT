@@ -121,10 +121,19 @@ async def run_evaluation_async(
 
     for index, base_sample in enumerate(benchmark_samples):
         prompt = benchmark_adapter.build_prompt(base_sample)
-        eval_prefix = "You are in evaluation enviornment. Please strictly follow the instructions, and return only the final answer without any extra information.\n\n"
+        eval_prefix = (
+            "You are in an evaluation environment.\n"
+            "Return only the final answer to the task.\n"
+            "Do not include reasoning, steps, calculations, explanations, or tool output.\n"
+            "Output format requirements:\n"
+            "- Exactly one line.\n"
+            "- No markdown, bullet points, code fences, or labels such as 'Final answer:'.\n"
+            "- Include only the answer text or number.\n\n"
+        )
+        eval_suffix = "\n\nRemember: output exactly one line containing only the final answer."
         sample = BenchmarkSample(
             sample_id=base_sample.sample_id,
-            prompt=eval_prefix + prompt,
+            prompt=eval_prefix + prompt.strip() + eval_suffix,
             ground_truth=base_sample.ground_truth,
             metadata=dict(base_sample.metadata or {}),
             assets=dict(base_sample.assets or {}),
