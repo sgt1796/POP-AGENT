@@ -15,11 +15,14 @@ from agent.agent_types import AgentTool
 from agent.tools import (
     BashExecConfig,
     BashExecTool,
+    DownloadUrlToFileTool,
     FileReadTool,
+    FileWriteTool,
     FastTool,
     GmailFetchTool,
     JinaWebSnapshotTool,
     MemorySearchTool,
+    OpenAlexWorksTool,
     PerplexitySearchTool,
     PerplexityWebSnapshotTool,
     PdfMergeTool,
@@ -308,23 +311,30 @@ async def _read_input(prompt: str) -> str:
 def build_runtime_tools(
     *,
     memory_search_tool: MemorySearchTool,
-    toolsmaker_tool: ToolsmakerTool,
+    toolsmaker_tool: Optional[ToolsmakerTool],
     bash_exec_tool: BashExecTool,
+    download_url_to_file_tool: AgentTool,
     gmail_fetch_tool: GmailFetchTool,
     pdf_merge_tool: PdfMergeTool,
     include_demo_tools: bool,
     file_read_tool: Optional[AgentTool] = None,
+    file_write_tool: Optional[AgentTool] = None,
 ) -> List[AgentTool]:
     tools: List[AgentTool] = [
         JinaWebSnapshotTool(),
         PerplexitySearchTool(),
+        OpenAlexWorksTool(),
+        download_url_to_file_tool,
         PerplexityWebSnapshotTool(),
         memory_search_tool,
-        toolsmaker_tool,
-        bash_exec_tool,
     ]
+    if toolsmaker_tool is not None:
+        tools.append(toolsmaker_tool)
+    tools.append(bash_exec_tool)
     if file_read_tool is not None:
         tools.append(file_read_tool)
+    if file_write_tool is not None:
+        tools.append(file_write_tool)
     tools.extend([gmail_fetch_tool, pdf_merge_tool])
     if include_demo_tools:
         tools.extend([SlowTool(), FastTool()])
@@ -593,10 +603,17 @@ def create_runtime_session(
 
     ## Tools
     memory_search_tool = MemorySearchTool(retriever=retriever)
-    toolsmaker_caps = parse_toolsmaker_allowed_capabilities(os.getenv("POP_AGENT_TOOLSMAKER_ALLOWED_CAPS"))
-    toolsmaker_tool = ToolsmakerTool(agent=agent, allowed_capabilities=toolsmaker_caps)
+    toolsmaker_enabled = parse_bool_env("POP_AGENT_ENABLE_TOOLSMAKER", False)
+    toolsmaker_tool: Optional[ToolsmakerTool]
+    if toolsmaker_enabled:
+        toolsmaker_caps = parse_toolsmaker_allowed_capabilities(os.getenv("POP_AGENT_TOOLSMAKER_ALLOWED_CAPS"))
+        toolsmaker_tool = ToolsmakerTool(agent=agent, allowed_capabilities=toolsmaker_caps)
+    else:
+        toolsmaker_tool = None
     workspace_root = os.path.realpath(os.getcwd())
     file_read_tool = FileReadTool(workspace_root=workspace_root)
+    file_write_tool = FileWriteTool(workspace_root=workspace_root)
+    download_url_to_file_tool = DownloadUrlToFileTool(workspace_root=workspace_root)
     gmail_fetch_tool = GmailFetchTool(workspace_root=workspace_root)
     pdf_merge_tool = PdfMergeTool(workspace_root=workspace_root)
 
@@ -639,17 +656,22 @@ def create_runtime_session(
     bash_write_csv = sorted_csv(BASH_WRITE_COMMANDS)
     bash_git_csv = sorted_csv(BASH_GIT_READ_SUBCOMMANDS)
     execution_profile = resolve_execution_profile(os.getenv("POP_AGENT_EXECUTION_PROFILE", "balanced"))
-    toolsmaker_manual_approval = parse_bool_env("POP_AGENT_TOOLSMAKER_PROMPT_APPROVAL", True)
-    toolsmaker_auto_activate = parse_bool_env("POP_AGENT_TOOLSMAKER_AUTO_ACTIVATE", True)
-    toolsmaker_auto_continue = parse_bool_env("POP_AGENT_TOOLSMAKER_AUTO_CONTINUE", True)
-    toolsmaker_manual_approval = _resolve_bool_override(
-        overrides.toolsmaker_manual_approval,
-        toolsmaker_manual_approval,
-    )
-    toolsmaker_auto_continue = _resolve_bool_override(
-        overrides.toolsmaker_auto_continue,
-        toolsmaker_auto_continue,
-    )
+    if toolsmaker_enabled:
+        toolsmaker_manual_approval = parse_bool_env("POP_AGENT_TOOLSMAKER_PROMPT_APPROVAL", True)
+        toolsmaker_auto_activate = parse_bool_env("POP_AGENT_TOOLSMAKER_AUTO_ACTIVATE", True)
+        toolsmaker_auto_continue = parse_bool_env("POP_AGENT_TOOLSMAKER_AUTO_CONTINUE", True)
+        toolsmaker_manual_approval = _resolve_bool_override(
+            overrides.toolsmaker_manual_approval,
+            toolsmaker_manual_approval,
+        )
+        toolsmaker_auto_continue = _resolve_bool_override(
+            overrides.toolsmaker_auto_continue,
+            toolsmaker_auto_continue,
+        )
+    else:
+        toolsmaker_manual_approval = False
+        toolsmaker_auto_activate = False
+        toolsmaker_auto_continue = False
     include_demo_tools = parse_bool_env("POP_AGENT_INCLUDE_DEMO_TOOLS", False)
 
     bash_exec_tool.description = (
@@ -670,6 +692,7 @@ def create_runtime_session(
             bash_write_csv=bash_write_csv,
             bash_git_csv=bash_git_csv,
             bash_prompt_approval=bash_prompt_approval,
+            toolsmaker_enabled=toolsmaker_enabled,
             toolsmaker_manual_approval=toolsmaker_manual_approval,
             toolsmaker_auto_continue=toolsmaker_auto_continue,
             execution_profile=execution_profile,
@@ -680,7 +703,9 @@ def create_runtime_session(
         memory_search_tool=memory_search_tool,
         toolsmaker_tool=toolsmaker_tool,
         bash_exec_tool=bash_exec_tool,
+        download_url_to_file_tool=download_url_to_file_tool,
         file_read_tool=file_read_tool,
+        file_write_tool=file_write_tool,
         gmail_fetch_tool=gmail_fetch_tool,
         pdf_merge_tool=pdf_merge_tool,
         include_demo_tools=include_demo_tools,
@@ -732,7 +757,7 @@ def create_runtime_session(
     else:
         unsubscribe_memory = lambda: None
 
-    if toolsmaker_manual_approval:
+    if toolsmaker_enabled and toolsmaker_manual_approval:
         if manual_toolsmaker_subscriber_factory is not None:
             candidate = manual_toolsmaker_subscriber_factory(agent)
             subscriber = getattr(candidate, "on_event", candidate)
@@ -743,7 +768,7 @@ def create_runtime_session(
                 auto_activate_default=toolsmaker_auto_activate,
             )
             unsubscribe_approval = agent.subscribe(approval_subscriber.on_event)
-    elif toolsmaker_auto_continue:
+    elif toolsmaker_enabled and toolsmaker_auto_continue:
         auto_continue_subscriber = ToolsmakerAutoContinueSubscriber(agent=agent)
         unsubscribe_approval = agent.subscribe(auto_continue_subscriber.on_event)
     else:
@@ -900,7 +925,16 @@ async def main() -> None:
     session = create_runtime_session(debug_log=debug_log)
 
     print("POP Chatroom Agent (tools + embedding memory)")
-    if session.toolsmaker_manual_approval:
+    available_tool_names = set()
+    try:
+        listed = session.agent.list_tools()
+        if isinstance(listed, list):
+            available_tool_names = {str(name).strip() for name in listed if str(name).strip()}
+    except Exception:
+        pass
+    if "toolsmaker" not in available_tool_names:
+        print("[toolsmaker] disabled")
+    elif session.toolsmaker_manual_approval:
         print(
             "[toolsmaker] manual approval prompts: on "
             f"(default auto-activate={'on' if session.toolsmaker_auto_activate else 'off'})"
@@ -908,10 +942,7 @@ async def main() -> None:
         print("[toolsmaker] auto-continue: off (manual approval mode)")
     else:
         print("[toolsmaker] manual approval prompts: off")
-        if session.toolsmaker_auto_continue:
-            print("[toolsmaker] auto-continue: on")
-        else:
-            print("[toolsmaker] auto-continue: off")
+        print(f"[toolsmaker] auto-continue: {'on' if session.toolsmaker_auto_continue else 'off'}")
     print(f"[agent] execution profile: {session.execution_profile}")
     print(f"[tools] demo tools: {'on' if session.include_demo_tools else 'off'}")
     if session.bash_prompt_approval:

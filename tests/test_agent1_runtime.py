@@ -13,9 +13,11 @@ def _dummy_tool(name: str):
 def test_build_runtime_tools_excludes_demo_tools_by_default():
     tools = build_runtime_tools(
         memory_search_tool=_dummy_tool("memory_search"),  # type: ignore[arg-type]
-        toolsmaker_tool=_dummy_tool("toolsmaker"),  # type: ignore[arg-type]
+        toolsmaker_tool=None,
         bash_exec_tool=_dummy_tool("bash_exec"),  # type: ignore[arg-type]
+        download_url_to_file_tool=_dummy_tool("download_url_to_file"),  # type: ignore[arg-type]
         file_read_tool=_dummy_tool("file_read"),  # type: ignore[arg-type]
+        file_write_tool=_dummy_tool("file_write"),  # type: ignore[arg-type]
         gmail_fetch_tool=_dummy_tool("gmail_fetch"),  # type: ignore[arg-type]
         pdf_merge_tool=_dummy_tool("pdf_merge"),  # type: ignore[arg-type]
         include_demo_tools=False,
@@ -25,11 +27,13 @@ def test_build_runtime_tools_excludes_demo_tools_by_default():
     assert names == [
         "jina_web_snapshot",
         "perplexity_search",
+        "openalex_works",
+        "download_url_to_file",
         "perplexity_web_snapshot",
         "memory_search",
-        "toolsmaker",
         "bash_exec",
         "file_read",
+        "file_write",
         "gmail_fetch",
         "pdf_merge",
     ]
@@ -38,9 +42,11 @@ def test_build_runtime_tools_excludes_demo_tools_by_default():
 def test_build_runtime_tools_includes_demo_tools_when_enabled():
     tools = build_runtime_tools(
         memory_search_tool=_dummy_tool("memory_search"),  # type: ignore[arg-type]
-        toolsmaker_tool=_dummy_tool("toolsmaker"),  # type: ignore[arg-type]
+        toolsmaker_tool=None,
         bash_exec_tool=_dummy_tool("bash_exec"),  # type: ignore[arg-type]
+        download_url_to_file_tool=_dummy_tool("download_url_to_file"),  # type: ignore[arg-type]
         file_read_tool=_dummy_tool("file_read"),  # type: ignore[arg-type]
+        file_write_tool=_dummy_tool("file_write"),  # type: ignore[arg-type]
         gmail_fetch_tool=_dummy_tool("gmail_fetch"),  # type: ignore[arg-type]
         pdf_merge_tool=_dummy_tool("pdf_merge"),  # type: ignore[arg-type]
         include_demo_tools=True,
@@ -50,11 +56,13 @@ def test_build_runtime_tools_includes_demo_tools_when_enabled():
     assert names == [
         "jina_web_snapshot",
         "perplexity_search",
+        "openalex_works",
+        "download_url_to_file",
         "perplexity_web_snapshot",
         "memory_search",
-        "toolsmaker",
         "bash_exec",
         "file_read",
+        "file_write",
         "gmail_fetch",
         "pdf_merge",
         "slow",
@@ -154,10 +162,13 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
     monkeypatch.setattr(runtime, "ToolsmakerTool", lambda agent, allowed_capabilities: SimpleNamespace(name="toolsmaker"))
     monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root: SimpleNamespace(name="file_read"))
+    monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root: SimpleNamespace(name="file_write"))
+    monkeypatch.setattr(runtime, "DownloadUrlToFileTool", lambda workspace_root: SimpleNamespace(name="download_url_to_file"))
     monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: SimpleNamespace(name="gmail_fetch"))
     monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: SimpleNamespace(name="pdf_merge"))
     monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: SimpleNamespace(name="jina_web_snapshot"))
     monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: SimpleNamespace(name="perplexity_search"))
+    monkeypatch.setattr(runtime, "OpenAlexWorksTool", lambda: SimpleNamespace(name="openalex_works"))
     monkeypatch.setattr(runtime, "PerplexityWebSnapshotTool", lambda: SimpleNamespace(name="perplexity_web_snapshot"))
     monkeypatch.setattr(runtime, "SlowTool", lambda: SimpleNamespace(name="slow"))
     monkeypatch.setattr(runtime, "FastTool", lambda: SimpleNamespace(name="fast"))
@@ -179,19 +190,21 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
 
     assert isinstance(session, RuntimeSession)
     assert session.top_k >= 1
-    assert session.toolsmaker_manual_approval is True
+    assert session.toolsmaker_manual_approval is False
     assert session.bash_prompt_approval is True
     assert session.active_session_id == "session-test"
     assert session.auto_session_id == "session-test"
     assert session.auto_title_enabled is True
-    assert [tool.name for tool in session.agent._tools][:9] == [
+    assert [tool.name for tool in session.agent._tools][:11] == [
         "jina_web_snapshot",
         "perplexity_search",
+        "openalex_works",
+        "download_url_to_file",
         "perplexity_web_snapshot",
         "memory_search",
-        "toolsmaker",
         "bash_exec",
         "file_read",
+        "file_write",
         "gmail_fetch",
         "pdf_merge",
     ]
@@ -211,10 +224,13 @@ def test_create_runtime_session_debug_file_logs_regardless_runtime_log_level(mon
     monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
     monkeypatch.setattr(runtime, "ToolsmakerTool", lambda agent, allowed_capabilities: SimpleNamespace(name="toolsmaker"))
     monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root: SimpleNamespace(name="file_read"))
+    monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root: SimpleNamespace(name="file_write"))
+    monkeypatch.setattr(runtime, "DownloadUrlToFileTool", lambda workspace_root: SimpleNamespace(name="download_url_to_file"))
     monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: SimpleNamespace(name="gmail_fetch"))
     monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: SimpleNamespace(name="pdf_merge"))
     monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: SimpleNamespace(name="jina_web_snapshot"))
     monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: SimpleNamespace(name="perplexity_search"))
+    monkeypatch.setattr(runtime, "OpenAlexWorksTool", lambda: SimpleNamespace(name="openalex_works"))
     monkeypatch.setattr(runtime, "PerplexityWebSnapshotTool", lambda: SimpleNamespace(name="perplexity_web_snapshot"))
     monkeypatch.setattr(runtime, "SlowTool", lambda: SimpleNamespace(name="slow"))
     monkeypatch.setattr(runtime, "FastTool", lambda: SimpleNamespace(name="fast"))

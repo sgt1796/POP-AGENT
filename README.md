@@ -19,6 +19,18 @@ python run_tui.py
 python -m agent_build.agent1.agent1
 ```
 
+## Recent Changes (2026-03-05)
+- Added new research-paper tool: `openalex_works`.
+- Updated `agent_build.agent1` runtime defaults to include `openalex_works`.
+- `openalex_works` supports:
+  - `action="search"` for OpenAlex works search with query, pagination, sort, and filters.
+  - `action="fetch_openalex_record"` for fetching a single work by OpenAlex ID/URL or DOI.
+- Tool output now returns normalized paper metadata (title, authors, year/date, citations, DOI, OA links), with optional abstract reconstruction via `include_abstract=true`.
+- OpenAlex setup:
+  - No extra SDK dependency required (uses direct OpenAlex HTTP API).
+  - Optional polite pool email: `OPENALEX_EMAIL=...`
+  - Optional API key: `OPENALEX_API_KEY=...`
+
 ## Recent Changes (2026-02-26)
 - Updated `agent_build/agent1` runtime and eval behavior:
   - `RuntimeOverrides.enable_memory` now correctly enables/disables memory wiring.

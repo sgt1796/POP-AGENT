@@ -534,11 +534,24 @@ def run_tui() -> int:
         def _toolsmaker_mode_text(self) -> str:
             if self._session is None:
                 return "unknown"
+            if not self._toolsmaker_enabled():
+                return "disabled"
             if self._session.toolsmaker_manual_approval:
                 return "manual"
             if self._session.toolsmaker_auto_continue:
                 return "auto-continue"
             return "llm-managed"
+
+        def _toolsmaker_enabled(self) -> bool:
+            if self._session is None:
+                return False
+            try:
+                names = self._session.agent.list_tools()
+            except Exception:
+                return False
+            if not isinstance(names, list):
+                return False
+            return "toolsmaker" in {str(name).strip() for name in names if str(name).strip()}
 
         def _bash_mode_text(self) -> str:
             if self._session is None:
@@ -730,6 +743,7 @@ def run_tui() -> int:
                     bash_write_csv=sorted_csv(BASH_WRITE_COMMANDS),
                     bash_git_csv=sorted_csv(BASH_GIT_READ_SUBCOMMANDS),
                     bash_prompt_approval=self._session.bash_prompt_approval,
+                    toolsmaker_enabled=self._toolsmaker_enabled(),
                     toolsmaker_manual_approval=self._session.toolsmaker_manual_approval,
                     toolsmaker_auto_continue=self._session.toolsmaker_auto_continue,
                     execution_profile=self._session.execution_profile,
