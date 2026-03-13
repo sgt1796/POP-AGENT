@@ -1,24 +1,5 @@
 import os
-from typing import List, Optional, Sequence
-
-from .constants import DEFAULT_TOOLSMAKER_ALLOWED_CAPS, TOOL_CAPABILITIES
-
-
-def parse_toolsmaker_allowed_capabilities(value: Optional[str]) -> List[str]:
-    raw = str(value if value is not None else DEFAULT_TOOLSMAKER_ALLOWED_CAPS)
-    caps: List[str] = []
-    seen = set()
-    for item in raw.split(","):
-        cap = item.strip()
-        if not cap or cap in seen:
-            continue
-        if cap in TOOL_CAPABILITIES:
-            caps.append(cap)
-            seen.add(cap)
-    if not caps:
-        return ["fs_read", "fs_write", "http"]
-    return caps
-
+from typing import List, Sequence
 
 def parse_bool_env(name: str, default: bool) -> bool:
     value = os.getenv(name)

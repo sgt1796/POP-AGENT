@@ -37,6 +37,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tup
 from dotenv import load_dotenv
 
 from .event_stream import EventStream
+from .time_utils import build_timestamped_system_prompt
 from .agent_types import (
     AgentContext,
     AgentMessage,
@@ -48,7 +49,6 @@ from .agent_types import (
     ThinkingContent,
     ToolCallContent,
 )
-from .toolsmaker.registry import append_audit_event
 from .usage_tracking import ensure_usage_record
 
 # Attempt to import POP for the default LLM transport.  If
@@ -689,7 +689,7 @@ async def _stream_assistant_response(
 
     # Build context dictionary expected by the LLM transport
     llm_context: Dict[str, Any] = {
-        "system_prompt": context.system_prompt,
+        "system_prompt": build_timestamped_system_prompt(context.system_prompt),
         "messages": llm_messages,
     }
     # Attach tool definitions if present.  Tools are expected to
@@ -829,16 +829,16 @@ async def _stream_assistant_response(
                     )
             elif etype in {"done", "error"}:
                 # Final assistant message
-                # Try to obtain the full message from response.result()
-                full_msg: Optional[Dict[str, Any]] = None
-                if hasattr(response, "result"):
+                # Prefer the payload already attached to the terminal event.
+                # Some transports emit a final message in the event but leave
+                # response.result() unresolved, which can stall the turn after
+                # tools have already completed.
+                full_msg: Optional[Dict[str, Any]] = event.get("message") or event.get("error") or None
+                if full_msg is None and hasattr(response, "result"):
                     try:
                         full_msg = await response.result()
                     except Exception:
                         full_msg = None
-                # Fall back to event provided message or error
-                if full_msg is None:
-                    full_msg = event.get("message") or event.get("error") or None
                 if full_msg is None and partial_message is not None:
                     full_msg = partial_message.to_dict()  # type: ignore
                 if full_msg is None:
@@ -1006,10 +1006,6 @@ async def _execute_tool_calls(
                     "details": getattr(exc, "details", {}),
                 }
                 stream.push(blocked_event)
-                try:
-                    append_audit_event(blocked_event)
-                except Exception:
-                    pass
             result = AgentToolResult(
                 content=[TextContent(type="text", text=str(exc))],
                 details={},

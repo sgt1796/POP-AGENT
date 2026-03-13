@@ -29,12 +29,21 @@ class _ErrorStream:
         return self._message
 
 
+class _DoneStreamWithHangingResult:
+    def __init__(self, message: Dict[str, Any]) -> None:
+        self._message = message
+
+    async def __aiter__(self):
+        yield {"type": "done", "message": self._message}
+
+    async def result(self):
+        await asyncio.Future()
+
+
 def _make_agent(tmp_path: Path, stream_fn):
     return Agent(
         {
             "stream_fn": stream_fn,
-            "toolsmaker_dir": str(tmp_path / "toolsmaker"),
-            "toolsmaker_audit_path": str(tmp_path / "toolsmaker" / "audit.jsonl"),
             "project_root": str(tmp_path),
         }
     )
@@ -115,6 +124,26 @@ def test_agent_tracks_usage_on_error_with_usage_payload(tmp_path: Path):
     assert summary["total_tokens"] == 4
     assert summary["provider_calls"] == 1
     assert str(agent.state.error) == "boom"
+
+
+def test_agent_uses_done_event_message_when_stream_result_hangs(tmp_path: Path):
+    async def _stream_fn(model: Dict[str, Any], context: Dict[str, Any], options: Dict[str, Any]):
+        del model, context, options
+        message = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "scheduled"}],
+            "timestamp": 0.0,
+            "stopReason": "stop",
+        }
+        return _DoneStreamWithHangingResult(message)
+
+    agent = _make_agent(tmp_path, _stream_fn)
+    asyncio.run(asyncio.wait_for(agent.prompt("hello"), timeout=0.2))
+
+    messages = agent.state.messages
+    assert messages
+    assert messages[-1].role == "assistant"
+    assert messages[-1].content[0].text == "scheduled"
 
 
 def test_agent_normalizes_usage_when_stream_omits_usage(tmp_path: Path):

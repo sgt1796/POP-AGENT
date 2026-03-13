@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from .agent_types import AgentMessage, TextContent
+from .time_utils import build_turn_timestamp_block
 
 from POP.embedder import Embedder
 
@@ -459,11 +460,18 @@ def format_memory_sections(short_hits: List[str], long_hits: List[str]) -> str:
     return "\n\n".join(sections)
 
 
-def build_augmented_prompt(user_message: str, memory_text: str) -> str:
+def build_augmented_prompt(
+    user_message: str,
+    memory_text: str,
+    timestamp_text: Optional[str] = None,
+) -> str:
+    if timestamp_text is None:
+        timestamp_text = build_turn_timestamp_block()
     return (
         "Use the memory context as soft background. It may be incomplete or outdated.\n"
         "Prioritize the current user message and ask follow-up questions when needed.\n\n"
         f"Memory context:\n{memory_text}\n\n"
+        f"{timestamp_text}\n\n"
         f"{USER_PROMPT_MARKER}{user_message.strip()}"
     )
 

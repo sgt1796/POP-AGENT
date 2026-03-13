@@ -8,8 +8,6 @@ LOG_LEVELS = {
 }
 
 USER_PROMPT_MARKER = "|Current user message|:\n"
-DEFAULT_TOOLSMAKER_ALLOWED_CAPS = "fs_read,fs_write,http"
-TOOL_CAPABILITIES: Set[str] = {"fs_read", "fs_write", "http", "secrets"}
 
 BASH_READ_COMMANDS: Set[str] = {
     "pwd",

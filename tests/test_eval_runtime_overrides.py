@@ -78,7 +78,6 @@ def test_runtime_overrides_backward_compat(monkeypatch):
     monkeypatch.setattr(runtime, "MemorySubscriber", lambda ingestion_worker: SimpleNamespace(on_event=lambda _e: None))
 
     monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: _dummy_tool("memory_search"))
-    monkeypatch.setattr(runtime, "ToolsmakerTool", lambda agent, allowed_capabilities: _dummy_tool("toolsmaker"))
     monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root: _dummy_tool("file_read"))
     monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root: _dummy_tool("file_write"))
     monkeypatch.setattr(runtime, "DownloadUrlToFileTool", lambda workspace_root: _dummy_tool("download_url_to_file"))
@@ -104,11 +103,9 @@ def test_runtime_overrides_backward_compat(monkeypatch):
         overrides=runtime.RuntimeOverrides(
             enable_memory=False,
             include_tools=["jina_web_snapshot"],
-            exclude_tools=["toolsmaker"],
+            exclude_tools=["memory_search"],
             model_override={"provider": "openai", "id": "gpt-test", "api": None},
             bash_prompt_approval=False,
-            toolsmaker_manual_approval=False,
-            toolsmaker_auto_continue=False,
             log_level="quiet",
         ),
     )
@@ -116,8 +113,6 @@ def test_runtime_overrides_backward_compat(monkeypatch):
     assert session_overridden.agent._model["id"] == "gpt-test"
     assert [tool.name for tool in session_overridden.agent._tools] == ["jina_web_snapshot"]
     assert session_overridden.bash_prompt_approval is False
-    assert session_overridden.toolsmaker_manual_approval is False
-    assert session_overridden.toolsmaker_auto_continue is False
 
 
 def test_runtime_overrides_memory_path_and_disable_toggle(monkeypatch, tmp_path):
@@ -147,7 +142,6 @@ def test_runtime_overrides_memory_path_and_disable_toggle(monkeypatch, tmp_path)
         lambda ingestion_worker: memory_subscriber_builds.append(ingestion_worker) or SimpleNamespace(on_event=lambda _e: None),
     )
     monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: _dummy_tool("memory_search"))
-    monkeypatch.setattr(runtime, "ToolsmakerTool", lambda agent, allowed_capabilities: _dummy_tool("toolsmaker"))
     monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root: _dummy_tool("file_read"))
     monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root: _dummy_tool("file_write"))
     monkeypatch.setattr(runtime, "DownloadUrlToFileTool", lambda workspace_root: _dummy_tool("download_url_to_file"))

@@ -273,8 +273,6 @@ Forwarded to `agent_build.agent1.runtime.RuntimeOverrides`:
 - `exclude_tools` (list[str] or comma string)
 - `model_override` (dict)
 - `bash_prompt_approval` (bool)
-- `toolsmaker_manual_approval` (bool)
-- `toolsmaker_auto_continue` (bool)
 - `log_level` (str)
 - `enable_event_logger` (bool, default `true`)
 
@@ -284,7 +282,7 @@ Example:
 python -m eval.cli run \
   --config eval/configs/gaia_validation.yaml \
   --executor-option include_tools='["websnapshot","bash_exec"]' \
-  --executor-option exclude_tools='["gmail_fetch","pdf_merge","toolsmaker"]' \
+  --executor-option exclude_tools='["gmail_fetch","pdf_merge","memory_search"]' \
   --executor-option model_override='{"provider":"openai","id":"gpt-5-mini","api":null}'
 ```
 

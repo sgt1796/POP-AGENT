@@ -3,7 +3,15 @@ from types import SimpleNamespace
 
 from agent.agent_types import TextContent
 from agent_build.agent1 import runtime
-from agent_build.agent1.runtime import RuntimeSession, build_runtime_tools, run_user_turn, shutdown_runtime_session
+from agent_build.agent1.runtime import (
+    RuntimeSession,
+    build_runtime_overrides_from_session,
+    build_runtime_tools,
+    execute_scheduled_task,
+    run_due_scheduled_tasks,
+    run_user_turn,
+    shutdown_runtime_session,
+)
 
 
 def _dummy_tool(name: str):
@@ -13,7 +21,6 @@ def _dummy_tool(name: str):
 def test_build_runtime_tools_excludes_demo_tools_by_default():
     tools = build_runtime_tools(
         memory_search_tool=_dummy_tool("memory_search"),  # type: ignore[arg-type]
-        toolsmaker_tool=None,
         bash_exec_tool=_dummy_tool("bash_exec"),  # type: ignore[arg-type]
         download_url_to_file_tool=_dummy_tool("download_url_to_file"),  # type: ignore[arg-type]
         file_read_tool=_dummy_tool("file_read"),  # type: ignore[arg-type]
@@ -42,7 +49,6 @@ def test_build_runtime_tools_excludes_demo_tools_by_default():
 def test_build_runtime_tools_includes_demo_tools_when_enabled():
     tools = build_runtime_tools(
         memory_search_tool=_dummy_tool("memory_search"),  # type: ignore[arg-type]
-        toolsmaker_tool=None,
         bash_exec_tool=_dummy_tool("bash_exec"),  # type: ignore[arg-type]
         download_url_to_file_tool=_dummy_tool("download_url_to_file"),  # type: ignore[arg-type]
         file_read_tool=_dummy_tool("file_read"),  # type: ignore[arg-type]
@@ -67,6 +73,36 @@ def test_build_runtime_tools_includes_demo_tools_when_enabled():
         "pdf_merge",
         "slow",
         "fast",
+    ]
+
+
+def test_build_runtime_tools_includes_scheduler_when_provided():
+    tools = build_runtime_tools(
+        memory_search_tool=_dummy_tool("memory_search"),  # type: ignore[arg-type]
+        task_scheduler_tool=_dummy_tool("task_scheduler"),  # type: ignore[arg-type]
+        bash_exec_tool=_dummy_tool("bash_exec"),  # type: ignore[arg-type]
+        download_url_to_file_tool=_dummy_tool("download_url_to_file"),  # type: ignore[arg-type]
+        file_read_tool=_dummy_tool("file_read"),  # type: ignore[arg-type]
+        file_write_tool=_dummy_tool("file_write"),  # type: ignore[arg-type]
+        gmail_fetch_tool=_dummy_tool("gmail_fetch"),  # type: ignore[arg-type]
+        pdf_merge_tool=_dummy_tool("pdf_merge"),  # type: ignore[arg-type]
+        include_demo_tools=False,
+    )
+
+    names = [tool.name for tool in tools]
+    assert names == [
+        "jina_web_snapshot",
+        "perplexity_search",
+        "openalex_works",
+        "download_url_to_file",
+        "perplexity_web_snapshot",
+        "memory_search",
+        "task_scheduler",
+        "bash_exec",
+        "file_read",
+        "file_write",
+        "gmail_fetch",
+        "pdf_merge",
     ]
 
 
@@ -143,9 +179,6 @@ class _FailingRetriever(_FakeRetriever):
 
 
 def test_create_runtime_session_builds_shared_runtime(monkeypatch):
-    monkeypatch.setenv("POP_AGENT_TOOLSMAKER_PROMPT_APPROVAL", "true")
-    monkeypatch.setenv("POP_AGENT_TOOLSMAKER_AUTO_ACTIVATE", "true")
-    monkeypatch.setenv("POP_AGENT_TOOLSMAKER_AUTO_CONTINUE", "true")
     monkeypatch.setenv("POP_AGENT_BASH_PROMPT_APPROVAL", "true")
     monkeypatch.setenv("POP_AGENT_INCLUDE_DEMO_TOOLS", "false")
     monkeypatch.setenv("POP_AGENT_MEMORY_TOP_K", "3")
@@ -160,7 +193,6 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     monkeypatch.setattr(runtime, "ContextCompressor", lambda *a, **k: SimpleNamespace(maybe_compress=lambda *args, **kwargs: False))
 
     monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
-    monkeypatch.setattr(runtime, "ToolsmakerTool", lambda agent, allowed_capabilities: SimpleNamespace(name="toolsmaker"))
     monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root: SimpleNamespace(name="file_read"))
     monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root: SimpleNamespace(name="file_write"))
     monkeypatch.setattr(runtime, "DownloadUrlToFileTool", lambda workspace_root: SimpleNamespace(name="download_url_to_file"))
@@ -190,18 +222,18 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
 
     assert isinstance(session, RuntimeSession)
     assert session.top_k >= 1
-    assert session.toolsmaker_manual_approval is False
     assert session.bash_prompt_approval is True
     assert session.active_session_id == "session-test"
     assert session.auto_session_id == "session-test"
     assert session.auto_title_enabled is True
-    assert [tool.name for tool in session.agent._tools][:11] == [
+    assert [tool.name for tool in session.agent._tools][:12] == [
         "jina_web_snapshot",
         "perplexity_search",
         "openalex_works",
         "download_url_to_file",
         "perplexity_web_snapshot",
         "memory_search",
+        "task_scheduler",
         "bash_exec",
         "file_read",
         "file_write",
@@ -210,19 +242,118 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     ]
 
 
+def test_build_runtime_overrides_from_session_uses_current_session_settings():
+    session = RuntimeSession(
+        agent=SimpleNamespace(state=SimpleNamespace(model={"provider": "gemini", "id": "flash", "api": None})),
+        retriever=SimpleNamespace(),
+        ingestion_worker=SimpleNamespace(),
+        active_session_id="session-a",
+        context_compressor=SimpleNamespace(),
+        top_k=7,
+        bash_prompt_approval=False,
+        execution_profile="aggressive",
+        include_demo_tools=False,
+        unsubscribe_log=lambda: None,
+        unsubscribe_memory=lambda: None,
+        unsubscribe_approval=lambda: None,
+    )
+
+    overrides = build_runtime_overrides_from_session(session)
+
+    assert overrides.model_override == {"provider": "gemini", "id": "flash", "api": None}
+    assert overrides.bash_prompt_approval is False
+    assert overrides.execution_profile == "aggressive"
+    assert overrides.memory_top_k == 7
+
+
+def test_execute_scheduled_task_runs_runtime_lifecycle(monkeypatch):
+    fake_session = SimpleNamespace()
+    calls = []
+
+    def _fake_create_runtime_session(**kwargs):
+        assert kwargs["enable_event_logger"] is False
+        assert kwargs["overrides"] is None
+        calls.append("create")
+        return fake_session
+
+    def _fake_switch_session(session, session_id):
+        assert session is fake_session
+        calls.append(("switch", session_id))
+
+    async def _fake_run_user_turn(session, prompt, on_warning=None):
+        assert session is fake_session
+        assert prompt == "run prompt"
+        assert callable(on_warning)
+        calls.append("run")
+        return "assistant-reply"
+
+    async def _fake_shutdown_runtime_session(session):
+        assert session is fake_session
+        calls.append("shutdown")
+
+    monkeypatch.setattr(runtime, "create_runtime_session", _fake_create_runtime_session)
+    monkeypatch.setattr(runtime, "switch_session", _fake_switch_session)
+    monkeypatch.setattr(runtime, "run_user_turn", _fake_run_user_turn)
+    monkeypatch.setattr(runtime, "shutdown_runtime_session", _fake_shutdown_runtime_session)
+
+    result = asyncio.run(
+        execute_scheduled_task(
+            {"id": "abc123", "prompt": "run prompt"},
+            enable_event_logger=False,
+            on_warning=lambda _text: None,
+        )
+    )
+
+    assert result == {"status": "success", "summary": "assistant-reply"}
+    assert calls == ["create", ("switch", "scheduled:abc123"), "run", "shutdown"]
+
+
+def test_run_due_scheduled_tasks_delegates_to_agent_store(monkeypatch):
+    seen = []
+
+    class _FakeManager:
+        async def run_due_tasks(self, executor, *, max_parallel=3):
+            seen.append(max_parallel)
+            result = await executor({"id": "task-1", "prompt": "run prompt"})
+            return {
+                "due_count": 1,
+                "success_count": 1,
+                "error_count": 0,
+                "max_parallel": max_parallel,
+                "tasks": [{"id": "task-1", **result}],
+            }
+
+    async def _fake_execute_scheduled_task(task, **kwargs):
+        assert task == {"id": "task-1", "prompt": "run prompt"}
+        assert kwargs["enable_event_logger"] is False
+        assert callable(kwargs["on_warning"])
+        return {"status": "success", "summary": "done"}
+
+    monkeypatch.setattr(runtime, "execute_scheduled_task", _fake_execute_scheduled_task)
+
+    report = asyncio.run(
+        run_due_scheduled_tasks(
+            _FakeManager(),
+            max_parallel=2,
+            on_warning=lambda _text: None,
+        )
+    )
+
+    assert seen == [2]
+    assert report["due_count"] == 1
+    assert report["tasks"][0]["summary"] == "done"
+
+
 def test_create_runtime_session_debug_file_logs_regardless_runtime_log_level(monkeypatch, tmp_path):
     log_path = tmp_path / "debug" / "agent-debug.log"
     monkeypatch.setenv("POP_AGENT_LOG_LEVEL", "quiet")
     monkeypatch.setenv("POP_AGENT_DEBUG_LOG_PATH", str(log_path))
-    monkeypatch.setenv("POP_AGENT_TOOLSMAKER_PROMPT_APPROVAL", "false")
-    monkeypatch.setenv("POP_AGENT_TOOLSMAKER_AUTO_CONTINUE", "false")
     monkeypatch.setenv("POP_AGENT_BASH_PROMPT_APPROVAL", "false")
     monkeypatch.setenv("POP_AGENT_INCLUDE_DEMO_TOOLS", "false")
     monkeypatch.setenv("POP_AGENT_MEMORY_TOP_K", "3")
 
     monkeypatch.setattr(runtime, "Agent", _FakeAgent)
     monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
-    monkeypatch.setattr(runtime, "ToolsmakerTool", lambda agent, allowed_capabilities: SimpleNamespace(name="toolsmaker"))
     monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root: SimpleNamespace(name="file_read"))
     monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root: SimpleNamespace(name="file_write"))
     monkeypatch.setattr(runtime, "DownloadUrlToFileTool", lambda workspace_root: SimpleNamespace(name="download_url_to_file"))
@@ -279,9 +410,6 @@ def test_run_user_turn_builds_augmented_prompt_and_flushes():
         active_session_id="default",
         context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
         top_k=3,
-        toolsmaker_manual_approval=True,
-        toolsmaker_auto_activate=True,
-        toolsmaker_auto_continue=True,
         bash_prompt_approval=True,
         execution_profile="balanced",
         include_demo_tools=False,
@@ -295,6 +423,9 @@ def test_run_user_turn_builds_augmented_prompt_and_flushes():
     assert reply == "ok"
     assert worker.flushed == 1
     assert retriever.calls == [("hello", 3, "both", "default")]
+    assert "|Current timestamp|:" in agent.prompts[0]
+    assert "Current user message" in agent.prompts[0]
+    assert "UTC:" in agent.prompts[0]
     assert "|Current user message|:\nhello" in agent.prompts[0]
 
 
@@ -374,9 +505,6 @@ def _build_auto_title_session(
         active_session_id=active_session_id,
         context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
         top_k=3,
-        toolsmaker_manual_approval=True,
-        toolsmaker_auto_activate=True,
-        toolsmaker_auto_continue=True,
         bash_prompt_approval=True,
         execution_profile="balanced",
         include_demo_tools=False,
@@ -581,9 +709,6 @@ def test_run_user_turn_reports_memory_warning_when_retrieval_fails():
         active_session_id="default",
         context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
         top_k=3,
-        toolsmaker_manual_approval=True,
-        toolsmaker_auto_activate=True,
-        toolsmaker_auto_continue=True,
         bash_prompt_approval=True,
         execution_profile="balanced",
         include_demo_tools=False,
@@ -614,9 +739,6 @@ def test_shutdown_runtime_session_unsubscribes_even_when_worker_raises():
         active_session_id="default",
         context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
         top_k=3,
-        toolsmaker_manual_approval=True,
-        toolsmaker_auto_activate=True,
-        toolsmaker_auto_continue=True,
         bash_prompt_approval=True,
         execution_profile="balanced",
         include_demo_tools=False,

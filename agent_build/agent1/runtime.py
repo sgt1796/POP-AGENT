@@ -4,7 +4,7 @@ import re
 import uuid
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Set, TextIO
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, TextIO
 
 from POP import PromptFunction
 from POP.embedder import Embedder
@@ -27,21 +27,16 @@ from agent.tools import (
     PerplexityWebSnapshotTool,
     PdfMergeTool,
     SlowTool,
-    ToolsmakerTool,
+    TaskSchedulerTool,
 )
 
-from .approvals import (
-    BashExecApprovalPrompter,
-    ToolsmakerApprovalSubscriber,
-    ToolsmakerAutoContinueSubscriber,
-)
+from .approvals import BashExecApprovalPrompter
 from .constants import BASH_GIT_READ_SUBCOMMANDS, BASH_READ_COMMANDS, BASH_WRITE_COMMANDS, LOG_LEVELS
 from .env_utils import (
     parse_bool_env,
     parse_float_env,
     parse_int_env,
     parse_path_list_env,
-    parse_toolsmaker_allowed_capabilities,
     sorted_csv,
 )
 from .event_logger import make_event_logger, resolve_log_level
@@ -60,11 +55,6 @@ from .prompting import build_system_prompt, resolve_execution_profile
 from .usage_reporting import format_turn_usage_line, usage_delta
 
 
-class ManualToolsmakerSubscriberFactory(Protocol):
-    def __call__(self, agent: Agent) -> Any:
-        ...
-
-
 @dataclass
 class RuntimeSession:
     agent: Agent
@@ -73,9 +63,6 @@ class RuntimeSession:
     active_session_id: str
     context_compressor: ContextCompressor
     top_k: int
-    toolsmaker_manual_approval: bool
-    toolsmaker_auto_activate: bool
-    toolsmaker_auto_continue: bool
     bash_prompt_approval: bool
     execution_profile: str
     include_demo_tools: bool
@@ -99,9 +86,9 @@ class RuntimeOverrides:
     exclude_tools: Optional[List[str]] = None
     model_override: Optional[Dict[str, Any]] = None
     bash_prompt_approval: Optional[bool] = None
-    toolsmaker_manual_approval: Optional[bool] = None
-    toolsmaker_auto_continue: Optional[bool] = None
     log_level: Optional[str] = None
+    execution_profile: Optional[str] = None
+    memory_top_k: Optional[int] = None
 
 
 class _NoopRetriever:
@@ -311,12 +298,12 @@ async def _read_input(prompt: str) -> str:
 def build_runtime_tools(
     *,
     memory_search_tool: MemorySearchTool,
-    toolsmaker_tool: Optional[ToolsmakerTool],
     bash_exec_tool: BashExecTool,
     download_url_to_file_tool: AgentTool,
     gmail_fetch_tool: GmailFetchTool,
     pdf_merge_tool: PdfMergeTool,
     include_demo_tools: bool,
+    task_scheduler_tool: Optional[AgentTool] = None,
     file_read_tool: Optional[AgentTool] = None,
     file_write_tool: Optional[AgentTool] = None,
 ) -> List[AgentTool]:
@@ -328,8 +315,8 @@ def build_runtime_tools(
         PerplexityWebSnapshotTool(),
         memory_search_tool,
     ]
-    if toolsmaker_tool is not None:
-        tools.append(toolsmaker_tool)
+    if task_scheduler_tool is not None:
+        tools.append(task_scheduler_tool)
     tools.append(bash_exec_tool)
     if file_read_tool is not None:
         tools.append(file_read_tool)
@@ -405,20 +392,10 @@ async def _auto_title_session(
     }
     if model_id:
         title_kwargs["model"] = model_id
-    timeout = getattr(session.agent, "request_timeout_s", None)
-    if timeout is None:
-        timeout = 30.0
-    try:
-        timeout_s = min(30.0, float(timeout))
-    except Exception:
-        timeout_s = 30.0
 
     try:
         title_prompt_fn = _get_title_prompt_function(session, provider)
-        raw_title = await asyncio.wait_for(
-            asyncio.to_thread(title_prompt_fn.execute, title_prompt, **title_kwargs),
-            timeout=timeout_s,
-        )
+        raw_title = title_prompt_fn.execute(title_prompt, **title_kwargs)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -552,13 +529,26 @@ def switch_session(session: RuntimeSession, new_id: str) -> None:
         session.debug_log(f"[session] switched to '{next_session}'")
 
 
+def build_runtime_overrides_from_session(session: RuntimeSession) -> RuntimeOverrides:
+    model_override: Optional[Dict[str, Any]] = None
+    raw_model = getattr(session.agent.state, "model", None)
+    if isinstance(raw_model, dict) and raw_model:
+        model_override = dict(raw_model)
+    return RuntimeOverrides(
+        model_override=model_override,
+        bash_prompt_approval=session.bash_prompt_approval,
+        execution_profile=session.execution_profile,
+        memory_top_k=session.top_k,
+    )
+
+
 def create_runtime_session(
     *,
     log_level: Optional[str] = None,
     enable_event_logger: bool = True,
     debug_log: Optional[Callable[[str], None]] = None,
     bash_approval_fn: Optional[Callable[[dict], Any]] = None,
-    manual_toolsmaker_subscriber_factory: Optional[ManualToolsmakerSubscriberFactory] = None,
+    run_scheduled_tasks_now_fn: Optional[Callable[[], Any]] = None,
     overrides: Optional[RuntimeOverrides] = None,
 ) -> RuntimeSession:
     if overrides is None:
@@ -603,13 +593,7 @@ def create_runtime_session(
 
     ## Tools
     memory_search_tool = MemorySearchTool(retriever=retriever)
-    toolsmaker_enabled = parse_bool_env("POP_AGENT_ENABLE_TOOLSMAKER", False)
-    toolsmaker_tool: Optional[ToolsmakerTool]
-    if toolsmaker_enabled:
-        toolsmaker_caps = parse_toolsmaker_allowed_capabilities(os.getenv("POP_AGENT_TOOLSMAKER_ALLOWED_CAPS"))
-        toolsmaker_tool = ToolsmakerTool(agent=agent, allowed_capabilities=toolsmaker_caps)
-    else:
-        toolsmaker_tool = None
+    task_scheduler_tool = TaskSchedulerTool(agent=agent, run_due_tasks_now_fn=run_scheduled_tasks_now_fn)
     workspace_root = os.path.realpath(os.getcwd())
     file_read_tool = FileReadTool(workspace_root=workspace_root)
     file_write_tool = FileWriteTool(workspace_root=workspace_root)
@@ -656,22 +640,8 @@ def create_runtime_session(
     bash_write_csv = sorted_csv(BASH_WRITE_COMMANDS)
     bash_git_csv = sorted_csv(BASH_GIT_READ_SUBCOMMANDS)
     execution_profile = resolve_execution_profile(os.getenv("POP_AGENT_EXECUTION_PROFILE", "balanced"))
-    if toolsmaker_enabled:
-        toolsmaker_manual_approval = parse_bool_env("POP_AGENT_TOOLSMAKER_PROMPT_APPROVAL", True)
-        toolsmaker_auto_activate = parse_bool_env("POP_AGENT_TOOLSMAKER_AUTO_ACTIVATE", True)
-        toolsmaker_auto_continue = parse_bool_env("POP_AGENT_TOOLSMAKER_AUTO_CONTINUE", True)
-        toolsmaker_manual_approval = _resolve_bool_override(
-            overrides.toolsmaker_manual_approval,
-            toolsmaker_manual_approval,
-        )
-        toolsmaker_auto_continue = _resolve_bool_override(
-            overrides.toolsmaker_auto_continue,
-            toolsmaker_auto_continue,
-        )
-    else:
-        toolsmaker_manual_approval = False
-        toolsmaker_auto_activate = False
-        toolsmaker_auto_continue = False
+    if overrides.execution_profile is not None:
+        execution_profile = resolve_execution_profile(overrides.execution_profile)
     include_demo_tools = parse_bool_env("POP_AGENT_INCLUDE_DEMO_TOOLS", False)
 
     bash_exec_tool.description = (
@@ -692,16 +662,13 @@ def create_runtime_session(
             bash_write_csv=bash_write_csv,
             bash_git_csv=bash_git_csv,
             bash_prompt_approval=bash_prompt_approval,
-            toolsmaker_enabled=toolsmaker_enabled,
-            toolsmaker_manual_approval=toolsmaker_manual_approval,
-            toolsmaker_auto_continue=toolsmaker_auto_continue,
             execution_profile=execution_profile,
             workspace_root=workspace_root,
         )
     )
     tools = build_runtime_tools(
         memory_search_tool=memory_search_tool,
-        toolsmaker_tool=toolsmaker_tool,
+        task_scheduler_tool=task_scheduler_tool,
         bash_exec_tool=bash_exec_tool,
         download_url_to_file_tool=download_url_to_file_tool,
         file_read_tool=file_read_tool,
@@ -757,25 +724,11 @@ def create_runtime_session(
     else:
         unsubscribe_memory = lambda: None
 
-    if toolsmaker_enabled and toolsmaker_manual_approval:
-        if manual_toolsmaker_subscriber_factory is not None:
-            candidate = manual_toolsmaker_subscriber_factory(agent)
-            subscriber = getattr(candidate, "on_event", candidate)
-            unsubscribe_approval = agent.subscribe(subscriber)
-        else:
-            approval_subscriber = ToolsmakerApprovalSubscriber(
-                agent=agent,
-                auto_activate_default=toolsmaker_auto_activate,
-            )
-            unsubscribe_approval = agent.subscribe(approval_subscriber.on_event)
-    elif toolsmaker_enabled and toolsmaker_auto_continue:
-        auto_continue_subscriber = ToolsmakerAutoContinueSubscriber(agent=agent)
-        unsubscribe_approval = agent.subscribe(auto_continue_subscriber.on_event)
-    else:
-        unsubscribe_approval = lambda: None
+    unsubscribe_approval = lambda: None
 
+    top_k_raw: Any = overrides.memory_top_k if overrides.memory_top_k is not None else os.getenv("POP_AGENT_MEMORY_TOP_K", "3")
     try:
-        top_k = max(1, int(os.getenv("POP_AGENT_MEMORY_TOP_K", "3") or "3"))
+        top_k = max(1, int(top_k_raw or "3"))
     except Exception:
         top_k = 3
 
@@ -793,9 +746,6 @@ def create_runtime_session(
         active_session_id=initial_session_id,
         context_compressor=context_compressor,
         top_k=top_k,
-        toolsmaker_manual_approval=toolsmaker_manual_approval,
-        toolsmaker_auto_activate=toolsmaker_auto_activate,
-        toolsmaker_auto_continue=toolsmaker_auto_continue,
         bash_prompt_approval=bash_prompt_approval,
         execution_profile=execution_profile,
         include_demo_tools=include_demo_tools,
@@ -814,6 +764,70 @@ def create_runtime_session(
             effective_debug_log(f"[debug:file] POP_AGENT_DEBUG_LOG_PATH={debug_log_path}")
         effective_debug_log(f"[session] created id={initial_session_id}")
     return session
+
+
+async def execute_scheduled_task(
+    task: Dict[str, Any],
+    *,
+    enable_event_logger: bool = False,
+    debug_log: Optional[Callable[[str], None]] = None,
+    bash_approval_fn: Optional[Callable[[dict], Any]] = None,
+    overrides: Optional[RuntimeOverrides] = None,
+    on_warning: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    task_id = str(task.get("id") or "")
+    prompt = str(task.get("prompt") or "").strip()
+    session: Optional[RuntimeSession] = None
+    try:
+        session = create_runtime_session(
+            enable_event_logger=enable_event_logger,
+            debug_log=debug_log,
+            bash_approval_fn=bash_approval_fn,
+            overrides=overrides,
+        )
+        if task_id:
+            switch_session(session, f"scheduled:{task_id}")
+        reply = await run_user_turn(session, prompt, on_warning=on_warning)
+        return {
+            "status": "success",
+            "summary": reply,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "summary": str(exc),
+            "error": str(exc),
+        }
+    finally:
+        if session is not None:
+            try:
+                await shutdown_runtime_session(session)
+            except Exception as exc:
+                if on_warning is not None:
+                    on_warning(f"[scheduled_runner] shutdown warning: {exc}")
+
+
+async def run_due_scheduled_tasks(
+    agent: Agent,
+    *,
+    max_parallel: int = 3,
+    enable_event_logger: bool = False,
+    debug_log: Optional[Callable[[str], None]] = None,
+    bash_approval_fn: Optional[Callable[[dict], Any]] = None,
+    overrides: Optional[RuntimeOverrides] = None,
+    on_warning: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    async def _executor(task: Dict[str, Any]) -> Dict[str, Any]:
+        return await execute_scheduled_task(
+            task,
+            enable_event_logger=enable_event_logger,
+            debug_log=debug_log,
+            bash_approval_fn=bash_approval_fn,
+            overrides=overrides,
+            on_warning=on_warning,
+        )
+
+    return await agent.run_due_tasks(_executor, max_parallel=max_parallel)
 
 
 async def run_user_turn(
@@ -925,24 +939,6 @@ async def main() -> None:
     session = create_runtime_session(debug_log=debug_log)
 
     print("POP Chatroom Agent (tools + embedding memory)")
-    available_tool_names = set()
-    try:
-        listed = session.agent.list_tools()
-        if isinstance(listed, list):
-            available_tool_names = {str(name).strip() for name in listed if str(name).strip()}
-    except Exception:
-        pass
-    if "toolsmaker" not in available_tool_names:
-        print("[toolsmaker] disabled")
-    elif session.toolsmaker_manual_approval:
-        print(
-            "[toolsmaker] manual approval prompts: on "
-            f"(default auto-activate={'on' if session.toolsmaker_auto_activate else 'off'})"
-        )
-        print("[toolsmaker] auto-continue: off (manual approval mode)")
-    else:
-        print("[toolsmaker] manual approval prompts: off")
-        print(f"[toolsmaker] auto-continue: {'on' if session.toolsmaker_auto_continue else 'off'}")
     print(f"[agent] execution profile: {session.execution_profile}")
     print(f"[tools] demo tools: {'on' if session.include_demo_tools else 'off'}")
     if session.bash_prompt_approval:

@@ -13,8 +13,6 @@ benchmark_options:
 executor_options:
   enable_memory: true
   bash_prompt_approval: false
-  toolsmaker_manual_approval: false
-  toolsmaker_auto_continue: false
   log_level: simple
   model_override: 
     provider: gemini

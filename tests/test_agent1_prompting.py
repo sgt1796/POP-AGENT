@@ -7,9 +7,6 @@ def _build_prompt(**overrides):
         "bash_write_csv": "touch",
         "bash_git_csv": "status",
         "bash_prompt_approval": True,
-        "toolsmaker_enabled": False,
-        "toolsmaker_manual_approval": True,
-        "toolsmaker_auto_continue": True,
         "execution_profile": "balanced",
         "workspace_root": "/tmp/workspace",
     }
@@ -23,35 +20,21 @@ def test_prompt_includes_execution_first_sections_and_allowlists():
     assert "Mission:" in prompt
     assert "Execute user requests end-to-end whenever feasible" in prompt
     assert "Tool Policy:" in prompt
+    assert "A fresh current timestamp is injected at runtime" in prompt
     assert "Allowed bash_exec read commands: cat, ls." in prompt
     assert "Allowed bash_exec write commands: touch." in prompt
     assert "Allowed bash_exec git subcommands: status." in prompt
     assert "Never call bash_exec with commands or subcommands outside allowlists." in prompt
     assert "Use file_write for creating files, writing text, and replacing words in text files." in prompt
+    assert "Use task_scheduler when the user asks to run work later or on a recurring cadence" in prompt
+    assert "task_scheduler run_now marks the task as due now" in prompt
     assert "Failure Recovery:" in prompt
     assert "Completion Criteria:" in prompt
 
-
-def test_prompt_mode_dependent_lifecycle_lines():
-    disabled_prompt = _build_prompt(toolsmaker_enabled=False)
-    assert "Dynamic tool creation via toolsmaker is disabled." in disabled_prompt
-
-    manual_prompt = _build_prompt(toolsmaker_enabled=True, toolsmaker_manual_approval=True)
-    assert "Manual toolsmaker approvals are enabled" in manual_prompt
-
-    auto_continue_prompt = _build_prompt(
-        toolsmaker_enabled=True,
-        toolsmaker_manual_approval=False,
-        toolsmaker_auto_continue=True,
-    )
-    assert "runtime auto-continues create results by approving and activating tool versions" in auto_continue_prompt
-
-    llm_lifecycle_prompt = _build_prompt(
-        toolsmaker_enabled=True,
-        toolsmaker_manual_approval=False,
-        toolsmaker_auto_continue=False,
-    )
-    assert "you must explicitly call toolsmaker approve and activate after create" in llm_lifecycle_prompt
+def test_prompt_includes_missing_capability_fallback_guidance():
+    prompt = _build_prompt()
+    assert "Missing Capability Flow:" in prompt
+    assert "report the specific limitation and ask for one focused user input" in prompt
 
 
 def test_prompt_fallbacks_to_balanced_profile_and_denied_write_hint():

@@ -26,17 +26,14 @@ from .agent_types import (
     AgentState,
     AgentTool,
     AgentToolResult,
-    ToolBuildRequest,
-    ToolBuildResult,
     ThinkingLevel,
     TextContent,
     ImageContent,
 )
-from .toolsmaker.registry import (
-    ToolsmakerRegistry,
-    DEFAULT_AUDIT_PATH,
-    DEFAULT_TOOLSMAKER_DIR,
-    set_default_audit_path,
+from .scheduler import (
+    ScheduledTaskStore,
+    DEFAULT_SCHEDULED_JOBS_PATH,
+    DEFAULT_RUNNER_LOCK_PATH,
 )
 from .usage_tracking import accumulate_totals, ensure_usage_record, init_usage_totals
 
@@ -154,19 +151,14 @@ class Agent:
         self._state: AgentState = initial
         # Event listeners
         self._listeners: set[Callable[[AgentEvent], None]] = set()
-        # Registry-backed tool lifecycle (static + dynamic)
-        toolsmaker_dir = opts.get("toolsmaker_dir", DEFAULT_TOOLSMAKER_DIR)
-        toolsmaker_audit_path = opts.get("toolsmaker_audit_path", DEFAULT_AUDIT_PATH)
         project_root = opts.get("project_root", os.getcwd())
-        set_default_audit_path(toolsmaker_audit_path)
-        self._tool_registry = ToolsmakerRegistry(
-            base_dir=toolsmaker_dir,
+        scheduler_jobs_path = opts.get("scheduled_jobs_path", os.path.join(project_root, DEFAULT_SCHEDULED_JOBS_PATH))
+        scheduler_lock_path = opts.get("scheduled_jobs_lock_path", os.path.join(project_root, DEFAULT_RUNNER_LOCK_PATH))
+        self._scheduled_task_store = ScheduledTaskStore(
             project_root=project_root,
-            event_sink=self._emit,
-            audit_path=toolsmaker_audit_path,
+            jobs_path=scheduler_jobs_path,
+            runner_lock_path=scheduler_lock_path,
         )
-        self._tool_registry.replace_static_tools(self._state.tools)
-        self._state.tools = self._tool_registry.snapshot_tools()
         # Conversion and context transform functions
         self._convert_to_llm = opts.get("convert_to_llm", _default_convert_to_llm)
         self._transform_context = opts.get("transform_context")
@@ -310,41 +302,65 @@ class Agent:
         return self._follow_up_mode
 
     def set_tools(self, tools: Sequence[AgentTool]) -> None:
-        self._tool_registry.replace_static_tools(tools)
-        self._sync_tools_from_registry()
+        self._state.tools = list(tools)
 
     def add_tool(self, tool: AgentTool) -> None:
-        self._tool_registry.add_static_tool(tool)
-        self._sync_tools_from_registry()
+        name = str(getattr(tool, "name", "")).strip()
+        tools = [existing for existing in self._state.tools if str(getattr(existing, "name", "")).strip() != name]
+        tools.append(tool)
+        self._state.tools = tools
 
     def remove_tool(self, name: str) -> bool:
-        removed = self._tool_registry.remove_tool(name)
-        self._sync_tools_from_registry()
+        target = str(name or "").strip()
+        tools = [tool for tool in self._state.tools if str(getattr(tool, "name", "")).strip() != target]
+        removed = len(tools) != len(self._state.tools)
+        self._state.tools = tools
         return removed
 
     def list_tools(self) -> List[str]:
-        return self._tool_registry.list_tools()
+        names: List[str] = []
+        seen = set()
+        for tool in self._state.tools:
+            name = str(getattr(tool, "name", "")).strip()
+            if not name or name in seen:
+                continue
+            names.append(name)
+            seen.add(name)
+        return names
 
-    def activate_tool_version(self, name: str, version: int, max_output_chars: int = 20_000) -> AgentTool:
-        tool = self._tool_registry.activate_tool_version(name=name, version=version, max_output_chars=max_output_chars)
-        self._sync_tools_from_registry()
-        return tool
+    def schedule_task(
+        self,
+        prompt: str,
+        *,
+        run_at: Optional[str] = None,
+        cron: Optional[str] = None,
+        timezone: Optional[str] = None,
+        task_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._scheduled_task_store.schedule_task(
+            prompt,
+            run_at=run_at,
+            cron=cron,
+            timezone_name=timezone,
+            task_name=task_name,
+        )
 
-    def create_tool_build_request_from_intent(self, intent: Dict[str, Any]) -> ToolBuildRequest:
-        return self._tool_registry.create_build_request_from_intent(intent)
+    def list_scheduled_tasks(self, *, include_history: bool = False) -> List[Dict[str, Any]]:
+        return self._scheduled_task_store.list_tasks(include_history=include_history)
 
-    def build_dynamic_tool(self, request: ToolBuildRequest) -> ToolBuildResult:
-        return self._tool_registry.build_tool(request)
+    def remove_scheduled_task(self, task_id: str) -> bool:
+        return self._scheduled_task_store.remove_task(task_id)
 
-    def build_dynamic_tool_from_intent(self, intent: Dict[str, Any]) -> ToolBuildResult:
-        request = self.create_tool_build_request_from_intent(intent)
-        return self.build_dynamic_tool(request)
+    def run_scheduled_task_now(self, task_id: str) -> bool:
+        return self._scheduled_task_store.mark_task_due_now(task_id)
 
-    def approve_dynamic_tool(self, name: str, version: int) -> ToolBuildResult:
-        return self._tool_registry.approve_tool(name=name, version=version)
-
-    def reject_dynamic_tool(self, name: str, version: int, reason: str = "rejected_by_reviewer") -> ToolBuildResult:
-        return self._tool_registry.reject_tool(name=name, version=version, reason=reason)
+    async def run_due_tasks(
+        self,
+        executor: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]] | Dict[str, Any] | Any],
+        *,
+        max_parallel: int = 3,
+    ) -> Dict[str, Any]:
+        return await self._scheduled_task_store.run_due_tasks(executor, max_parallel=max_parallel)
 
     def replace_messages(self, messages: Sequence[AgentMessage]) -> None:
         self._state.messages = list(messages)
@@ -476,7 +492,7 @@ class Agent:
         self._state.stream_message = None
         self._state.error = None
         # Build a copy of the current context
-        tools_snapshot = self._tool_registry.snapshot_tools()
+        tools_snapshot = self._snapshot_tools()
         self._state.tools = list(tools_snapshot)
         context = AgentContext(
             system_prompt=self._state.system_prompt,
@@ -491,7 +507,7 @@ class Agent:
             get_api_key=self.get_api_key,
             get_steering_messages=self._get_steering_messages,
             get_follow_up_messages=self._get_follow_up_messages,
-            get_tools=self._tool_registry.snapshot_tools,
+            get_tools=self._snapshot_tools,
             reasoning=None if self._state.thinking_level == "off" else self._state.thinking_level,
             session_id=self._session_id,
             thinking_budgets=self._thinking_budgets,
@@ -587,8 +603,8 @@ class Agent:
                 # Swallow exceptions from listeners to avoid breaking the agent
                 pass
 
-    def _sync_tools_from_registry(self) -> None:
-        self._state.tools = self._tool_registry.snapshot_tools()
+    def _snapshot_tools(self) -> List[AgentTool]:
+        return list(self._state.tools)
 
     def _record_usage(self, usage: Dict[str, Any]) -> None:
         record = copy.deepcopy(dict(usage or {}))

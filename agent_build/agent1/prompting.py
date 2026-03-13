@@ -34,9 +34,6 @@ def build_system_prompt(
     bash_write_csv: str,
     bash_git_csv: str,
     bash_prompt_approval: bool,
-    toolsmaker_enabled: bool,
-    toolsmaker_manual_approval: bool,
-    toolsmaker_auto_continue: bool,
     execution_profile: str = "balanced",
     workspace_root: str = "",
 ) -> str:
@@ -48,9 +45,20 @@ def build_system_prompt(
     lines.append("")
     lines.append("Tool Policy:")
     lines.append("Prefer existing tools first before explaining limitations.")
+    lines.append(
+        "A fresh current timestamp is injected at runtime; use it for time-sensitive tasks instead of checking file metadata."
+    )
     lines.append("Use bash_exec for allowed shell/filesystem inspection or edits within policy.")
     lines.append("Use file_read for attachments and structured files before falling back to shell file reads.")
     lines.append("Use file_write for creating files, writing text, and replacing words in text files.")
+    lines.append(
+        "Use task_scheduler when the user asks to run work later or on a recurring cadence "
+        "(ISO run_at or cron recurrence)."
+    )
+    lines.append(
+        "task_scheduler run_now marks the task as due now; execution is performed by an active scheduled runner "
+        "in the current runtime or by an external scheduled runner process."
+    )
     lines.append(
         "For paper PDFs, use openalex_works to get best_oa_pdf_url, then use download_url_to_file to save the file."
     )
@@ -65,32 +73,10 @@ def build_system_prompt(
     if workspace_root:
         lines.append(f"Default workspace root: {workspace_root}.")
     lines.append("")
-    if toolsmaker_enabled:
-        lines.append("Missing Capability Flow:")
-        lines.append("If existing tools are insufficient, use toolsmaker to create the minimal-capability tool.")
-        lines.append("When calling toolsmaker create, include intent.capabilities.")
-        lines.append("fs_read/fs_write require allowed_paths; http requires allowed_domains.")
-        lines.append("")
-        lines.append("Tool Lifecycle:")
-        lines.append("Follow create -> approve -> activate before using generated tools.")
-        if toolsmaker_manual_approval:
-            lines.append("Manual toolsmaker approvals are enabled; ask only for the approval gate when required.")
-        elif toolsmaker_auto_continue:
-            lines.append(
-                "Manual toolsmaker approvals are disabled; runtime auto-continues create results by approving and "
-                "activating tool versions."
-            )
-        else:
-            lines.append(
-                "Manual toolsmaker approvals are disabled and runtime auto-continue is off; you must explicitly call "
-                "toolsmaker approve and activate after create."
-            )
-    else:
-        lines.append("Missing Capability Flow:")
-        lines.append(
-            "Dynamic tool creation via toolsmaker is disabled. If existing tools are insufficient, report the "
-            "specific limitation and ask for one focused user input."
-        )
+    lines.append("Missing Capability Flow:")
+    lines.append(
+        "If existing tools are insufficient, report the specific limitation and ask for one focused user input."
+    )
     lines.append("")
     lines.append("Failure Recovery:")
     lines.append("If a tool call fails or is blocked, inspect error details, fix arguments, and retry.")

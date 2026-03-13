@@ -3,3 +3,5 @@ textual
 openpyxl>=3.1.0
 pypdf
 google-auth
+croniter
+tzdata

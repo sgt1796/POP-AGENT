@@ -181,3 +181,4 @@ cython_debug/
 .cursorindexingignore
 
 credentials/
+agent/mem/scheduled_jobs.lock

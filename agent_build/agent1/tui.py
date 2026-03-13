@@ -4,16 +4,21 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from .approvals import DEFAULT_TOOL_REJECT_REASON
 from .constants import BASH_GIT_READ_SUBCOMMANDS, BASH_READ_COMMANDS, BASH_WRITE_COMMANDS, LOG_LEVELS
-from .env_utils import sorted_csv
+from .env_utils import parse_bool_env, sorted_csv
 from .message_utils import extract_bash_exec_command, extract_texts
 from .prompting import VALID_EXECUTION_PROFILES, build_system_prompt
-from .runtime import create_runtime_session, run_user_turn, shutdown_runtime_session, switch_session
+from .runtime import (
+    build_runtime_overrides_from_session,
+    create_runtime_session,
+    run_due_scheduled_tasks,
+    run_user_turn,
+    shutdown_runtime_session,
+    switch_session,
+)
+from .scheduled_runner import start_daemon
 from .tui_runtime import (
     AsyncDecisionQueue,
-    AsyncToolsmakerApprovalSubscriber,
-    ToolsmakerDecision,
     format_activity_event,
 )
 from .usage_reporting import format_cumulative_usage_fragment, format_turn_usage_line, usage_delta
@@ -139,7 +144,7 @@ def run_tui() -> int:
         from textual.binding import Binding
         from textual.containers import Horizontal, Vertical, VerticalScroll
         from textual.screen import ModalScreen
-        from textual.widgets import Button, Checkbox, Footer, Header, Input, RichLog, Static
+        from textual.widgets import Button, Footer, Header, Input, RichLog, Static
         try:
             from textual.widgets import Select
         except (ImportError, ModuleNotFoundError):
@@ -176,48 +181,6 @@ def run_tui() -> int:
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             self.dismiss(event.button.id == "approve")
-
-    class ToolsmakerApprovalScreen(ModalScreen[ToolsmakerDecision]):
-        BINDINGS = [Binding("escape", "reject", "Reject")]
-
-        def __init__(self, details: dict, *, default_activate: bool) -> None:
-            super().__init__()
-            self._details = details
-            self._default_activate = default_activate
-
-        def compose(self) -> ComposeResult:
-            name = str(self._details.get("name", "")).strip() or "(unknown)"
-            version = int(self._details.get("version", 0) or 0)
-            review_path = str(self._details.get("review_path", "")).strip() or "(none)"
-            caps = list(self._details.get("requested_capabilities") or [])
-            caps_text = ", ".join([str(c) for c in caps]) if caps else "(none)"
-
-            with Vertical(id="approval_modal"):
-                yield Static("toolsmaker Approval", classes="modal_title")
-                yield Static(f"Tool: {name}")
-                yield Static(f"Version: {version}")
-                yield Static(f"Review Path: {review_path}")
-                yield Static(f"Requested Capabilities: {caps_text}")
-                yield Checkbox("Activate after approve", id="activate_checkbox", value=self._default_activate)
-                yield Input(value=DEFAULT_TOOL_REJECT_REASON, id="reason_input", placeholder="Reject reason")
-                with Horizontal(classes="modal_actions"):
-                    yield Button("Approve", id="approve", variant="success")
-                    yield Button("Reject", id="reject", variant="error")
-
-        def action_reject(self) -> None:
-            reason_input = self.query_one("#reason_input", Input)
-            reason = reason_input.value.strip() or DEFAULT_TOOL_REJECT_REASON
-            self.dismiss(ToolsmakerDecision(approve=False, activate=False, reason=reason))
-
-        def on_button_pressed(self, event: Button.Pressed) -> None:
-            if event.button.id == "approve":
-                activate = self.query_one("#activate_checkbox", Checkbox).value
-                self.dismiss(ToolsmakerDecision(approve=True, activate=bool(activate), reason=""))
-                return
-
-            reason_input = self.query_one("#reason_input", Input)
-            reason = reason_input.value.strip() or DEFAULT_TOOL_REJECT_REASON
-            self.dismiss(ToolsmakerDecision(approve=False, activate=False, reason=reason))
 
     class SettingsScreen(ModalScreen[Optional[_SettingsPayload]]):
         BINDINGS = [Binding("escape", "cancel", "Cancel")]
@@ -457,6 +420,7 @@ def run_tui() -> int:
             self._session = None
             self._turn_task: Optional[asyncio.Task[None]] = None
             self._approval_task: Optional[asyncio.Task[None]] = None
+            self._scheduler_task: Optional[asyncio.Task[None]] = None
             self._approval_queue: AsyncDecisionQueue[_QueuedApproval] = AsyncDecisionQueue()
             self._unsubscribe_ui_events = lambda: None
             self._cleanup_done = False
@@ -471,6 +435,16 @@ def run_tui() -> int:
             self._current_run_had_error = False
             self._last_run_had_error = False
             self._indicator_state: Optional[str] = None
+            self._scheduler_poll_interval_s = self._coerce_scheduler_float(
+                os.getenv("POP_AGENT_SCHEDULER_POLL_INTERVAL_S", "1.0"),
+                default=1.0,
+            )
+            self._scheduler_max_parallel = self._coerce_scheduler_int(
+                os.getenv("POP_AGENT_SCHEDULER_MAX_PARALLEL", "1"),
+                default=1,
+            )
+            self._scheduler_persistent_enabled = parse_bool_env("POP_AGENT_SCHEDULER_PERSISTENT", True)
+            self._scheduler_daemon_info: Optional[Dict[str, Any]] = None
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=False)
@@ -505,7 +479,7 @@ def run_tui() -> int:
                     enable_event_logger=False,
                     debug_log=self._debug_log,
                     bash_approval_fn=self._request_bash_approval,
-                    manual_toolsmaker_subscriber_factory=self._make_toolsmaker_subscriber,
+                    run_scheduled_tasks_now_fn=self._run_due_tasks_now,
                 )
             except Exception as exc:
                 self._append_activity(f"[runtime:error] {exc}")
@@ -516,6 +490,37 @@ def run_tui() -> int:
             self._unsubscribe_ui_events = self._session.agent.subscribe(self._on_agent_event)
             self._approval_task = asyncio.create_task(self._approval_worker())
             self._append_activity(f"[settings] Ctrl+S to edit runtime settings (activity={self._activity_log_level})")
+            if self._scheduler_persistent_enabled:
+                try:
+                    self._scheduler_daemon_info = start_daemon(
+                        max_parallel=self._scheduler_max_parallel,
+                        poll_interval_s=self._scheduler_poll_interval_s,
+                    )
+                except Exception as exc:
+                    self._append_activity(
+                        f"[scheduler:warning] persistent daemon start failed: {exc}; using in-process worker"
+                    )
+                else:
+                    pid = int(self._scheduler_daemon_info.get("pid") or 0)
+                    pid_file = str(self._scheduler_daemon_info.get("pid_file") or "")
+                    log_file = str(self._scheduler_daemon_info.get("log_file") or "")
+                    if bool(self._scheduler_daemon_info.get("ok")):
+                        state = "running" if bool(self._scheduler_daemon_info.get("already_running")) else "started"
+                        self._append_activity(
+                            f"[scheduler] persistent daemon {state} pid={pid} pid_file={pid_file} log_file={log_file}"
+                        )
+                    else:
+                        error = str(self._scheduler_daemon_info.get("error") or "unknown_error")
+                        self._append_activity(
+                            f"[scheduler:warning] persistent daemon unavailable: {error}; using in-process worker"
+                        )
+                        self._scheduler_daemon_info = None
+            if self._scheduler_daemon_info is None:
+                self._scheduler_task = asyncio.create_task(self._scheduled_task_worker())
+                self._append_activity(
+                    f"[scheduler] in-process poll={self._scheduler_poll_interval_s:g}s "
+                    f"max_parallel={self._scheduler_max_parallel}"
+                )
             self._refresh_status("Ready")
             self._refresh_session_title()
             self._update_indicator()
@@ -531,27 +536,21 @@ def run_tui() -> int:
                 return normalized
             return "full"
 
-        def _toolsmaker_mode_text(self) -> str:
-            if self._session is None:
-                return "unknown"
-            if not self._toolsmaker_enabled():
-                return "disabled"
-            if self._session.toolsmaker_manual_approval:
-                return "manual"
-            if self._session.toolsmaker_auto_continue:
-                return "auto-continue"
-            return "llm-managed"
-
-        def _toolsmaker_enabled(self) -> bool:
-            if self._session is None:
-                return False
+        @staticmethod
+        def _coerce_scheduler_float(value: Any, *, default: float) -> float:
             try:
-                names = self._session.agent.list_tools()
+                parsed = float(value)
             except Exception:
-                return False
-            if not isinstance(names, list):
-                return False
-            return "toolsmaker" in {str(name).strip() for name in names if str(name).strip()}
+                return default
+            return parsed if parsed > 0 else default
+
+        @staticmethod
+        def _coerce_scheduler_int(value: Any, *, default: int) -> int:
+            try:
+                parsed = int(value)
+            except Exception:
+                return default
+            return parsed if parsed > 0 else default
 
         def _bash_mode_text(self) -> str:
             if self._session is None:
@@ -576,8 +575,7 @@ def run_tui() -> int:
             usage_fragment = format_cumulative_usage_fragment(self._current_usage_summary())
             self._set_status(
                 f"{prefix} | model={self._model_summary()} | profile={self._session.execution_profile} "
-                f"| activity={self._activity_log_level} | toolsmaker={self._toolsmaker_mode_text()} "
-                f"| bash={self._bash_mode_text()} | {usage_fragment}"
+                f"| activity={self._activity_log_level} | bash={self._bash_mode_text()} | {usage_fragment}"
             )
 
         def _set_status(self, text: str) -> None:
@@ -693,15 +691,6 @@ def run_tui() -> int:
             if isinstance(active_screen, BashApprovalScreen):
                 active_screen.dismiss(False)
                 return True
-            if isinstance(active_screen, ToolsmakerApprovalScreen):
-                active_screen.dismiss(
-                    ToolsmakerDecision(
-                        approve=False,
-                        activate=False,
-                        reason="aborted_by_user",
-                    )
-                )
-                return True
             return False
 
         def _reject_queued_approvals(self) -> int:
@@ -709,16 +698,7 @@ def run_tui() -> int:
             for queued in self._approval_queue.drain():
                 if queued.future.done():
                     continue
-                if queued.kind == "toolsmaker":
-                    queued.future.set_result(
-                        ToolsmakerDecision(
-                            approve=False,
-                            activate=False,
-                            reason="aborted_by_user",
-                        )
-                    )
-                else:
-                    queued.future.set_result(False)
+                queued.future.set_result(False)
                 rejected += 1
             return rejected
 
@@ -743,9 +723,6 @@ def run_tui() -> int:
                     bash_write_csv=sorted_csv(BASH_WRITE_COMMANDS),
                     bash_git_csv=sorted_csv(BASH_GIT_READ_SUBCOMMANDS),
                     bash_prompt_approval=self._session.bash_prompt_approval,
-                    toolsmaker_enabled=self._toolsmaker_enabled(),
-                    toolsmaker_manual_approval=self._session.toolsmaker_manual_approval,
-                    toolsmaker_auto_continue=self._session.toolsmaker_auto_continue,
                     execution_profile=self._session.execution_profile,
                     workspace_root=workspace_root,
                 )
@@ -1173,81 +1150,90 @@ def run_tui() -> int:
             decision = await future
             return bool(decision)
 
-        async def _request_toolsmaker_decision(self, details: dict) -> ToolsmakerDecision:
-            loop = asyncio.get_running_loop()
-            future: asyncio.Future[Any] = loop.create_future()
-            self._approval_queue.put(_QueuedApproval(kind="toolsmaker", payload=details, future=future))
-            result = await future
-            if isinstance(result, ToolsmakerDecision):
-                return result
-            return ToolsmakerDecision(approve=False, activate=False, reason=DEFAULT_TOOL_REJECT_REASON)
-
-        def _make_toolsmaker_subscriber(self, agent: Any) -> AsyncToolsmakerApprovalSubscriber:
-            return AsyncToolsmakerApprovalSubscriber(
-                agent=agent,
-                resolve_decision=self._request_toolsmaker_decision,
-                on_activity=self._append_activity,
-            )
-
         async def _approval_worker(self) -> None:
             while True:
                 queued = await self._approval_queue.get()
 
-                if queued.kind == "bash":
-                    request = queued.payload
-                    self._append_activity(
-                        f"[approval] bash_exec requested risk={request.get('risk')} cmd={request.get('command')}"
-                    )
-                    decision: Any = False
-                    try:
-                        decision = await self._push_screen_result(BashApprovalScreen(request))
-                    except Exception as exc:
-                        self._append_activity(f"[approval:error] bash_exec modal failed: {exc}")
-                        decision = False
-                    finally:
-                        if not queued.future.done():
-                            queued.future.set_result(bool(decision))
-                    self._append_activity(
-                        f"[approval] bash_exec {'approved' if bool(decision) else 'rejected'}"
-                    )
-                    continue
-
-                details = queued.payload
-                name = str(details.get("name", "")).strip() or "(unknown)"
-                version = int(details.get("version", 0) or 0)
-                self._append_activity(f"[approval] toolsmaker requested tool={name} version={version}")
-
-                decision_obj: Any = ToolsmakerDecision(
-                    approve=False,
-                    activate=False,
-                    reason=DEFAULT_TOOL_REJECT_REASON,
+                request = queued.payload
+                self._append_activity(
+                    f"[approval] bash_exec requested risk={request.get('risk')} cmd={request.get('command')}"
                 )
+                decision: Any = False
                 try:
-                    default_activate = bool(self._session and self._session.toolsmaker_auto_activate)
-                    decision_obj = await self._push_screen_result(
-                        ToolsmakerApprovalScreen(details, default_activate=default_activate)
-                    )
+                    decision = await self._push_screen_result(BashApprovalScreen(request))
                 except Exception as exc:
-                    self._append_activity(f"[approval:error] toolsmaker modal failed: {exc}")
+                    self._append_activity(f"[approval:error] bash_exec modal failed: {exc}")
+                    decision = False
                 finally:
-                    if not isinstance(decision_obj, ToolsmakerDecision):
-                        decision_obj = ToolsmakerDecision(
-                            approve=False,
-                            activate=False,
-                            reason=DEFAULT_TOOL_REJECT_REASON,
-                        )
                     if not queued.future.done():
-                        queued.future.set_result(decision_obj)
+                        queued.future.set_result(bool(decision))
+                self._append_activity(
+                    f"[approval] bash_exec {'approved' if bool(decision) else 'rejected'}"
+                )
 
-                if decision_obj.approve:
-                    if decision_obj.activate:
-                        self._append_activity(f"[approval] toolsmaker approved+activate tool={name} version={version}")
-                    else:
-                        self._append_activity(f"[approval] toolsmaker approved tool={name} version={version}")
-                else:
-                    self._append_activity(
-                        f"[approval] toolsmaker rejected tool={name} version={version} reason={decision_obj.reason}"
-                    )
+        def _scheduler_is_paused(self) -> bool:
+            if self._session is None:
+                return True
+            if self._is_turn_active() or bool(self._session.agent.state.is_streaming):
+                return True
+            if not self._approval_queue.empty():
+                return True
+            active_screen = self.screen
+            return isinstance(active_screen, BashApprovalScreen)
+
+        def _log_scheduler_report(self, report: Dict[str, Any], *, source: str) -> None:
+            due_count = int(report.get("due_count", 0) or 0)
+            if due_count <= 0:
+                return
+            success_count = int(report.get("success_count", 0) or 0)
+            error_count = int(report.get("error_count", 0) or 0)
+            self._append_activity(
+                f"[scheduler:{source}] due={due_count} success={success_count} error={error_count}"
+            )
+            for outcome in list(report.get("tasks", []) or []):
+                task_id = str(outcome.get("id") or "")
+                status = str(outcome.get("status") or "")
+                summary = " ".join(str(outcome.get("summary") or "").split())
+                self._append_activity(
+                    f"[scheduler:{source}] id={task_id} status={status} summary={summary}"
+                )
+
+        async def _run_due_tasks(self, *, source: str) -> Dict[str, Any]:
+            if self._session is None:
+                return {
+                    "ok": True,
+                    "due_count": 0,
+                    "success_count": 0,
+                    "error_count": 0,
+                    "tasks": [],
+                }
+            report = await run_due_scheduled_tasks(
+                self._session.agent,
+                max_parallel=self._scheduler_max_parallel,
+                debug_log=self._debug_log,
+                bash_approval_fn=self._request_bash_approval if self._session.bash_prompt_approval else None,
+                overrides=build_runtime_overrides_from_session(self._session),
+                on_warning=self._append_activity,
+            )
+            self._log_scheduler_report(report, source=source)
+            return report
+
+        async def _run_due_tasks_now(self) -> Dict[str, Any]:
+            return await self._run_due_tasks(source="run_now")
+
+        async def _scheduled_task_worker(self) -> None:
+            idle_sleep_s = min(0.25, self._scheduler_poll_interval_s)
+            while True:
+                try:
+                    if self._scheduler_is_paused():
+                        await asyncio.sleep(idle_sleep_s)
+                        continue
+                    await self._run_due_tasks(source="background")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._append_activity(f"[scheduler:error] {exc}")
+                await asyncio.sleep(self._scheduler_poll_interval_s)
 
         def action_abort_run(self) -> None:
             if self._session is None:
@@ -1308,6 +1294,13 @@ def run_tui() -> int:
                 self._approval_task.cancel()
                 try:
                     await self._approval_task
+                except BaseException:
+                    pass
+
+            if self._scheduler_task is not None and not self._scheduler_task.done():
+                self._scheduler_task.cancel()
+                try:
+                    await self._scheduler_task
                 except BaseException:
                     pass
 

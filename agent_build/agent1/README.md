@@ -9,19 +9,16 @@ This runtime was upgraded to improve task completion reliability while keeping e
 Highlights:
 
 * Added `prompting.py` to build a stronger execution-first system prompt with profile-aware behavior (`balanced`, `aggressive`, `conservative`).
-* Added non-interactive `ToolsmakerAutoContinueSubscriber` for non-manual mode so create results can auto-advance to approve + activate.
 * Updated runtime tool assembly so demo tools (`slow`, `fast`) are disabled by default and enabled only with `POP_AGENT_INCLUDE_DEMO_TOOLS=true`.
 * Added first-class static workflow tools:
   - `gmail_fetch` (search Gmail + download attachments)
   - `pdf_merge` (merge PDFs for print workflows)
-* Moved `MemorySearchTool` and `ToolsmakerTool` implementations to `agent/tools/` and kept `agent_build/agent1/tools.py` as a compatibility shim.
+* Moved `MemorySearchTool` implementation to `agent/tools/` and kept `agent_build/agent1/tools.py` as a compatibility shim.
 * Added new env controls:
   - `POP_AGENT_EXECUTION_PROFILE`
-  - `POP_AGENT_TOOLSMAKER_AUTO_CONTINUE`
   - `POP_AGENT_INCLUDE_DEMO_TOOLS`
 * Added focused tests:
   - `tests/test_agent1_prompting.py`
-  - `tests/test_agent1_approvals.py`
   - `tests/test_agent1_runtime.py`
 
 
@@ -75,7 +72,7 @@ Created files:
 * `runtime.py`
   Main async chat loop; builds agent, configures model/tools, handles subscriptions, memory retrieval, prompt execution, and shutdown.
 * `constants.py`
-  Log levels, prompt markers, allowed capabilities, bash command allowlists.
+  Log levels, prompt markers, and bash command allowlists.
 * `env_utils.py`
   All env parsing helpers and CSV formatting helper.
 * `message_utils.py`
@@ -87,9 +84,9 @@ Created files:
 * `prompting.py`
   System-prompt builder with execution profiles and runtime-policy hints.
 * `tools.py`
-  Compatibility re-exports for `MemorySearchTool` and `ToolsmakerTool` (implementations now in `agent/tools/agent1_tools.py`).
+  Compatibility re-exports for runtime tool shims.
 * `approvals.py`
-  Interactive approval prompts plus non-interactive auto-continue for `toolsmaker`, and approval prompts for `bash_exec`.
+  Interactive approval prompts for `bash_exec`.
 
 ## 4. Feature parity checklist (agent0 -> agent1)
 
@@ -100,8 +97,6 @@ Preserved:
   `ConversationMemory` + session-scoped `DiskMemory` + retrieval injection into augmented prompt.
 * Expanded memory tool behavior:
   `memory_search` with `query`, `top_k`, `scope`, and optional `session_id`.
-* Same `toolsmaker` behavior:
-  lifecycle actions, capability validation, intent guardrails, create->approve->activate workflow support.
 * Same `bash_exec` configuration path:
   allowlists, roots, timeout/output caps, approval prompt behavior.
 * Same event logging behavior.
@@ -110,22 +105,10 @@ Preserved:
 Enhancements:
 
 * Stronger execution-first system prompt generation in `prompting.py`.
-* Optional non-interactive toolsmaker auto-continue when manual prompts are disabled.
 * Demo tools (`slow`, `fast`) are now opt-in via `POP_AGENT_INCLUDE_DEMO_TOOLS`.
 * First-class Gmail + PDF workflow support via `gmail_fetch` and `pdf_merge`.
 
 ## 5. Runtime/environment controls (important)
-
-Toolsmaker:
-
-* `POP_AGENT_TOOLSMAKER_ALLOWED_CAPS`
-  Default: `fs_read,fs_write,http`
-* `POP_AGENT_TOOLSMAKER_PROMPT_APPROVAL`
-  Default: `true`
-* `POP_AGENT_TOOLSMAKER_AUTO_ACTIVATE`
-  Default: `true`
-* `POP_AGENT_TOOLSMAKER_AUTO_CONTINUE`
-  Default: `true` (effective when manual approval prompts are disabled)
 
 Bash exec:
 
@@ -191,7 +174,7 @@ python -m agent_build.agent1.tui
 TUI notes:
 
 * `textual` must be installed in the active Python environment.
-* In TUI mode, `bash_exec` and `toolsmaker` manual approvals are presented as in-app modals.
+* In TUI mode, `bash_exec` manual approvals are presented as in-app modals.
 * Closing an approval modal (including `Esc`) defaults to reject/deny.
 * Press `Ctrl+S` to open runtime settings (model, timeout, execution profile, memory top-k, activity level).
 

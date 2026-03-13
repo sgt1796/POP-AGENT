@@ -1,4 +1,4 @@
-from .agent1_tools import MemorySearchTool, ToolsmakerTool
+from .agent1_tools import MemorySearchTool
 from .bash_exec_tool import BashExecConfig, BashExecTool
 from .download_url_to_file import DownloadUrlToFileTool
 from .example_tools import FastTool, SlowTool
@@ -6,6 +6,7 @@ from .file_read_tool import FileReadTool, read
 from .file_write_tool import FileWriteTool, write
 from .gmail_pdf_tools import GmailFetchTool, PdfMergeTool
 from .search import JinaWebSnapshotTool, OpenAlexWorksTool, PerplexitySearchTool, PerplexityWebSnapshotTool, WebSnapshotTool
+from .task_scheduler_tool import TaskSchedulerTool
 
 __all__ = [
     "SlowTool",
@@ -23,7 +24,7 @@ __all__ = [
     "read",
     "write",
     "MemorySearchTool",
-    "ToolsmakerTool",
     "GmailFetchTool",
     "PdfMergeTool",
+    "TaskSchedulerTool",
 ]

@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy only runtime files to keep the image small.
 COPY agent ./agent
 COPY agent_build ./agent_build
-COPY run_tui.py quickstart.py ./
+COPY run_tui.py gmail_auth.py ./
 
 
 CMD ["python", "run_tui.py"]

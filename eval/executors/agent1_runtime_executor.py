@@ -41,10 +41,6 @@ class Agent1RuntimeExecutor(AgentExecutor):
             exclude_tools=self._coerce_tool_list(opts.get("exclude_tools")),
             model_override=self._coerce_optional_dict(opts.get("model_override")),
             bash_prompt_approval=self._coerce_optional_bool(opts.get("bash_prompt_approval"), default=False),
-            toolsmaker_manual_approval=self._coerce_optional_bool(
-                opts.get("toolsmaker_manual_approval"), default=False
-            ),
-            toolsmaker_auto_continue=self._coerce_optional_bool(opts.get("toolsmaker_auto_continue"), default=False),
             log_level=self._coerce_optional_str(opts.get("log_level"), default="quiet"),
         )
         enable_event_logger = self._coerce_optional_bool(opts.get("enable_event_logger"), default=True)

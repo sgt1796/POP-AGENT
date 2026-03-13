@@ -1,8 +1,8 @@
-from agent.tools import MemorySearchTool, ToolsmakerTool
+from agent.tools import MemorySearchTool, TaskSchedulerTool
 from agent_build.agent1.tools import MemorySearchTool as LegacyMemorySearchTool
-from agent_build.agent1.tools import ToolsmakerTool as LegacyToolsmakerTool
+from agent_build.agent1.tools import TaskSchedulerTool as LegacyTaskSchedulerTool
 
 
 def test_agent1_tools_module_reexports_from_agent_tools():
     assert LegacyMemorySearchTool is MemorySearchTool
-    assert LegacyToolsmakerTool is ToolsmakerTool
+    assert LegacyTaskSchedulerTool is TaskSchedulerTool
