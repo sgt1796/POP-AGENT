@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .constants import BASH_GIT_READ_SUBCOMMANDS, BASH_READ_COMMANDS, BASH_WRITE_COMMANDS, LOG_LEVELS
 from .env_utils import parse_bool_env, sorted_csv
@@ -59,6 +59,29 @@ def _looks_like_markdown_text(text: str) -> bool:
         return True
 
     return False
+
+
+def _render_transcript_entry(
+    write: Callable[[Any], None],
+    role: str,
+    text: str,
+    *,
+    text_factory: Callable[..., Any],
+    markdown_factory: Callable[[str], Any],
+) -> None:
+    body = str(text or "").strip("\n")
+    write(text_factory(f"{role}:", style="bold"))
+    if role == "Assistant" and _looks_like_markdown_text(body):
+        write(markdown_factory(body))
+    else:
+        write(text_factory(body))
+    write("")
+
+
+def _show_pending_tool_line(activity_level: str) -> bool:
+    raw_value = str(activity_level or "").strip().lower()
+    normalized = {"messages": "simple", "stream": "full"}.get(raw_value, raw_value)
+    return normalized not in {"quiet", "simple"}
 
 
 @dataclass
@@ -326,30 +349,33 @@ def run_tui() -> int:
         #body {
             height: 1fr;
             layout: horizontal;
+            padding: 0 1 1 1;
         }
 
         #left_panel {
             width: 2fr;
             layout: vertical;
-            border: solid $accent;
-            padding: 0 1;
+            border: round $accent;
+            background: $surface;
+            padding: 0 1 1 1;
+            margin: 0 1 0 0;
         }
 
         #right_panel {
             width: 1fr;
             layout: vertical;
-            border: solid $primary;
-            padding: 0 1;
+            border: round $primary;
+            background: $surface;
+            padding: 0 1 1 1;
         }
 
         #transcript {
             height: 1fr;
         }
 
-        #stream_preview {
-            min-height: 3;
-            border: solid $boost;
-            padding: 0 1;
+        .panel_title {
+            padding: 0 0 1 0;
+            text-style: bold;
         }
 
         #activity {
@@ -358,6 +384,7 @@ def run_tui() -> int:
 
         #chat_input {
             dock: bottom;
+            margin: 0 1 1 1;
         }
 
         #approval_modal {
@@ -424,7 +451,6 @@ def run_tui() -> int:
             self._approval_queue: AsyncDecisionQueue[_QueuedApproval] = AsyncDecisionQueue()
             self._unsubscribe_ui_events = lambda: None
             self._cleanup_done = False
-            self._stream_buffer = ""
             self._activity_log_level = self._normalize_activity_level(os.getenv("POP_AGENT_LOG_LEVEL", "full"))
             self._pending_tool_calls: Dict[str, _PendingToolCallRecord] = {}
             self._turn_usage_before: Dict[str, Any] = {}
@@ -454,12 +480,10 @@ def run_tui() -> int:
             yield Static("Initializing...", id="status_line")
             with Horizontal(id="body"):
                 with Vertical(id="left_panel"):
-                    yield Static("Transcript")
+                    yield Static("Transcript", classes="panel_title")
                     yield RichLog(id="transcript", wrap=True, markup=False, highlight=False)
-                    yield Static("Streaming Preview")
-                    yield Static("", id="stream_preview")
                 with Vertical(id="right_panel"):
-                    yield Static("Activity")
+                    yield Static("Activity", classes="panel_title")
                     yield RichLog(id="activity", wrap=True, markup=False, highlight=False)
             yield Input(id="chat_input", placeholder="Type a message and press Enter...")
             yield Footer()
@@ -470,7 +494,6 @@ def run_tui() -> int:
             self._session_name = self.query_one("#session_name", Static)
             self._transcript = self.query_one("#transcript", RichLog)
             self._activity = self.query_one("#activity", RichLog)
-            self._stream_preview = self.query_one("#stream_preview", Static)
             self._chat_input = self.query_one("#chat_input", Input)
 
             self._set_status("Starting runtime session...")
@@ -653,11 +676,13 @@ def run_tui() -> int:
             return summary
 
         def _append_transcript(self, role: str, text: str) -> None:
-            if role == "Assistant" and _looks_like_markdown_text(text):
-                self._transcript.write(Text(f"{role}:", style="bold"))
-                self._transcript.write(Markdown(text))
-                return
-            self._transcript.write(f"{role}: {text}")
+            _render_transcript_entry(
+                self._transcript.write,
+                role,
+                text,
+                text_factory=Text,
+                markdown_factory=Markdown,
+            )
 
         def _append_transcript_note(self, text: Any) -> None:
             self._transcript.write(text)
@@ -670,17 +695,11 @@ def run_tui() -> int:
                 return
             self._append_activity(text)
 
-        def _update_stream_preview(self, text: str) -> None:
-            if text and _looks_like_markdown_text(text):
-                self._stream_preview.update(Markdown(text))
-                return
-            self._stream_preview.update(text)
-
         def _allow_activity_line(self, text: str) -> bool:
             if self._activity_log_level == "quiet":
                 return False
             if self._activity_log_level == "simple":
-                return text.startswith("[tool:") or text.startswith("Ran ") or text.startswith("[...] Running bash:") or text.startswith("[...] Calling")
+                return text.startswith("[tool:") or text.startswith("Ran ")
             return True
 
         def _is_turn_active(self) -> bool:
@@ -898,6 +917,9 @@ def run_tui() -> int:
             return signature
 
         def _append_tool_line(self, line: str, *, pending: bool, is_error: bool = False) -> None:
+            if pending and not _show_pending_tool_line(self._activity_log_level):
+                return
+
             if pending:
                 style = "bold yellow"
             elif is_error:
@@ -967,17 +989,9 @@ def run_tui() -> int:
                     self._append_activity(activity_text)
 
             if etype == "message_start":
-                message = event.get("message")
-                if getattr(message, "role", None) == "assistant":
-                    self._stream_buffer = ""
-                    self._update_stream_preview("")
                 return
 
             if etype == "message_update":
-                message = event.get("message")
-                if getattr(message, "role", None) == "assistant":
-                    self._stream_buffer = self._extract_message_text(message)
-                    self._update_stream_preview(self._stream_buffer)
                 return
 
             if etype != "message_end":
@@ -998,9 +1012,6 @@ def run_tui() -> int:
                     self._append_transcript("Assistant", final_text)
                 elif not self._message_has_tool_calls(message):
                     self._append_transcript("Assistant", "(no assistant text returned)")
-
-            self._stream_buffer = ""
-            self._update_stream_preview("")
 
         def _set_chat_input_value(self, value: str) -> None:
             self._applying_history_value = True

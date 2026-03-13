@@ -1,4 +1,9 @@
-from agent_build.agent1.tui import _InputHistory, _looks_like_markdown_text
+from agent_build.agent1.tui import (
+    _InputHistory,
+    _looks_like_markdown_text,
+    _render_transcript_entry,
+    _show_pending_tool_line,
+)
 from agent_build.agent1.usage_reporting import format_cumulative_usage_fragment
 
 
@@ -52,3 +57,49 @@ def test_input_history_ignores_blank_entries():
     history.add("ok")
 
     assert history.entries == ["ok"]
+
+
+def test_render_transcript_entry_puts_bold_role_on_its_own_line_with_separator():
+    rendered = []
+
+    _render_transcript_entry(
+        rendered.append,
+        "User",
+        "hello there",
+        text_factory=lambda value, style=None: ("text", value, style),
+        markdown_factory=lambda value: ("markdown", value),
+    )
+
+    assert rendered == [
+        ("text", "User:", "bold"),
+        ("text", "hello there", None),
+        "",
+    ]
+
+
+def test_render_transcript_entry_uses_markdown_for_assistant_markdown_messages():
+    rendered = []
+    body = "# Plan\n\n1. First item\n2. Second item"
+
+    _render_transcript_entry(
+        rendered.append,
+        "Assistant",
+        body,
+        text_factory=lambda value, style=None: ("text", value, style),
+        markdown_factory=lambda value: ("markdown", value),
+    )
+
+    assert rendered == [
+        ("text", "Assistant:", "bold"),
+        ("markdown", body),
+        "",
+    ]
+
+
+def test_show_pending_tool_line_hides_pending_output_for_quiet_and_simple():
+    assert _show_pending_tool_line("quiet") is False
+    assert _show_pending_tool_line("simple") is False
+    assert _show_pending_tool_line("messages") is False
+    assert _show_pending_tool_line("full") is True
+    assert _show_pending_tool_line("stream") is True
+    assert _show_pending_tool_line("debug") is True
