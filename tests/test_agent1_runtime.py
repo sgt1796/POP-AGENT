@@ -27,6 +27,7 @@ def test_build_runtime_tools_excludes_demo_tools_by_default():
         file_write_tool=_dummy_tool("file_write"),  # type: ignore[arg-type]
         gmail_fetch_tool=_dummy_tool("gmail_fetch"),  # type: ignore[arg-type]
         pdf_merge_tool=_dummy_tool("pdf_merge"),  # type: ignore[arg-type]
+        agentmail_send_tool=_dummy_tool("agentmail_send"),  # type: ignore[arg-type]
         include_demo_tools=False,
     )
 
@@ -43,6 +44,7 @@ def test_build_runtime_tools_excludes_demo_tools_by_default():
         "file_write",
         "gmail_fetch",
         "pdf_merge",
+        "agentmail_send",
     ]
 
 
@@ -55,6 +57,7 @@ def test_build_runtime_tools_includes_demo_tools_when_enabled():
         file_write_tool=_dummy_tool("file_write"),  # type: ignore[arg-type]
         gmail_fetch_tool=_dummy_tool("gmail_fetch"),  # type: ignore[arg-type]
         pdf_merge_tool=_dummy_tool("pdf_merge"),  # type: ignore[arg-type]
+        agentmail_send_tool=_dummy_tool("agentmail_send"),  # type: ignore[arg-type]
         include_demo_tools=True,
     )
 
@@ -71,6 +74,7 @@ def test_build_runtime_tools_includes_demo_tools_when_enabled():
         "file_write",
         "gmail_fetch",
         "pdf_merge",
+        "agentmail_send",
         "slow",
         "fast",
     ]
@@ -86,6 +90,7 @@ def test_build_runtime_tools_includes_scheduler_when_provided():
         file_write_tool=_dummy_tool("file_write"),  # type: ignore[arg-type]
         gmail_fetch_tool=_dummy_tool("gmail_fetch"),  # type: ignore[arg-type]
         pdf_merge_tool=_dummy_tool("pdf_merge"),  # type: ignore[arg-type]
+        agentmail_send_tool=_dummy_tool("agentmail_send"),  # type: ignore[arg-type]
         include_demo_tools=False,
     )
 
@@ -103,6 +108,7 @@ def test_build_runtime_tools_includes_scheduler_when_provided():
         "file_write",
         "gmail_fetch",
         "pdf_merge",
+        "agentmail_send",
     ]
 
 
@@ -198,6 +204,7 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     monkeypatch.setattr(runtime, "DownloadUrlToFileTool", lambda workspace_root: SimpleNamespace(name="download_url_to_file"))
     monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: SimpleNamespace(name="gmail_fetch"))
     monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: SimpleNamespace(name="pdf_merge"))
+    monkeypatch.setattr(runtime, "AgentMailSendTool", lambda workspace_root: SimpleNamespace(name="agentmail_send"))
     monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: SimpleNamespace(name="jina_web_snapshot"))
     monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: SimpleNamespace(name="perplexity_search"))
     monkeypatch.setattr(runtime, "OpenAlexWorksTool", lambda: SimpleNamespace(name="openalex_works"))
@@ -226,7 +233,7 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     assert session.active_session_id == "session-test"
     assert session.auto_session_id == "session-test"
     assert session.auto_title_enabled is True
-    assert [tool.name for tool in session.agent._tools][:12] == [
+    assert [tool.name for tool in session.agent._tools][:13] == [
         "jina_web_snapshot",
         "perplexity_search",
         "openalex_works",
@@ -239,6 +246,7 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
         "file_write",
         "gmail_fetch",
         "pdf_merge",
+        "agentmail_send",
     ]
 
 
@@ -267,7 +275,7 @@ def test_build_runtime_overrides_from_session_uses_current_session_settings():
 
 
 def test_execute_scheduled_task_runs_runtime_lifecycle(monkeypatch):
-    fake_session = SimpleNamespace()
+    fake_session = SimpleNamespace(agent=SimpleNamespace(state=SimpleNamespace(messages=[], error=None)))
     calls = []
 
     def _fake_create_runtime_session(**kwargs):
@@ -306,6 +314,109 @@ def test_execute_scheduled_task_runs_runtime_lifecycle(monkeypatch):
 
     assert result == {"status": "success", "summary": "assistant-reply"}
     assert calls == ["create", ("switch", "scheduled:abc123"), "run", "shutdown"]
+
+
+def test_execute_scheduled_task_marks_failed_tool_result_as_error(monkeypatch):
+    fake_session = SimpleNamespace(agent=SimpleNamespace(state=SimpleNamespace(messages=[], error=None)))
+
+    def _fake_create_runtime_session(**kwargs):
+        del kwargs
+        return fake_session
+
+    def _fake_switch_session(session, session_id):
+        assert session is fake_session
+        assert session_id == "scheduled:abc123"
+
+    async def _fake_run_user_turn(session, prompt, on_warning=None):
+        assert session is fake_session
+        assert prompt == "run prompt"
+        assert callable(on_warning)
+        session.agent.state.messages.extend(
+            [
+                SimpleNamespace(
+                    role="toolResult",
+                    tool_name="agentmail_send",
+                    details={"ok": False, "error": "dependency_missing"},
+                    is_error=False,
+                    content=[
+                        TextContent(
+                            type="text",
+                            text="agentmail_send error: agentmail package is not installed",
+                        )
+                    ],
+                ),
+                SimpleNamespace(
+                    role="assistant",
+                    content=[
+                        TextContent(
+                            type="text",
+                            text="I attempted to send the email, but the tool could not complete it.",
+                        )
+                    ],
+                ),
+            ]
+        )
+        return "I attempted to send the email, but the tool could not complete it."
+
+    async def _fake_shutdown_runtime_session(session):
+        assert session is fake_session
+
+    monkeypatch.setattr(runtime, "create_runtime_session", _fake_create_runtime_session)
+    monkeypatch.setattr(runtime, "switch_session", _fake_switch_session)
+    monkeypatch.setattr(runtime, "run_user_turn", _fake_run_user_turn)
+    monkeypatch.setattr(runtime, "shutdown_runtime_session", _fake_shutdown_runtime_session)
+
+    result = asyncio.run(
+        execute_scheduled_task(
+            {"id": "abc123", "prompt": "run prompt"},
+            enable_event_logger=False,
+            on_warning=lambda _text: None,
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["tool_name"] == "agentmail_send"
+    assert result["summary"] == "agentmail_send error: agentmail package is not installed"
+    assert "tool could not complete it" in result["reply"]
+
+
+def test_execute_scheduled_task_marks_runtime_error_as_error(monkeypatch):
+    fake_session = SimpleNamespace(agent=SimpleNamespace(state=SimpleNamespace(messages=[], error=None)))
+
+    def _fake_create_runtime_session(**kwargs):
+        del kwargs
+        return fake_session
+
+    def _fake_switch_session(session, session_id):
+        assert session is fake_session
+        assert session_id == "scheduled:abc123"
+
+    async def _fake_run_user_turn(session, prompt, on_warning=None):
+        assert session is fake_session
+        assert prompt == "run prompt"
+        assert callable(on_warning)
+        session.agent.state.error = "llm backend timeout"
+        return "(no assistant text returned)"
+
+    async def _fake_shutdown_runtime_session(session):
+        assert session is fake_session
+
+    monkeypatch.setattr(runtime, "create_runtime_session", _fake_create_runtime_session)
+    monkeypatch.setattr(runtime, "switch_session", _fake_switch_session)
+    monkeypatch.setattr(runtime, "run_user_turn", _fake_run_user_turn)
+    monkeypatch.setattr(runtime, "shutdown_runtime_session", _fake_shutdown_runtime_session)
+
+    result = asyncio.run(
+        execute_scheduled_task(
+            {"id": "abc123", "prompt": "run prompt"},
+            enable_event_logger=False,
+            on_warning=lambda _text: None,
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["summary"] == "llm backend timeout"
+    assert result["reply"] == "(no assistant text returned)"
 
 
 def test_run_due_scheduled_tasks_delegates_to_agent_store(monkeypatch):
@@ -359,6 +470,7 @@ def test_create_runtime_session_debug_file_logs_regardless_runtime_log_level(mon
     monkeypatch.setattr(runtime, "DownloadUrlToFileTool", lambda workspace_root: SimpleNamespace(name="download_url_to_file"))
     monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: SimpleNamespace(name="gmail_fetch"))
     monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: SimpleNamespace(name="pdf_merge"))
+    monkeypatch.setattr(runtime, "AgentMailSendTool", lambda workspace_root: SimpleNamespace(name="agentmail_send"))
     monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: SimpleNamespace(name="jina_web_snapshot"))
     monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: SimpleNamespace(name="perplexity_search"))
     monkeypatch.setattr(runtime, "OpenAlexWorksTool", lambda: SimpleNamespace(name="openalex_works"))

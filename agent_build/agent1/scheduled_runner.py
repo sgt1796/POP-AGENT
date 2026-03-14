@@ -5,10 +5,12 @@ import asyncio
 import atexit
 import contextlib
 import os
+import shutil
 import signal
 import subprocess
 import sys
 import time
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 if __package__ in {None, ""}:
@@ -27,6 +29,8 @@ DEFAULT_MAX_PARALLEL = 3
 DEFAULT_DAEMON_PID_PATH = os.path.join("agent", "mem", "scheduled_runner.pid")
 DEFAULT_DAEMON_LOG_PATH = os.path.join("agent", "mem", "scheduled_runner.log")
 _DAEMON_START_TIMEOUT_S = 3.0
+_WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^(?P<drive>[A-Za-z]):[\\/]*(?P<rest>.*)$")
+_WSL_DRIVE_PATH_PATTERN = re.compile(r"^/mnt/(?P<drive>[A-Za-z])(?:/(?P<rest>.*))?$")
 
 
 def _print_warning(text: str) -> None:
@@ -49,15 +53,45 @@ async def _execute_task(task: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _project_root(value: Optional[str] = None) -> str:
-    return os.path.realpath(str(value or os.getcwd()))
+    return os.path.realpath(_normalize_platform_path(value or os.getcwd()))
+
+
+def _normalize_platform_path(value: Optional[str]) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if os.name == "nt":
+        wsl_match = _WSL_DRIVE_PATH_PATTERN.match(text.replace("\\", "/"))
+        if wsl_match is not None:
+            drive = str(wsl_match.group("drive") or "").upper()
+            rest = str(wsl_match.group("rest") or "").replace("/", "\\").lstrip("\\")
+            return f"{drive}:\\" if not rest else f"{drive}:\\{rest}"
+        return text
+    windows_match = _WINDOWS_DRIVE_PATH_PATTERN.match(text)
+    if windows_match is None:
+        return text
+    drive = str(windows_match.group("drive") or "").lower()
+    rest = str(windows_match.group("rest") or "").replace("\\", "/").lstrip("/")
+    return f"/mnt/{drive}" if not rest else f"/mnt/{drive}/{rest}"
 
 
 def _resolve_project_path(project_root: str, value: Optional[str], default_relpath: str) -> str:
-    text = str(value or "").strip()
+    text = _normalize_platform_path(value)
     candidate = text or os.path.join(project_root, default_relpath)
     if not os.path.isabs(candidate):
         candidate = os.path.join(project_root, candidate)
     return os.path.realpath(candidate)
+
+
+def _resolve_python_executable(value: Optional[str] = None) -> str:
+    candidate = _normalize_platform_path(value or sys.executable)
+    if not candidate:
+        candidate = sys.executable
+    if candidate and not os.path.isabs(candidate):
+        resolved = shutil.which(candidate)
+        if resolved:
+            candidate = resolved
+    return os.path.realpath(candidate) if candidate else ""
 
 
 def _read_pid_file(path: str) -> Optional[int]:
@@ -85,6 +119,19 @@ def _process_is_running(pid: int) -> bool:
     except Exception:
         return False
     return True
+
+
+def _process_executable(pid: int) -> Optional[str]:
+    if int(pid or 0) <= 0:
+        return None
+    if os.name == "nt":
+        return None
+    try:
+        resolved = os.readlink(f"/proc/{int(pid)}/exe")
+    except Exception:
+        return None
+    text = str(resolved or "").strip()
+    return os.path.realpath(text) if text else None
 
 
 def _remove_pid_file(path: str, *, expected_pid: Optional[int] = None) -> None:
@@ -117,6 +164,7 @@ def get_daemon_status(
     pid_file_exists = os.path.exists(pid_path)
     running = bool(pid and _process_is_running(pid))
     stale_pid_file = bool(pid_file_exists and not running)
+    python_executable = _process_executable(int(pid or 0)) if running else None
     return {
         "ok": True,
         "running": running,
@@ -124,6 +172,7 @@ def get_daemon_status(
         "pid_file": pid_path,
         "log_file": log_path,
         "stale_pid_file": stale_pid_file,
+        "python_executable": python_executable,
         "project_root": root,
     }
 
@@ -135,13 +184,41 @@ def start_daemon(
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     pid_file: Optional[str] = None,
     log_file: Optional[str] = None,
+    exit_when_idle: bool = False,
+    python_executable: Optional[str] = None,
 ) -> Dict[str, Any]:
     root = _project_root(project_root)
     pid_path = _resolve_project_path(root, pid_file, DEFAULT_DAEMON_PID_PATH)
     log_path = _resolve_project_path(root, log_file, DEFAULT_DAEMON_LOG_PATH)
+    resolved_python = _resolve_python_executable(python_executable)
     status = get_daemon_status(project_root=root, pid_file=pid_path, log_file=log_path)
+    running_python_raw = str(status.get("python_executable") or "").strip()
+    running_python = _resolve_python_executable(running_python_raw) if running_python_raw else ""
     if bool(status.get("running")):
-        return {"ok": True, "started": False, "already_running": True, **status}
+        if running_python and resolved_python and running_python != resolved_python:
+            stopped = stop_daemon(project_root=root, pid_file=pid_path, log_file=log_path)
+            if not bool(stopped.get("ok")):
+                return {
+                    "ok": False,
+                    "started": False,
+                    "already_running": False,
+                    "pid": status.get("pid"),
+                    "pid_file": pid_path,
+                    "log_file": log_path,
+                    "project_root": root,
+                    "python_executable": resolved_python,
+                    "running_python_executable": running_python,
+                    "error": f"daemon_python_mismatch_stop_failed:{stopped.get('error') or 'unknown_error'}",
+                }
+            status = get_daemon_status(project_root=root, pid_file=pid_path, log_file=log_path)
+        else:
+            return {
+                "ok": True,
+                "started": False,
+                "already_running": True,
+                "python_executable": running_python or resolved_python,
+                **status,
+            }
     if bool(status.get("stale_pid_file")):
         _remove_pid_file(pid_path)
 
@@ -155,7 +232,7 @@ def start_daemon(
 
     os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
     command = [
-        sys.executable,
+        resolved_python,
         "-u",
         "-m",
         "agent_build.agent1.scheduled_runner",
@@ -169,6 +246,8 @@ def start_daemon(
         "--log-file",
         log_path,
     ]
+    if exit_when_idle:
+        command.append("--exit-when-idle")
 
     creationflags = 0
     popen_kwargs: Dict[str, Any] = {
@@ -198,6 +277,7 @@ def start_daemon(
                 "started": True,
                 "already_running": False,
                 "spawn_pid": int(process.pid or 0),
+                "python_executable": resolved_python,
                 **status,
             }
         if process.poll() is not None:
@@ -212,6 +292,7 @@ def start_daemon(
         "pid_file": pid_path,
         "log_file": log_path,
         "project_root": root,
+        "python_executable": resolved_python,
         "error": "daemon_failed_to_start",
     }
 
@@ -324,6 +405,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--daemon-stop", action="store_true", help="Stop the detached persistent scheduler daemon")
     parser.add_argument("--daemon-status", action="store_true", help="Show detached scheduler daemon status")
     parser.add_argument("--daemon-run", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--exit-when-idle", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pid-file", type=str, default="", help="Override the daemon PID file path")
     parser.add_argument("--log-file", type=str, default="", help="Override the daemon log file path")
     return parser
@@ -333,7 +415,7 @@ def _build_manager_agent() -> Agent:
     return Agent(
         {
             "stream_fn": _noop_stream,
-            "project_root": os.path.realpath(os.getcwd()),
+            "project_root": _project_root(),
         }
     )
 
@@ -406,6 +488,7 @@ async def _run_daemon_loop(
     project_root: Optional[str] = None,
     pid_file: Optional[str] = None,
     log_file: Optional[str] = None,
+    exit_when_idle: bool = False,
 ) -> int:
     root = _project_root(project_root)
     pid_path = _resolve_project_path(root, pid_file, DEFAULT_DAEMON_PID_PATH)
@@ -443,12 +526,16 @@ async def _run_daemon_loop(
         print(
             "[scheduled_runner] daemon started "
             f"pid={current_pid} poll_interval={poll_interval_s:g}s max_parallel={max_parallel} "
-            f"pid_file={pid_path} log_file={log_path}"
+            f"pid_file={pid_path} log_file={log_path} python_executable={_resolve_python_executable()}"
         )
         while not stop_event.is_set():
             try:
                 report = await _run_due_report(max_parallel)
                 _print_due_report(report, print_empty=False)
+                enabled_count = report.get("enabled_count")
+                if exit_when_idle and enabled_count is not None and int(enabled_count or 0) <= 0:
+                    print(f"[scheduled_runner] daemon idle pid={current_pid} enabled=0")
+                    stop_event.set()
             except Exception as exc:
                 _print_warning(f"[scheduled_runner] daemon iteration failed: {exc}")
             try:
@@ -483,6 +570,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             poll_interval_s=poll_interval_s,
             pid_file=pid_file,
             log_file=log_file,
+            exit_when_idle=args.exit_when_idle,
         )
         if bool(started.get("ok")):
             print(_format_daemon_status(started))
@@ -503,6 +591,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 poll_interval_s=poll_interval_s,
                 pid_file=pid_file,
                 log_file=log_file,
+                exit_when_idle=args.exit_when_idle,
             )
         )
 

@@ -62,6 +62,9 @@ def build_system_prompt(
     lines.append(
         "For paper PDFs, use openalex_works to get best_oa_pdf_url, then use download_url_to_file to save the file."
     )
+    lines.append(
+        "Use agentmail_send when the user asks to email the configured owner a report, summary, or attachment."
+    )
     lines.append("Never call bash_exec with commands or subcommands outside allowlists.")
     lines.append(f"Allowed bash_exec read commands: {bash_read_csv}.")
     lines.append(f"Allowed bash_exec write commands: {bash_write_csv}.")

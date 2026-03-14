@@ -13,6 +13,7 @@ from POP.stream import stream
 from agent import Agent
 from agent.agent_types import AgentTool
 from agent.tools import (
+    AgentMailSendTool,
     BashExecConfig,
     BashExecTool,
     DownloadUrlToFileTool,
@@ -50,7 +51,7 @@ from agent.memory import (
     build_augmented_prompt,
     format_memory_sections,
 )
-from .message_utils import extract_latest_assistant_text
+from .message_utils import extract_latest_assistant_text, extract_texts
 from .prompting import build_system_prompt, resolve_execution_profile
 from .usage_reporting import format_turn_usage_line, usage_delta
 
@@ -302,6 +303,7 @@ def build_runtime_tools(
     download_url_to_file_tool: AgentTool,
     gmail_fetch_tool: GmailFetchTool,
     pdf_merge_tool: PdfMergeTool,
+    agentmail_send_tool: AgentTool,
     include_demo_tools: bool,
     task_scheduler_tool: Optional[AgentTool] = None,
     file_read_tool: Optional[AgentTool] = None,
@@ -322,7 +324,7 @@ def build_runtime_tools(
         tools.append(file_read_tool)
     if file_write_tool is not None:
         tools.append(file_write_tool)
-    tools.extend([gmail_fetch_tool, pdf_merge_tool])
+    tools.extend([gmail_fetch_tool, pdf_merge_tool, agentmail_send_tool])
     if include_demo_tools:
         tools.extend([SlowTool(), FastTool()])
     return tools
@@ -529,6 +531,41 @@ def switch_session(session: RuntimeSession, new_id: str) -> None:
         session.debug_log(f"[session] switched to '{next_session}'")
 
 
+def _scheduled_task_runtime_error(agent: Any) -> str:
+    state = getattr(agent, "state", None)
+    return str(getattr(state, "error", "") or "").strip()
+
+
+def _scheduled_task_failed_tool_result(agent: Any) -> Optional[Dict[str, str]]:
+    state = getattr(agent, "state", None)
+    messages = getattr(state, "messages", None)
+    if not isinstance(messages, list):
+        return None
+
+    for message in reversed(messages):
+        if getattr(message, "role", None) != "toolResult":
+            continue
+        details = getattr(message, "details", None)
+        ok_value = details.get("ok") if isinstance(details, dict) else None
+        is_error = bool(getattr(message, "is_error", False))
+        if not is_error and ok_value is not False:
+            return None
+
+        tool_name = str(getattr(message, "tool_name", "") or "").strip()
+        summary = "\n".join([text for text in extract_texts(message) if text.strip()]).strip()
+        if not summary and isinstance(details, dict):
+            error_value = str(details.get("error") or "").strip()
+            if error_value:
+                summary = f"{tool_name or 'tool'} error: {error_value}"
+        if not summary:
+            summary = f"{tool_name or 'tool'} failed"
+        return {
+            "tool_name": tool_name,
+            "summary": summary,
+        }
+    return None
+
+
 def build_runtime_overrides_from_session(session: RuntimeSession) -> RuntimeOverrides:
     model_override: Optional[Dict[str, Any]] = None
     raw_model = getattr(session.agent.state, "model", None)
@@ -549,6 +586,7 @@ def create_runtime_session(
     debug_log: Optional[Callable[[str], None]] = None,
     bash_approval_fn: Optional[Callable[[dict], Any]] = None,
     run_scheduled_tasks_now_fn: Optional[Callable[[], Any]] = None,
+    ensure_scheduler_daemon_fn: Optional[Callable[[], Any]] = None,
     overrides: Optional[RuntimeOverrides] = None,
 ) -> RuntimeSession:
     if overrides is None:
@@ -593,13 +631,18 @@ def create_runtime_session(
 
     ## Tools
     memory_search_tool = MemorySearchTool(retriever=retriever)
-    task_scheduler_tool = TaskSchedulerTool(agent=agent, run_due_tasks_now_fn=run_scheduled_tasks_now_fn)
+    task_scheduler_tool = TaskSchedulerTool(
+        agent=agent,
+        run_due_tasks_now_fn=run_scheduled_tasks_now_fn,
+        ensure_scheduler_daemon_fn=ensure_scheduler_daemon_fn,
+    )
     workspace_root = os.path.realpath(os.getcwd())
     file_read_tool = FileReadTool(workspace_root=workspace_root)
     file_write_tool = FileWriteTool(workspace_root=workspace_root)
     download_url_to_file_tool = DownloadUrlToFileTool(workspace_root=workspace_root)
     gmail_fetch_tool = GmailFetchTool(workspace_root=workspace_root)
     pdf_merge_tool = PdfMergeTool(workspace_root=workspace_root)
+    agentmail_send_tool = AgentMailSendTool(workspace_root=workspace_root)
 
     ## Bash exec configuration
     bash_allowed_roots = parse_path_list_env(
@@ -675,6 +718,7 @@ def create_runtime_session(
         file_write_tool=file_write_tool,
         gmail_fetch_tool=gmail_fetch_tool,
         pdf_merge_tool=pdf_merge_tool,
+        agentmail_send_tool=agentmail_send_tool,
         include_demo_tools=include_demo_tools,
     )
     tools = _filter_runtime_tools(
@@ -788,6 +832,28 @@ async def execute_scheduled_task(
         if task_id:
             switch_session(session, f"scheduled:{task_id}")
         reply = await run_user_turn(session, prompt, on_warning=on_warning)
+        runtime_error = _scheduled_task_runtime_error(getattr(session, "agent", None))
+        if runtime_error:
+            result: Dict[str, Any] = {
+                "status": "error",
+                "summary": runtime_error,
+                "error": runtime_error,
+            }
+            if reply and reply != runtime_error:
+                result["reply"] = reply
+            return result
+        failed_tool = _scheduled_task_failed_tool_result(getattr(session, "agent", None))
+        if failed_tool is not None:
+            result = {
+                "status": "error",
+                "summary": failed_tool["summary"],
+                "error": failed_tool["summary"],
+            }
+            if failed_tool.get("tool_name"):
+                result["tool_name"] = failed_tool["tool_name"]
+            if reply and reply != failed_tool["summary"]:
+                result["reply"] = reply
+            return result
         return {
             "status": "success",
             "summary": reply,

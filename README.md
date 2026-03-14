@@ -19,6 +19,15 @@ python run_tui.py
 python -m agent_build.agent1.agent1
 ```
 
+## Recent Changes (2026-03-14)
+- Replaced SMTP relay delivery with a new `agentmail_send` tool:
+  - Sends outbound email through the official AgentMail Python SDK.
+  - Supports `subject`, required `text_body`, optional `html_body`, and optional workspace attachments.
+  - Always sends to the configured owner recipient from env; recipients are not tool-call configurable.
+- Added AgentMail runtime configuration via env:
+  - Required: `AGENTMAIL_API_KEY`, `POP_AGENT_AGENTMAIL_INBOX_ID`, `POP_AGENT_AGENTMAIL_TO_EMAIL`
+- Scheduled prompts can now call `agentmail_send` to mail work reports from a Raspberry Pi runner or any host running the agent1 runtime.
+
 ## Recent Changes (2026-03-12)
 - Added a persistent scheduler subsystem in core `agent`:
   - New `Agent` APIs:
@@ -74,6 +83,65 @@ Note:
 - The TUI prefers a detached scheduler daemon by default, so scheduled tasks can continue after you close the app.
 - The daemon PID is stored in `agent/mem/scheduled_runner.pid` and logs are written to `agent/mem/scheduled_runner.log`.
 - Set `POP_AGENT_SCHEDULER_PERSISTENT=0` to disable daemon startup and fall back to the in-process scheduler worker.
+
+## AgentMail tool
+
+Configure AgentMail in `.env` or in your shell environment. If you run with Docker, the existing `--env-file .env` example will load these automatically.
+
+### 1. Add AgentMail settings
+
+Example `.env`:
+
+```bash
+AGENTMAIL_API_KEY=your_agentmail_api_key
+POP_AGENT_AGENTMAIL_INBOX_ID=your_agentmail_inbox_id
+POP_AGENT_AGENTMAIL_TO_EMAIL=you@example.com
+```
+
+Required:
+- `AGENTMAIL_API_KEY`
+- `POP_AGENT_AGENTMAIL_INBOX_ID`
+- `POP_AGENT_AGENTMAIL_TO_EMAIL`
+
+Rules:
+- `AGENTMAIL_API_KEY` is the SDK credential described in the AgentMail onboarding docs.
+- `POP_AGENT_AGENTMAIL_INBOX_ID` should be an existing AgentMail inbox id. The included `test.py` helper can create one and reuse it via env.
+- `POP_AGENT_AGENTMAIL_TO_EMAIL` remains the fixed owner recipient address for scheduled reports.
+
+### 2. Restart the agent runtime
+
+After changing `.env`, restart the process that runs the agent or scheduled runner so it picks up the new environment.
+
+### 3. Use `agentmail_send`
+
+Tool payload shape:
+
+```json
+{
+  "subject": "Nightly work report",
+  "text_body": "Completed the sync job and generated fresh metrics.",
+  "html_body": "<p>Completed the sync job and generated fresh metrics.</p>",
+  "attachment_paths": ["agent/mem/nightly-report.txt"]
+}
+```
+
+Notes:
+- `agentmail_send` always delivers to `POP_AGENT_AGENTMAIL_TO_EMAIL`.
+- `attachment_paths` must resolve inside the workspace.
+- Scheduled tasks can email you by including a final `agentmail_send` step in the scheduled prompt.
+
+### 4. Scheduled report example
+
+Example scheduled prompt:
+
+```text
+Check the project status, summarize completed work, and then call agentmail_send with:
+- subject: "Raspberry Pi work report"
+- text_body: a concise plain-text summary
+- html_body: an optional HTML version of the same report
+```
+
+If you want to attach a generated file, save it inside the workspace first and then pass its path in `attachment_paths`.
 
 ## Scheduler Deep Dive (implementation + call flow)
 

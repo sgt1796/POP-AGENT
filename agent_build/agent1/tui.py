@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -503,6 +504,7 @@ def run_tui() -> int:
                     debug_log=self._debug_log,
                     bash_approval_fn=self._request_bash_approval,
                     run_scheduled_tasks_now_fn=self._run_due_tasks_now,
+                    ensure_scheduler_daemon_fn=self._ensure_scheduler_daemon,
                 )
             except Exception as exc:
                 self._append_activity(f"[runtime:error] {exc}")
@@ -518,6 +520,8 @@ def run_tui() -> int:
                     self._scheduler_daemon_info = start_daemon(
                         max_parallel=self._scheduler_max_parallel,
                         poll_interval_s=self._scheduler_poll_interval_s,
+                        exit_when_idle=True,
+                        python_executable=sys.executable,
                     )
                 except Exception as exc:
                     self._append_activity(
@@ -1231,6 +1235,31 @@ def run_tui() -> int:
 
         async def _run_due_tasks_now(self) -> Dict[str, Any]:
             return await self._run_due_tasks(source="run_now")
+
+        async def _ensure_scheduler_daemon(self) -> Dict[str, Any]:
+            if not self._scheduler_persistent_enabled:
+                return {"ok": True, "started": False, "persistent_enabled": False}
+
+            info = await asyncio.to_thread(
+                start_daemon,
+                max_parallel=self._scheduler_max_parallel,
+                poll_interval_s=self._scheduler_poll_interval_s,
+                exit_when_idle=True,
+                python_executable=sys.executable,
+            )
+            self._scheduler_daemon_info = dict(info)
+            pid = int(info.get("pid") or 0)
+            pid_file = str(info.get("pid_file") or "")
+            log_file = str(info.get("log_file") or "")
+            if bool(info.get("ok")):
+                state = "running" if bool(info.get("already_running")) else "started"
+                self._append_activity(
+                    f"[scheduler] persistent daemon {state} pid={pid} pid_file={pid_file} log_file={log_file}"
+                )
+            else:
+                error = str(info.get("error") or "unknown_error")
+                self._append_activity(f"[scheduler:warning] persistent daemon unavailable: {error}")
+            return info
 
         async def _scheduled_task_worker(self) -> None:
             idle_sleep_s = min(0.25, self._scheduler_poll_interval_s)

@@ -164,6 +164,141 @@ def test_main_daemon_start_invokes_start_helper(monkeypatch, capsys):
     assert "daemon running pid=1357" in captured.out
 
 
+def test_start_daemon_uses_current_python_executable(monkeypatch, tmp_path):
+    desired_python = str(tmp_path / "venv" / "bin" / "python")
+    launched = {"started": False}
+    commands = []
+
+    def _fake_get_daemon_status(**kwargs):
+        pid_file = str(kwargs["pid_file"])
+        log_file = str(kwargs["log_file"])
+        status = {
+            "ok": True,
+            "pid_file": pid_file,
+            "log_file": log_file,
+            "stale_pid_file": False,
+            "project_root": str(tmp_path),
+        }
+        if launched["started"]:
+            return {
+                **status,
+                "running": True,
+                "pid": 777,
+                "python_executable": scheduled_runner.os.path.realpath(desired_python),
+            }
+        return {
+            **status,
+            "running": False,
+            "pid": None,
+            "python_executable": None,
+        }
+
+    class _FakePopen:
+        def __init__(self, command, **kwargs):
+            del kwargs
+            commands.append(list(command))
+            launched["started"] = True
+            self.pid = 777
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(scheduled_runner.sys, "executable", desired_python)
+    monkeypatch.setattr(scheduled_runner, "get_daemon_status", _fake_get_daemon_status)
+    monkeypatch.setattr(scheduled_runner.subprocess, "Popen", _FakePopen)
+
+    info = scheduled_runner.start_daemon(project_root=str(tmp_path))
+
+    assert info["ok"] is True
+    assert info["started"] is True
+    assert commands[0][0] == scheduled_runner.os.path.realpath(desired_python)
+    assert info["python_executable"] == scheduled_runner.os.path.realpath(desired_python)
+
+
+def test_start_daemon_restarts_running_daemon_when_python_executable_differs(monkeypatch, tmp_path):
+    desired_python = str(tmp_path / "venv" / "bin" / "python")
+    running_python = str(tmp_path / "old-env" / "bin" / "python")
+    state = {"stopped": False, "started": False}
+    commands = []
+    stop_calls = []
+
+    def _fake_get_daemon_status(**kwargs):
+        pid_file = str(kwargs["pid_file"])
+        log_file = str(kwargs["log_file"])
+        base = {
+            "ok": True,
+            "pid_file": pid_file,
+            "log_file": log_file,
+            "stale_pid_file": False,
+            "project_root": str(tmp_path),
+        }
+        if not state["stopped"]:
+            return {
+                **base,
+                "running": True,
+                "pid": 111,
+                "python_executable": scheduled_runner.os.path.realpath(running_python),
+            }
+        if not state["started"]:
+            return {
+                **base,
+                "running": False,
+                "pid": None,
+                "python_executable": None,
+            }
+        return {
+            **base,
+            "running": True,
+            "pid": 222,
+            "python_executable": scheduled_runner.os.path.realpath(desired_python),
+        }
+
+    def _fake_stop_daemon(**kwargs):
+        stop_calls.append(dict(kwargs))
+        state["stopped"] = True
+        return {
+            "ok": True,
+            "stopped": True,
+            "already_stopped": False,
+            "running": False,
+            "pid": 111,
+            "pid_file": str(kwargs["pid_file"]),
+            "log_file": str(kwargs["log_file"]),
+            "stale_pid_file": False,
+            "python_executable": scheduled_runner.os.path.realpath(running_python),
+        }
+
+    class _FakePopen:
+        def __init__(self, command, **kwargs):
+            del kwargs
+            commands.append(list(command))
+            state["started"] = True
+            self.pid = 222
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(scheduled_runner, "get_daemon_status", _fake_get_daemon_status)
+    monkeypatch.setattr(scheduled_runner, "stop_daemon", _fake_stop_daemon)
+    monkeypatch.setattr(scheduled_runner.subprocess, "Popen", _FakePopen)
+
+    info = scheduled_runner.start_daemon(
+        project_root=str(tmp_path),
+        python_executable=desired_python,
+    )
+
+    assert info["ok"] is True
+    assert info["started"] is True
+    assert stop_calls == [
+        {
+            "project_root": str(tmp_path),
+            "pid_file": str(tmp_path / "agent" / "mem" / "scheduled_runner.pid"),
+            "log_file": str(tmp_path / "agent" / "mem" / "scheduled_runner.log"),
+        }
+    ]
+    assert commands[0][0] == scheduled_runner.os.path.realpath(desired_python)
+
+
 def test_main_daemon_stop_invokes_stop_helper(monkeypatch, capsys):
     monkeypatch.setattr(
         scheduled_runner,
@@ -185,3 +320,39 @@ def test_main_daemon_stop_invokes_stop_helper(monkeypatch, capsys):
 
     assert exit_code == 0
     assert "daemon stopped pid_file=/tmp/scheduled_runner.pid" in captured.out
+
+
+def test_run_daemon_loop_exits_when_idle(tmp_path, monkeypatch, capsys):
+    calls = []
+
+    async def _fake_run_due_report(_max_parallel):
+        calls.append("run_due_report")
+        return {
+            "due_count": 1,
+            "success_count": 1,
+            "error_count": 0,
+            "max_parallel": 1,
+            "tasks": [{"id": "task-1", "status": "success", "summary": "done"}],
+            "enabled_count": 0,
+        }
+
+    monkeypatch.setattr(scheduled_runner, "_run_due_report", _fake_run_due_report)
+
+    pid_file = tmp_path / "scheduled_runner.pid"
+    log_file = tmp_path / "scheduled_runner.log"
+    exit_code = asyncio.run(
+        scheduled_runner._run_daemon_loop(
+            max_parallel=1,
+            poll_interval_s=1.0,
+            project_root=str(tmp_path),
+            pid_file=str(pid_file),
+            log_file=str(log_file),
+            exit_when_idle=True,
+        )
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert calls == ["run_due_report"]
+    assert pid_file.exists() is False
+    assert "daemon idle" in captured.out

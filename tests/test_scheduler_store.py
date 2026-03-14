@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+import agent.scheduler as scheduler
 from agent.scheduler import ScheduledTaskError, ScheduledTaskStore
 
 
@@ -140,3 +141,37 @@ def test_runner_lock_blocks_concurrent_runs(tmp_path):
         with pytest.raises(ScheduledTaskError) as exc:
             asyncio.run(store.run_due_tasks(_executor, max_parallel=1))
         assert exc.value.code == "runner_locked"
+
+
+def test_run_due_tasks_reports_remaining_schedule_state(tmp_path):
+    store = ScheduledTaskStore(project_root=str(tmp_path))
+    created = store.schedule_task(
+        "Run once",
+        run_at="2030-01-01T00:00:00",
+        timezone_name="UTC",
+        task_name="state_job",
+    )
+    assert store.mark_task_due_now(created["id"]) is True
+
+    async def _executor(_task):
+        return {"status": "success", "summary": "ok"}
+
+    report = asyncio.run(store.run_due_tasks(_executor, max_parallel=1))
+
+    assert report["task_count"] == 1
+    assert report["enabled_count"] == 0
+    assert report["next_run_at_utc"] is None
+
+
+def test_scheduler_accepts_windows_paths_inside_wsl_project_root(monkeypatch):
+    monkeypatch.setattr(scheduler.os, "name", "nt")
+
+    store = ScheduledTaskStore(
+        project_root="/mnt/c/Users/example/project",
+        jobs_path=r"C:\Users\example\project\agent\mem\scheduled_jobs.json",
+        runner_lock_path=r"C:\Users\example\project\agent\mem\scheduled_jobs.lock",
+    )
+
+    assert store.project_root == "/mnt/c/Users/example/project"
+    assert store.jobs_path == "/mnt/c/Users/example/project/agent/mem/scheduled_jobs.json"
+    assert store.runner_lock_path == "/mnt/c/Users/example/project/agent/mem/scheduled_jobs.lock"

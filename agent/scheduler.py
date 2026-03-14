@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import ntpath
 import os
+import posixpath
 import re
 import tempfile
 import uuid
@@ -17,6 +19,8 @@ DEFAULT_RUNNER_LOCK_PATH = os.path.join("agent", "mem", "scheduled_jobs.lock")
 SCHEMA_VERSION = 1
 DEFAULT_MAX_HISTORY = 20
 _TASK_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^(?P<drive>[A-Za-z]):[\\/]*(?P<rest>.*)$")
+_WSL_DRIVE_PATH_PATTERN = re.compile(r"^/mnt/(?P<drive>[A-Za-z])(?:/(?P<rest>.*))?$")
 
 
 TaskExecutor = Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]] | Dict[str, Any] | Any]
@@ -61,8 +65,76 @@ def _common_path(a: str, b: str) -> str:
         return ""
 
 
-def _path_within_root(path: str, root: str) -> bool:
-    return _common_path(path, root) == root
+def _path_style(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if _WINDOWS_DRIVE_PATH_PATTERN.match(text):
+        return "nt"
+    if _WSL_DRIVE_PATH_PATTERN.match(text) or text.startswith("/"):
+        return "posix"
+    return None
+
+
+def _path_module(platform: Optional[str] = None) -> Any:
+    target_platform = str(platform or os.name or "").strip().lower()
+    return ntpath if target_platform == "nt" else posixpath
+
+
+def _normalize_platform_path(value: Any, *, platform: Optional[str] = None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    target_platform = str(platform or os.name or "").strip().lower()
+    if target_platform == "nt":
+        wsl_match = _WSL_DRIVE_PATH_PATTERN.match(text.replace("\\", "/"))
+        if wsl_match is not None:
+            drive = str(wsl_match.group("drive") or "").upper()
+            rest = str(wsl_match.group("rest") or "").replace("/", "\\").lstrip("\\")
+            return f"{drive}:\\" if not rest else f"{drive}:\\{rest}"
+        return text.replace("/", "\\")
+    windows_match = _WINDOWS_DRIVE_PATH_PATTERN.match(text)
+    if windows_match is None:
+        return text.replace("\\", "/")
+    drive = str(windows_match.group("drive") or "").lower()
+    rest = str(windows_match.group("rest") or "").replace("\\", "/").lstrip("/")
+    return f"/mnt/{drive}" if not rest else f"/mnt/{drive}/{rest}"
+
+
+def _realpath_compat(value: Any, *, platform: Optional[str] = None) -> str:
+    normalized = _normalize_platform_path(value, platform=platform)
+    if not normalized:
+        return ""
+    target_platform = str(platform or os.name or "").strip().lower()
+    if target_platform == str(os.name or "").strip().lower():
+        return os.path.realpath(normalized)
+    return _path_module(target_platform).normpath(normalized)
+
+
+def _resolve_project_path(
+    project_root: str,
+    value: Optional[str],
+    default_relpath: str,
+    *,
+    platform: Optional[str] = None,
+) -> str:
+    pathmod = _path_module(platform)
+    text = _normalize_platform_path(value, platform=platform)
+    default_text = _normalize_platform_path(default_relpath, platform=platform)
+    candidate = text or pathmod.join(project_root, default_text)
+    if not pathmod.isabs(candidate):
+        candidate = pathmod.join(project_root, candidate)
+    return _realpath_compat(candidate, platform=platform)
+
+
+def _path_within_root(path: str, root: str, *, platform: Optional[str] = None) -> bool:
+    pathmod = _path_module(platform)
+    normalized_path = pathmod.normcase(_realpath_compat(path, platform=platform))
+    normalized_root = pathmod.normcase(_realpath_compat(root, platform=platform))
+    try:
+        return pathmod.commonpath([normalized_path, normalized_root]) == normalized_root
+    except ValueError:
+        return False
 
 
 def _default_timezone_name() -> str:
@@ -178,13 +250,15 @@ class ScheduledTaskStore:
         runner_lock_path: Optional[str] = None,
         max_history: int = DEFAULT_MAX_HISTORY,
     ) -> None:
-        root = os.path.realpath(str(project_root or os.getcwd()))
-        jobs = os.path.realpath(str(jobs_path or os.path.join(root, DEFAULT_SCHEDULED_JOBS_PATH)))
-        lock = os.path.realpath(str(runner_lock_path or os.path.join(root, DEFAULT_RUNNER_LOCK_PATH)))
+        root_input = project_root or os.getcwd()
+        platform = _path_style(root_input)
+        root = _realpath_compat(root_input, platform=platform)
+        jobs = _resolve_project_path(root, jobs_path, DEFAULT_SCHEDULED_JOBS_PATH, platform=platform)
+        lock = _resolve_project_path(root, runner_lock_path, DEFAULT_RUNNER_LOCK_PATH, platform=platform)
 
-        if not _path_within_root(jobs, root):
+        if not _path_within_root(jobs, root, platform=platform):
             raise ValueError("jobs_path must be within project_root")
-        if not _path_within_root(lock, root):
+        if not _path_within_root(lock, root, platform=platform):
             raise ValueError("runner_lock_path must be within project_root")
 
         self.project_root = root
@@ -303,6 +377,7 @@ class ScheduledTaskStore:
             now_utc = _utcnow()
             due_tasks = self._find_due_tasks(payload.get("tasks", []), now_utc=now_utc)
             if not due_tasks:
+                schedule_state = self._schedule_state(payload.get("tasks", []))
                 return {
                     "ok": True,
                     "due_count": 0,
@@ -310,6 +385,7 @@ class ScheduledTaskStore:
                     "error_count": 0,
                     "max_parallel": parallel,
                     "tasks": [],
+                    **schedule_state,
                 }
 
             semaphore = asyncio.Semaphore(parallel)
@@ -366,6 +442,7 @@ class ScheduledTaskStore:
                     continue
                 self._apply_task_outcome(task, outcome)
             self._write_payload(payload)
+            schedule_state = self._schedule_state(payload.get("tasks", []))
 
         success_count = sum(1 for item in outcomes if str(item.get("status") or "") == "success")
         error_count = max(0, len(outcomes) - success_count)
@@ -376,6 +453,7 @@ class ScheduledTaskStore:
             "error_count": error_count,
             "max_parallel": parallel,
             "tasks": outcomes,
+            **schedule_state,
         }
 
     def _find_due_tasks(self, tasks: List[Dict[str, Any]], *, now_utc: datetime) -> List[Dict[str, Any]]:
@@ -394,6 +472,20 @@ class ScheduledTaskStore:
                 due.append(copy.deepcopy(task))
         due.sort(key=lambda item: str(item.get("next_run_at_utc") or ""))
         return due
+
+    def _schedule_state(self, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        task_list = [item for item in tasks if isinstance(item, dict)]
+        enabled_tasks = [item for item in task_list if _coerce_bool(item.get("enabled"), True)]
+        next_runs = sorted(
+            str(item.get("next_run_at_utc") or "").strip()
+            for item in enabled_tasks
+            if str(item.get("next_run_at_utc") or "").strip()
+        )
+        return {
+            "task_count": len(task_list),
+            "enabled_count": len(enabled_tasks),
+            "next_run_at_utc": next_runs[0] if next_runs else None,
+        }
 
     def _apply_task_outcome(self, task: Dict[str, Any], outcome: Dict[str, Any]) -> None:
         finished_utc = _parse_utc_iso(str(outcome.get("finished_at_utc") or _to_iso_utc(_utcnow())))

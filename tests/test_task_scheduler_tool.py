@@ -122,6 +122,49 @@ def test_task_scheduler_run_now_can_execute_due_tasks_immediately():
     assert calls == ["run_due_now"]
 
 
+def test_task_scheduler_create_can_ensure_scheduler_daemon():
+    fake_agent = _FakeAgent()
+    calls = []
+
+    async def _ensure_scheduler_daemon():
+        calls.append("ensure_scheduler_daemon")
+        return {"ok": True, "running": True, "pid": 1234}
+
+    tool = TaskSchedulerTool(agent=fake_agent, ensure_scheduler_daemon_fn=_ensure_scheduler_daemon)
+    result = _run(
+        tool,
+        {
+            "action": "create",
+            "prompt": "do something later",
+            "run_at": "2030-01-01T10:00:00",
+            "timezone": "UTC",
+            "task_name": "later_job",
+        },
+    )
+
+    assert result.details["ok"] is True
+    assert result.details["daemon"]["running"] is True
+    assert calls == ["ensure_scheduler_daemon"]
+
+
+def test_task_scheduler_run_now_starts_daemon_when_immediate_run_unavailable():
+    fake_agent = _FakeAgent()
+    calls = []
+
+    async def _ensure_scheduler_daemon():
+        calls.append("ensure_scheduler_daemon")
+        return {"ok": True, "running": True, "pid": 1234}
+
+    tool = TaskSchedulerTool(agent=fake_agent, ensure_scheduler_daemon_fn=_ensure_scheduler_daemon)
+    result = _run(tool, {"action": "run_now", "task_id": "task-1"})
+
+    assert result.details["ok"] is True
+    assert result.details["marked_due"] is True
+    assert result.details["daemon"]["running"] is True
+    assert fake_agent.marked == ["task-1"]
+    assert calls == ["ensure_scheduler_daemon"]
+
+
 def test_task_scheduler_rejects_unsupported_action():
     tool = TaskSchedulerTool(agent=_FakeAgent())
     result = _run(tool, {"action": "unknown"})

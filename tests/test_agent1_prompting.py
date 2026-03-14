@@ -28,6 +28,7 @@ def test_prompt_includes_execution_first_sections_and_allowlists():
     assert "Use file_write for creating files, writing text, and replacing words in text files." in prompt
     assert "Use task_scheduler when the user asks to run work later or on a recurring cadence" in prompt
     assert "task_scheduler run_now marks the task as due now" in prompt
+    assert "Use agentmail_send when the user asks to email the configured owner" in prompt
     assert "Failure Recovery:" in prompt
     assert "Completion Criteria:" in prompt
 

@@ -11,6 +11,7 @@ from agent.agent_types import AgentTool, AgentToolResult, TextContent
 _TRUE_WORDS = {"1", "true", "yes", "y", "on"}
 _FALSE_WORDS = {"0", "false", "no", "n", "off"}
 RunDueTasksNowFn = Callable[[], Any]
+EnsureSchedulerDaemonFn = Callable[[], Any]
 
 
 def _to_text(value: Any) -> str:
@@ -77,14 +78,34 @@ class TaskSchedulerTool(AgentTool):
     }
     label = "Task Scheduler"
 
-    def __init__(self, agent: Agent, run_due_tasks_now_fn: Optional[RunDueTasksNowFn] = None) -> None:
+    def __init__(
+        self,
+        agent: Agent,
+        run_due_tasks_now_fn: Optional[RunDueTasksNowFn] = None,
+        ensure_scheduler_daemon_fn: Optional[EnsureSchedulerDaemonFn] = None,
+    ) -> None:
         self.agent = agent
         self._run_due_tasks_now_fn = run_due_tasks_now_fn
+        self._ensure_scheduler_daemon_fn = ensure_scheduler_daemon_fn
 
     async def _run_due_tasks_now(self) -> Dict[str, Any]:
         if self._run_due_tasks_now_fn is None:
             return {}
         maybe_result = self._run_due_tasks_now_fn()
+        if inspect.isawaitable(maybe_result):
+            resolved = await maybe_result
+        else:
+            resolved = maybe_result
+        if isinstance(resolved, dict):
+            return dict(resolved)
+        if resolved is None:
+            return {}
+        return {"result": resolved}
+
+    async def _ensure_scheduler_daemon(self) -> Dict[str, Any]:
+        if self._ensure_scheduler_daemon_fn is None:
+            return {}
+        maybe_result = self._ensure_scheduler_daemon_fn()
         if inspect.isawaitable(maybe_result):
             resolved = await maybe_result
         else:
@@ -134,6 +155,13 @@ class TaskSchedulerTool(AgentTool):
                     timezone=_to_text(params.get("timezone")) or None,
                     task_name=_to_text(params.get("task_name")) or None,
                 )
+                daemon_report: Optional[Dict[str, Any]] = None
+                daemon_error = ""
+                if self._ensure_scheduler_daemon_fn is not None:
+                    try:
+                        daemon_report = await self._ensure_scheduler_daemon()
+                    except Exception as exc:
+                        daemon_error = str(exc)
                 text = (
                     "task_scheduler create: ok\n"
                     f"id={task.get('id')}\n"
@@ -141,7 +169,17 @@ class TaskSchedulerTool(AgentTool):
                     f"schedule_type={task.get('schedule_type')}\n"
                     f"next_run_at_utc={task.get('next_run_at_utc')}"
                 )
-                return self._ok(text, {"action": action, "task": task})
+                if daemon_error:
+                    text = f"{text}\ndaemon_error={daemon_error}"
+                return self._ok(
+                    text,
+                    {
+                        "action": action,
+                        "task": task,
+                        "daemon": daemon_report,
+                        "daemon_error": daemon_error or None,
+                    },
+                )
 
             if action == "list":
                 include_history = _to_bool(params.get("include_history"), default=False)
@@ -178,12 +216,20 @@ class TaskSchedulerTool(AgentTool):
                     )
                 marked = bool(self.agent.run_scheduled_task_now(task_id))
                 run_report: Optional[Dict[str, Any]] = None
+                daemon_report: Optional[Dict[str, Any]] = None
+                daemon_error = ""
                 immediate_run_error = ""
                 if marked and self._run_due_tasks_now_fn is not None:
                     try:
                         run_report = await self._run_due_tasks_now()
                     except Exception as exc:
                         immediate_run_error = str(exc)
+                if marked and (self._run_due_tasks_now_fn is None or immediate_run_error):
+                    if self._ensure_scheduler_daemon_fn is not None:
+                        try:
+                            daemon_report = await self._ensure_scheduler_daemon()
+                        except Exception as exc:
+                            daemon_error = str(exc)
 
                 status_text = "marked_due" if marked else "not_found"
                 if marked and isinstance(run_report, dict):
@@ -194,6 +240,8 @@ class TaskSchedulerTool(AgentTool):
                         status_text = f"executed due={due_count} success={success_count} error={error_count}"
                 if marked and immediate_run_error:
                     status_text = f"marked_due immediate_run_error={immediate_run_error}"
+                if marked and daemon_error:
+                    status_text = f"{status_text} daemon_error={daemon_error}"
                 return self._ok(
                     f"task_scheduler run_now: {status_text} ({task_id})",
                     {
@@ -201,6 +249,8 @@ class TaskSchedulerTool(AgentTool):
                         "task_id": task_id,
                         "marked_due": marked,
                         "run_report": run_report,
+                        "daemon": daemon_report,
+                        "daemon_error": daemon_error or None,
                         "immediate_run_error": immediate_run_error or None,
                     },
                 )

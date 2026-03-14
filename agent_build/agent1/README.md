@@ -13,6 +13,7 @@ Highlights:
 * Added first-class static workflow tools:
   - `gmail_fetch` (search Gmail + download attachments)
   - `pdf_merge` (merge PDFs for print workflows)
+  - `agentmail_send` (email the configured owner through AgentMail)
 * Moved `MemorySearchTool` implementation to `agent/tools/` and kept `agent_build/agent1/tools.py` as a compatibility shim.
 * Added new env controls:
   - `POP_AGENT_EXECUTION_PROFILE`
@@ -107,6 +108,7 @@ Enhancements:
 * Stronger execution-first system prompt generation in `prompting.py`.
 * Demo tools (`slow`, `fast`) are now opt-in via `POP_AGENT_INCLUDE_DEMO_TOOLS`.
 * First-class Gmail + PDF workflow support via `gmail_fetch` and `pdf_merge`.
+* AgentMail owner-report delivery via `agentmail_send`, including optional HTML bodies and workspace attachments.
 
 ## 5. Runtime/environment controls (important)
 
@@ -143,6 +145,33 @@ General:
   Default: `balanced` (`balanced`, `aggressive`, `conservative`)
 * `POP_AGENT_INCLUDE_DEMO_TOOLS`
   Default: `false` (enables `slow` and `fast` when set to true)
+
+AgentMail:
+
+* `AGENTMAIL_API_KEY`
+  Required AgentMail API key for `agentmail_send`
+* `POP_AGENT_AGENTMAIL_INBOX_ID`
+  Required sender inbox id for `agentmail_send`
+* `POP_AGENT_AGENTMAIL_TO_EMAIL`
+  Required fixed owner recipient address
+
+Example `.env`:
+
+```bash
+AGENTMAIL_API_KEY=your_agentmail_api_key
+POP_AGENT_AGENTMAIL_INBOX_ID=your_agentmail_inbox_id
+POP_AGENT_AGENTMAIL_TO_EMAIL=you@example.com
+```
+
+Configuration notes:
+
+* Create an AgentMail inbox once, then set its inbox id in `POP_AGENT_AGENTMAIL_INBOX_ID`.
+* The included `test.py` helper can create a manual-test inbox if you only have the API key configured.
+* `agentmail_send` still keeps the recipient fixed to the configured owner email.
+
+Scheduled-task note:
+
+* Scheduled prompts can call `agentmail_send` to email you a report from a Raspberry Pi or any other host running `agent_build.agent1`.
 
 ## 5.5. Token Usage Tracking
 

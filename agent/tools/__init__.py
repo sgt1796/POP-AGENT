@@ -1,4 +1,5 @@
 from .agent1_tools import MemorySearchTool
+from .agentmail_tool import AgentMailSendTool
 from .bash_exec_tool import BashExecConfig, BashExecTool
 from .download_url_to_file import DownloadUrlToFileTool
 from .example_tools import FastTool, SlowTool
@@ -26,5 +27,6 @@ __all__ = [
     "MemorySearchTool",
     "GmailFetchTool",
     "PdfMergeTool",
+    "AgentMailSendTool",
     "TaskSchedulerTool",
 ]
