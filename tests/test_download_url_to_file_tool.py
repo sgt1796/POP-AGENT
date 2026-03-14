@@ -170,6 +170,32 @@ def test_download_url_to_file_rejects_output_path_outside_workspace(tmp_path: Pa
     assert result.details["error"] == "path_outside_workspace"
 
 
+def test_download_url_to_file_allows_output_path_in_allowed_roots(tmp_path: Path, monkeypatch):
+    payload = [b"report"]
+    outside_root = tmp_path / "external"
+    outside_root.mkdir()
+    outside_file = outside_root / "report.txt"
+
+    def _fake_get(url, stream=False, timeout=None, allow_redirects=False):
+        del stream, timeout, allow_redirects
+        assert url == "https://example.org/report.txt"
+        return _FakeResponse(chunks=payload, content_type="text/plain", url=url)
+
+    monkeypatch.setattr("agent.tools.download_url_to_file.requests.get", _fake_get)
+
+    tool = DownloadUrlToFileTool(workspace_root=str(tmp_path), allowed_roots=[str(outside_root)])
+    result = _run(
+        tool,
+        {
+            "url": "https://example.org/report.txt",
+            "output_path": str(outside_file),
+        },
+    )
+
+    assert result.details["ok"] is True
+    assert outside_file.read_bytes() == b"report"
+
+
 def test_download_url_to_file_returns_network_error(tmp_path: Path, monkeypatch):
     def _fake_get(url, stream=False, timeout=None, allow_redirects=False):
         del url, stream, timeout, allow_redirects

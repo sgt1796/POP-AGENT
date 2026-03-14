@@ -8,16 +8,17 @@ import os
 from datetime import date, datetime, time
 from decimal import Decimal
 from io import StringIO
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from ..agent_types import AgentTool, AgentToolResult, TextContent
+from .path_roots import normalize_allowed_roots, path_in_roots
 
 from pypdf import PdfReader
 from openpyxl import load_workbook
 
 
 
-_TEXT_SUFFIXES = {".txt", ".md"}
+_TEXT_SUFFIXES = {".txt", ".md", ".log"}
 _IMAGE_SUFFIXES = {
     ".png",
     ".jpg",
@@ -42,20 +43,13 @@ class FileReadError(RuntimeError):
         self.message = str(message or "unknown file read error")
 
 
-def _path_in_workspace(path: str, workspace_root: str) -> bool:
-    try:
-        return os.path.commonpath([workspace_root, path]) == workspace_root
-    except ValueError:
-        return False
-
-
-def _resolve_workspace_path(path_value: str, workspace_root: str) -> str:
+def _resolve_workspace_path(path_value: str, workspace_root: str, allowed_roots: Sequence[str]) -> str:
     candidate = str(path_value or "").strip()
     if not candidate:
         raise FileReadError("path_not_found", "path is required")
     absolute = os.path.realpath(candidate if os.path.isabs(candidate) else os.path.join(workspace_root, candidate))
-    if not _path_in_workspace(absolute, workspace_root):
-        raise FileReadError("path_outside_workspace", "path must be inside workspace")
+    if not path_in_roots(absolute, allowed_roots):
+        raise FileReadError("path_outside_workspace", "path must be inside workspace or configured allowed roots")
     if not os.path.exists(absolute):
         raise FileReadError("path_not_found", f"file not found: {path_value}")
     if not os.path.isfile(absolute):
@@ -226,11 +220,12 @@ def read(
     path: str,
     *,
     workspace_root: Optional[str] = None,
+    allowed_roots: Optional[Sequence[str]] = None,
     max_chars: int = 200_000,
     max_bytes: int = 10_000_000,
     xlsx_format: str = "json",
 ) -> Dict[str, Any]:
-    root = os.path.realpath(str(workspace_root or os.getcwd()))
+    root, roots = normalize_allowed_roots(workspace_root, allowed_roots)
     try:
         max_chars_value = int(max_chars)
     except Exception as exc:
@@ -245,7 +240,7 @@ def read(
     if max_bytes_value <= 0:
         raise FileReadError("parse_error", "max_bytes must be > 0")
 
-    absolute = _resolve_workspace_path(path, root)
+    absolute = _resolve_workspace_path(path, root, roots)
     size = os.path.getsize(absolute)
     if size > max_bytes_value:
         raise FileReadError("file_too_large", f"file size {size} exceeds max_bytes={max_bytes_value}")
@@ -388,12 +383,16 @@ def read(
 class FileReadTool(AgentTool):
     name = "file_read"
     description = (
-        "Read and parse workspace files by suffix. Supports txt, md, json, csv, xlsx, pdf, and image-to-base64."
+        "Read and parse files by suffix inside the workspace or allowed roots. "
+        "Supports txt, md, json, csv, xlsx, pdf, and image-to-base64."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "File path relative to workspace root or absolute path."},
+            "path": {
+                "type": "string",
+                "description": "File path relative to the workspace root or an absolute path inside allowed roots.",
+            },
             "max_chars": {"type": "integer", "description": "Optional max returned chars for text/pdf content."},
             "xlsx_format": {
                 "type": "string",
@@ -405,8 +404,13 @@ class FileReadTool(AgentTool):
     }
     label = "File Read"
 
-    def __init__(self, workspace_root: Optional[str] = None, max_output_chars: int = 20_000) -> None:
-        self.workspace_root = os.path.realpath(str(workspace_root or os.getcwd()))
+    def __init__(
+        self,
+        workspace_root: Optional[str] = None,
+        max_output_chars: int = 20_000,
+        allowed_roots: Optional[Sequence[str]] = None,
+    ) -> None:
+        self.workspace_root, self.allowed_roots = normalize_allowed_roots(workspace_root, allowed_roots)
         self.max_output_chars = max(512, int(max_output_chars or 20_000))
 
     @staticmethod
@@ -439,6 +443,7 @@ class FileReadTool(AgentTool):
             payload = read(
                 path_value,
                 workspace_root=self.workspace_root,
+                allowed_roots=self.allowed_roots,
                 max_chars=int(max_chars),
                 xlsx_format=xlsx_format,
             )

@@ -154,6 +154,29 @@ def test_read_rejects_path_outside_workspace(tmp_path: Path):
     assert exc.value.code == "path_outside_workspace"
 
 
+def test_read_allows_symlink_target_in_allowed_roots(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    target = external / "nohup.log"
+    target.write_text("daemon output", encoding="utf-8")
+    try:
+        (workspace / "Trader").symlink_to(external, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation is not supported in this environment")
+
+    result = read(
+        "Trader/nohup.log",
+        workspace_root=str(workspace),
+        allowed_roots=[str(external)],
+    )
+
+    assert result["ok"] is True
+    assert result["content"] == "daemon output"
+    assert result["path"] == str(target.resolve())
+
+
 def test_read_rejects_unsupported_suffix(tmp_path: Path):
     (tmp_path / "blob.bin").write_bytes(b"\x00\x01\x02")
 

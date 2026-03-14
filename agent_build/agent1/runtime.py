@@ -637,19 +637,30 @@ def create_runtime_session(
         ensure_scheduler_daemon_fn=ensure_scheduler_daemon_fn,
     )
     workspace_root = os.path.realpath(os.getcwd())
-    file_read_tool = FileReadTool(workspace_root=workspace_root)
-    file_write_tool = FileWriteTool(workspace_root=workspace_root)
-    download_url_to_file_tool = DownloadUrlToFileTool(workspace_root=workspace_root)
-    gmail_fetch_tool = GmailFetchTool(workspace_root=workspace_root)
-    pdf_merge_tool = PdfMergeTool(workspace_root=workspace_root)
-    agentmail_send_tool = AgentMailSendTool(workspace_root=workspace_root)
-
-    ## Bash exec configuration
     bash_allowed_roots = parse_path_list_env(
         "POP_AGENT_BASH_ALLOWED_ROOTS",
         default_paths=[workspace_root],
         base_dir=workspace_root,
     )
+    tool_allowed_roots = parse_path_list_env(
+        "POP_AGENT_TOOL_ALLOWED_ROOTS",
+        default_paths=bash_allowed_roots,
+        base_dir=workspace_root,
+    )
+    file_read_tool = FileReadTool(workspace_root=workspace_root, allowed_roots=tool_allowed_roots)
+    file_write_tool = FileWriteTool(workspace_root=workspace_root, allowed_roots=tool_allowed_roots)
+    download_url_to_file_tool = DownloadUrlToFileTool(
+        workspace_root=workspace_root,
+        allowed_roots=tool_allowed_roots,
+    )
+    gmail_fetch_tool = GmailFetchTool(workspace_root=workspace_root)
+    pdf_merge_tool = PdfMergeTool(workspace_root=workspace_root)
+    agentmail_send_tool = AgentMailSendTool(
+        workspace_root=workspace_root,
+        allowed_roots=tool_allowed_roots,
+    )
+
+    ## Bash exec configuration
     bash_writable_roots = parse_path_list_env(
         "POP_AGENT_BASH_WRITABLE_ROOTS",
         default_paths=[workspace_root],

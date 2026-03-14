@@ -4,9 +4,10 @@ import base64
 import mimetypes
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from ..agent_types import AgentTool, AgentToolResult, TextContent
+from .path_roots import normalize_allowed_roots, path_in_roots
 
 try:
     from agentmail import AgentMail
@@ -21,19 +22,12 @@ _REQUIRED_ENV_VARS = (
 )
 
 
-def _path_in_workspace(path: str, workspace_root: str) -> bool:
-    try:
-        return os.path.commonpath([workspace_root, path]) == workspace_root
-    except ValueError:
-        return False
-
-
-def _resolve_workspace_path(path_value: str, workspace_root: str) -> str:
+def _resolve_workspace_path(path_value: str, workspace_root: str, allowed_roots: Sequence[str]) -> str:
     candidate = str(path_value).strip()
     if not candidate:
         raise ValueError("path is required")
     resolved = os.path.realpath(candidate if os.path.isabs(candidate) else os.path.join(workspace_root, candidate))
-    if not _path_in_workspace(resolved, workspace_root):
+    if not path_in_roots(resolved, allowed_roots):
         raise ValueError("path_outside_workspace")
     return resolved
 
@@ -60,7 +54,7 @@ class AgentMailSendTool(AgentTool):
     name = "agentmail_send"
     description = (
         "Send an email to the configured owner with AgentMail. "
-        "Supports a plain-text body, optional HTML body, and optional workspace-only attachments."
+        "Supports a plain-text body, optional HTML body, and optional attachments inside the workspace or allowed roots."
     )
     parameters = {
         "type": "object",
@@ -80,15 +74,20 @@ class AgentMailSendTool(AgentTool):
             "attachment_paths": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional attachment paths. Each path must resolve inside the workspace.",
+                "description": "Optional attachment paths. Each path must resolve inside the workspace or allowed roots.",
             },
         },
         "required": ["subject", "text_body"],
     }
     label = "AgentMail Send"
 
-    def __init__(self, workspace_root: Optional[str] = None) -> None:
-        self.workspace_root = os.path.realpath(str(workspace_root or os.getcwd()))
+    def __init__(
+        self,
+        workspace_root: Optional[str] = None,
+        *,
+        allowed_roots: Optional[Sequence[str]] = None,
+    ) -> None:
+        self.workspace_root, self.allowed_roots = normalize_allowed_roots(workspace_root, allowed_roots)
 
     @staticmethod
     def _error(text: str, details: Dict[str, Any]) -> AgentToolResult:
@@ -138,14 +137,15 @@ class AgentMailSendTool(AgentTool):
                     "attachment_paths may not contain empty values",
                 )
             try:
-                resolved = _resolve_workspace_path(raw, self.workspace_root)
+                resolved = _resolve_workspace_path(raw, self.workspace_root, self.allowed_roots)
             except ValueError as exc:
                 raise _AgentMailToolError(
                     "path_outside_workspace",
-                    "attachment path must be inside the workspace",
+                    "attachment path must be inside the workspace or configured allowed roots",
                     {
                         "attachment_path": raw,
                         "workspace_root": self.workspace_root,
+                        "allowed_roots": self.allowed_roots,
                     },
                 ) from exc
             if not os.path.isfile(resolved):

@@ -139,6 +139,30 @@ def test_agentmail_send_builds_html_and_base64_attachments(tmp_path: Path, monke
     assert base64.b64decode(attachment["content"]) == b"%PDF-1.4 fake pdf"
 
 
+def test_agentmail_send_allows_attachment_in_allowed_roots(tmp_path: Path, monkeypatch):
+    _set_required_env(monkeypatch)
+    external = tmp_path / "external"
+    external.mkdir()
+    attachment_path = external / "report.txt"
+    attachment_path.write_text("summary", encoding="utf-8")
+    _FakeAgentMail.instances = []
+    _FakeAgentMail.raise_on_send = None
+    monkeypatch.setattr("agent.tools.agentmail_tool.AgentMail", _FakeAgentMail)
+
+    tool = AgentMailSendTool(workspace_root=str(tmp_path), allowed_roots=[str(external)])
+    result = _run(
+        tool,
+        {
+            "subject": "Work report",
+            "text_body": "Plain summary",
+            "attachment_paths": [str(attachment_path)],
+        },
+    )
+
+    assert result.details["ok"] is True
+    assert result.details["attachment_paths"] == [str(attachment_path.resolve())]
+
+
 def test_agentmail_send_rejects_attachment_outside_workspace(tmp_path: Path, monkeypatch):
     _set_required_env(monkeypatch)
     monkeypatch.setattr("agent.tools.agentmail_tool.AgentMail", _FakeAgentMail)

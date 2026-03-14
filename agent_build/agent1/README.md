@@ -116,6 +116,8 @@ Bash exec:
 
 * `POP_AGENT_BASH_ALLOWED_ROOTS`
   Default: current workspace root
+* `POP_AGENT_TOOL_ALLOWED_ROOTS`
+  Default: `POP_AGENT_BASH_ALLOWED_ROOTS` (plus the current workspace root)
 * `POP_AGENT_BASH_WRITABLE_ROOTS`
   Default: current workspace root
 * `POP_AGENT_BASH_TIMEOUT_S`
@@ -168,6 +170,8 @@ Configuration notes:
 * Create an AgentMail inbox once, then set its inbox id in `POP_AGENT_AGENTMAIL_INBOX_ID`.
 * The included `test.py` helper can create a manual-test inbox if you only have the API key configured.
 * `agentmail_send` still keeps the recipient fixed to the configured owner email.
+* `file_read`, `file_write`, `download_url_to_file`, and `agentmail_send` honor `POP_AGENT_TOOL_ALLOWED_ROOTS`.
+  If that variable is unset, they fall back to the same roots as `POP_AGENT_BASH_ALLOWED_ROOTS`.
 
 Scheduled-task note:
 

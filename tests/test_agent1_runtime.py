@@ -199,12 +199,16 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     monkeypatch.setattr(runtime, "ContextCompressor", lambda *a, **k: SimpleNamespace(maybe_compress=lambda *args, **kwargs: False))
 
     monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
-    monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root: SimpleNamespace(name="file_read"))
-    monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root: SimpleNamespace(name="file_write"))
-    monkeypatch.setattr(runtime, "DownloadUrlToFileTool", lambda workspace_root: SimpleNamespace(name="download_url_to_file"))
+    monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root, **kwargs: SimpleNamespace(name="file_read"))
+    monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root, **kwargs: SimpleNamespace(name="file_write"))
+    monkeypatch.setattr(
+        runtime,
+        "DownloadUrlToFileTool",
+        lambda workspace_root, **kwargs: SimpleNamespace(name="download_url_to_file"),
+    )
     monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: SimpleNamespace(name="gmail_fetch"))
     monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: SimpleNamespace(name="pdf_merge"))
-    monkeypatch.setattr(runtime, "AgentMailSendTool", lambda workspace_root: SimpleNamespace(name="agentmail_send"))
+    monkeypatch.setattr(runtime, "AgentMailSendTool", lambda workspace_root, **kwargs: SimpleNamespace(name="agentmail_send"))
     monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: SimpleNamespace(name="jina_web_snapshot"))
     monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: SimpleNamespace(name="perplexity_search"))
     monkeypatch.setattr(runtime, "OpenAlexWorksTool", lambda: SimpleNamespace(name="openalex_works"))
@@ -248,6 +252,64 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
         "pdf_merge",
         "agentmail_send",
     ]
+
+
+def test_create_runtime_session_defaults_tool_allowed_roots_from_bash_roots(monkeypatch, tmp_path):
+    allowed_root = tmp_path / "shared"
+    allowed_root.mkdir()
+    captured = {}
+
+    def _recording_tool(name: str):
+        def _factory(workspace_root, **kwargs):
+            captured[name] = {
+                "workspace_root": workspace_root,
+                "allowed_roots": kwargs.get("allowed_roots"),
+            }
+            return SimpleNamespace(name=name)
+
+        return _factory
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("POP_AGENT_BASH_ALLOWED_ROOTS", str(allowed_root))
+    monkeypatch.delenv("POP_AGENT_TOOL_ALLOWED_ROOTS", raising=False)
+    monkeypatch.setenv("POP_AGENT_INCLUDE_DEMO_TOOLS", "false")
+
+    monkeypatch.setattr(runtime, "Agent", _FakeAgent)
+    monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
+    monkeypatch.setattr(runtime, "FileReadTool", _recording_tool("file_read"))
+    monkeypatch.setattr(runtime, "FileWriteTool", _recording_tool("file_write"))
+    monkeypatch.setattr(runtime, "DownloadUrlToFileTool", _recording_tool("download_url_to_file"))
+    monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: SimpleNamespace(name="gmail_fetch"))
+    monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: SimpleNamespace(name="pdf_merge"))
+    monkeypatch.setattr(runtime, "AgentMailSendTool", _recording_tool("agentmail_send"))
+    monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: SimpleNamespace(name="jina_web_snapshot"))
+    monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: SimpleNamespace(name="perplexity_search"))
+    monkeypatch.setattr(runtime, "OpenAlexWorksTool", lambda: SimpleNamespace(name="openalex_works"))
+    monkeypatch.setattr(runtime, "PerplexityWebSnapshotTool", lambda: SimpleNamespace(name="perplexity_web_snapshot"))
+    monkeypatch.setattr(runtime, "SlowTool", lambda: SimpleNamespace(name="slow"))
+    monkeypatch.setattr(runtime, "FastTool", lambda: SimpleNamespace(name="fast"))
+    monkeypatch.setattr(runtime, "BashExecConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+
+    class _FakeBashExecTool:
+        def __init__(self, config, approval_fn=None):
+            self.name = "bash_exec"
+            self.config = config
+            self.approval_fn = approval_fn
+            self.description = ""
+
+    monkeypatch.setattr(runtime, "BashExecTool", _FakeBashExecTool)
+    monkeypatch.setattr(runtime, "build_system_prompt", lambda **kwargs: "prompt")
+
+    runtime.create_runtime_session(
+        enable_event_logger=False,
+        overrides=runtime.RuntimeOverrides(enable_memory=False),
+    )
+
+    expected_root = str(allowed_root.resolve())
+    assert captured["file_read"]["allowed_roots"] == [expected_root]
+    assert captured["file_write"]["allowed_roots"] == [expected_root]
+    assert captured["download_url_to_file"]["allowed_roots"] == [expected_root]
+    assert captured["agentmail_send"]["allowed_roots"] == [expected_root]
 
 
 def test_build_runtime_overrides_from_session_uses_current_session_settings():
@@ -465,12 +527,16 @@ def test_create_runtime_session_debug_file_logs_regardless_runtime_log_level(mon
 
     monkeypatch.setattr(runtime, "Agent", _FakeAgent)
     monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
-    monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root: SimpleNamespace(name="file_read"))
-    monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root: SimpleNamespace(name="file_write"))
-    monkeypatch.setattr(runtime, "DownloadUrlToFileTool", lambda workspace_root: SimpleNamespace(name="download_url_to_file"))
+    monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root, **kwargs: SimpleNamespace(name="file_read"))
+    monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root, **kwargs: SimpleNamespace(name="file_write"))
+    monkeypatch.setattr(
+        runtime,
+        "DownloadUrlToFileTool",
+        lambda workspace_root, **kwargs: SimpleNamespace(name="download_url_to_file"),
+    )
     monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: SimpleNamespace(name="gmail_fetch"))
     monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: SimpleNamespace(name="pdf_merge"))
-    monkeypatch.setattr(runtime, "AgentMailSendTool", lambda workspace_root: SimpleNamespace(name="agentmail_send"))
+    monkeypatch.setattr(runtime, "AgentMailSendTool", lambda workspace_root, **kwargs: SimpleNamespace(name="agentmail_send"))
     monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: SimpleNamespace(name="jina_web_snapshot"))
     monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: SimpleNamespace(name="perplexity_search"))
     monkeypatch.setattr(runtime, "OpenAlexWorksTool", lambda: SimpleNamespace(name="openalex_works"))

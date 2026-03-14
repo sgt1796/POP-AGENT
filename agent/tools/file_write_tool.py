@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from ..agent_types import AgentTool, AgentToolResult, TextContent
+from .path_roots import normalize_allowed_roots, path_in_roots
 
 
 _ACTIONS = {"write", "append", "replace"}
@@ -18,20 +19,13 @@ class FileWriteError(RuntimeError):
         self.message = str(message or "file write failed")
 
 
-def _path_in_workspace(path: str, workspace_root: str) -> bool:
-    try:
-        return os.path.commonpath([workspace_root, path]) == workspace_root
-    except ValueError:
-        return False
-
-
-def _resolve_workspace_path(path_value: str, workspace_root: str) -> str:
+def _resolve_workspace_path(path_value: str, workspace_root: str, allowed_roots: Sequence[str]) -> str:
     candidate = str(path_value or "").strip()
     if not candidate:
         raise FileWriteError("path_not_found", "path is required")
     absolute = os.path.realpath(candidate if os.path.isabs(candidate) else os.path.join(workspace_root, candidate))
-    if not _path_in_workspace(absolute, workspace_root):
-        raise FileWriteError("path_outside_workspace", "path must be inside workspace")
+    if not path_in_roots(absolute, allowed_roots):
+        raise FileWriteError("path_outside_workspace", "path must be inside workspace or configured allowed roots")
     return absolute
 
 
@@ -75,6 +69,7 @@ def write(
     path: str,
     *,
     workspace_root: Optional[str] = None,
+    allowed_roots: Optional[Sequence[str]] = None,
     action: str = "write",
     content: Optional[Any] = None,
     find: Optional[Any] = None,
@@ -83,12 +78,12 @@ def write(
     overwrite: bool = True,
     create_dirs: bool = False,
 ) -> Dict[str, Any]:
-    root = os.path.realpath(str(workspace_root or os.getcwd()))
+    root, roots = normalize_allowed_roots(workspace_root, allowed_roots)
     normalized_action = str(action or "write").strip().lower()
     if normalized_action not in _ACTIONS:
         raise FileWriteError("invalid_action", f"action must be one of: {', '.join(sorted(_ACTIONS))}")
 
-    absolute = _resolve_workspace_path(path, root)
+    absolute = _resolve_workspace_path(path, root, roots)
     workspace_path = _workspace_relative_path(absolute, root)
     exists_before = os.path.exists(absolute)
     if exists_before and not os.path.isfile(absolute):
@@ -202,11 +197,14 @@ def write(
 
 class FileWriteTool(AgentTool):
     name = "file_write"
-    description = "Write, append, and find/replace UTF-8 text files in the workspace."
+    description = "Write, append, and find/replace UTF-8 text files in the workspace or allowed roots."
     parameters = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "File path relative to workspace root or absolute path."},
+            "path": {
+                "type": "string",
+                "description": "File path relative to the workspace root or an absolute path inside allowed roots.",
+            },
             "action": {
                 "type": "string",
                 "enum": ["write", "append", "replace"],
@@ -229,8 +227,13 @@ class FileWriteTool(AgentTool):
     }
     label = "File Write"
 
-    def __init__(self, workspace_root: Optional[str] = None, max_output_chars: int = 20_000) -> None:
-        self.workspace_root = os.path.realpath(str(workspace_root or os.getcwd()))
+    def __init__(
+        self,
+        workspace_root: Optional[str] = None,
+        max_output_chars: int = 20_000,
+        allowed_roots: Optional[Sequence[str]] = None,
+    ) -> None:
+        self.workspace_root, self.allowed_roots = normalize_allowed_roots(workspace_root, allowed_roots)
         self.max_output_chars = max(512, int(max_output_chars or 20_000))
 
     @staticmethod
@@ -263,6 +266,7 @@ class FileWriteTool(AgentTool):
             payload = write(
                 path_value,
                 workspace_root=self.workspace_root,
+                allowed_roots=self.allowed_roots,
                 action=action_value,
                 content=params.get("content"),
                 find=params.get("find"),

@@ -3,12 +3,13 @@ from __future__ import annotations
 import hashlib
 import os
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 from urllib import parse as urllib_parse
 
 import requests
 
 from ..agent_types import AgentTool, AgentToolResult, TextContent
+from .path_roots import normalize_allowed_roots, path_in_roots
 
 
 _TRUE_WORDS = {"1", "true", "yes", "y", "on"}
@@ -27,23 +28,16 @@ def _to_text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _path_in_workspace(path: str, workspace_root: str) -> bool:
-    try:
-        return os.path.commonpath([workspace_root, path]) == workspace_root
-    except ValueError:
-        return False
-
-
-def _resolve_output_path(output_path: str, workspace_root: str) -> str:
+def _resolve_output_path(output_path: str, workspace_root: str, allowed_roots: Sequence[str]) -> str:
     raw = _to_text(output_path)
     if not raw:
         raise _DownloadToolError("missing_output_path", "output_path is required")
     resolved = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(workspace_root, raw))
-    if not _path_in_workspace(resolved, workspace_root):
+    if not path_in_roots(resolved, allowed_roots):
         raise _DownloadToolError(
             "path_outside_workspace",
-            "output_path must be inside workspace",
-            {"output_path": raw, "workspace_root": workspace_root},
+            "output_path must be inside workspace or configured allowed roots",
+            {"output_path": raw, "workspace_root": workspace_root, "allowed_roots": list(allowed_roots)},
         )
     return resolved
 
@@ -107,14 +101,17 @@ def _matches_expected_content_type(actual: str, expected: str) -> bool:
 class DownloadUrlToFileTool(AgentTool):
     name = "download_url_to_file"
     description = (
-        "Download an http/https URL to a workspace file path (streaming, redirects supported). "
+        "Download an http/https URL to a workspace or allowed-root file path (streaming, redirects supported). "
         "Useful after openalex_works returns best_oa_pdf_url."
     )
     parameters = {
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "HTTP or HTTPS URL to download."},
-            "output_path": {"type": "string", "description": "Workspace-relative or absolute workspace output path."},
+            "output_path": {
+                "type": "string",
+                "description": "Workspace-relative or absolute output path inside the workspace or allowed roots.",
+            },
             "timeout_s": {"type": "number", "description": "Optional request timeout in seconds (default 30)."},
             "max_bytes": {"type": "integer", "description": "Optional maximum bytes to write (default 50MB)."},
             "overwrite": {"type": "boolean", "description": "Overwrite output file if it exists (default false)."},
@@ -136,8 +133,9 @@ class DownloadUrlToFileTool(AgentTool):
         *,
         default_timeout_s: float = 30.0,
         default_max_bytes: int = 50_000_000,
+        allowed_roots: Optional[Sequence[str]] = None,
     ) -> None:
-        self.workspace_root = os.path.realpath(str(workspace_root or os.getcwd()))
+        self.workspace_root, self.allowed_roots = normalize_allowed_roots(workspace_root, allowed_roots)
         self.default_timeout_s = max(0.1, float(default_timeout_s))
         self.default_max_bytes = max(1, int(default_max_bytes))
 
@@ -163,7 +161,7 @@ class DownloadUrlToFileTool(AgentTool):
             )
 
         try:
-            output_path = _resolve_output_path(params.get("output_path", ""), self.workspace_root)
+            output_path = _resolve_output_path(params.get("output_path", ""), self.workspace_root, self.allowed_roots)
             timeout_s = _to_positive_float(params.get("timeout_s", self.default_timeout_s), "timeout_s")
             max_bytes = _to_positive_int(params.get("max_bytes", self.default_max_bytes), "max_bytes")
         except _DownloadToolError as exc:

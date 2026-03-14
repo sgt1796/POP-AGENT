@@ -57,6 +57,23 @@ def test_write_rejects_outside_workspace(tmp_path: Path):
     assert exc.value.code == "path_outside_workspace"
 
 
+def test_write_allows_target_in_allowed_roots(tmp_path: Path):
+    outside_root = tmp_path / "external"
+    outside_root.mkdir()
+    outside_file = outside_root / "out.txt"
+
+    payload = write(
+        str(outside_file),
+        workspace_root=str(tmp_path),
+        allowed_roots=[str(outside_root)],
+        action="write",
+        content="shared root",
+    )
+
+    assert payload["ok"] is True
+    assert outside_file.read_text(encoding="utf-8") == "shared root"
+
+
 def test_file_write_tool_success_envelope(tmp_path: Path):
     tool = FileWriteTool(workspace_root=str(tmp_path))
 
