@@ -120,6 +120,24 @@ def test_get_daemon_status_reports_stale_pid_file(tmp_path, monkeypatch):
     assert status["pid"] == 4321
 
 
+def test_get_daemon_status_prefers_invoked_python_path(tmp_path, monkeypatch):
+    pid_file = tmp_path / "scheduled_runner.pid"
+    pid_file.write_text("4321\n", encoding="utf-8")
+    invoked_python = str(tmp_path / ".venv" / "bin" / "python")
+
+    monkeypatch.setattr(scheduled_runner, "_process_is_running", lambda pid: True)
+    monkeypatch.setattr(scheduled_runner, "_process_command_path", lambda pid: invoked_python)
+    monkeypatch.setattr(scheduled_runner, "_process_executable", lambda pid: "/usr/bin/python3")
+
+    status = scheduled_runner.get_daemon_status(
+        project_root=str(tmp_path),
+        pid_file=str(pid_file),
+    )
+
+    assert status["running"] is True
+    assert status["python_executable"] == invoked_python
+
+
 def test_main_daemon_status_prints_status(monkeypatch, capsys):
     monkeypatch.setattr(
         scheduled_runner,
@@ -213,6 +231,65 @@ def test_start_daemon_uses_current_python_executable(monkeypatch, tmp_path):
     assert info["started"] is True
     assert commands[0][0] == scheduled_runner.os.path.realpath(desired_python)
     assert info["python_executable"] == scheduled_runner.os.path.realpath(desired_python)
+
+
+def test_start_daemon_preserves_virtualenv_python_path(monkeypatch, tmp_path):
+    desired_python = str(tmp_path / ".venv" / "bin" / "python")
+    dereferenced_python = str(tmp_path / "usr" / "bin" / "python3")
+    launched = {"started": False}
+    commands = []
+    real_realpath = scheduled_runner.os.path.realpath
+
+    def _fake_realpath(value):
+        if value == desired_python:
+            return dereferenced_python
+        return real_realpath(value)
+
+    def _fake_get_daemon_status(**kwargs):
+        pid_file = str(kwargs["pid_file"])
+        log_file = str(kwargs["log_file"])
+        status = {
+            "ok": True,
+            "pid_file": pid_file,
+            "log_file": log_file,
+            "stale_pid_file": False,
+            "project_root": str(tmp_path),
+        }
+        if launched["started"]:
+            return {
+                **status,
+                "running": True,
+                "pid": 778,
+                "python_executable": desired_python,
+            }
+        return {
+            **status,
+            "running": False,
+            "pid": None,
+            "python_executable": None,
+        }
+
+    class _FakePopen:
+        def __init__(self, command, **kwargs):
+            del kwargs
+            commands.append(list(command))
+            launched["started"] = True
+            self.pid = 778
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(scheduled_runner.os.path, "realpath", _fake_realpath)
+    monkeypatch.setattr(scheduled_runner.sys, "executable", desired_python)
+    monkeypatch.setattr(scheduled_runner, "get_daemon_status", _fake_get_daemon_status)
+    monkeypatch.setattr(scheduled_runner.subprocess, "Popen", _FakePopen)
+
+    info = scheduled_runner.start_daemon(project_root=str(tmp_path))
+
+    assert info["ok"] is True
+    assert info["started"] is True
+    assert commands[0][0] == desired_python
+    assert info["python_executable"] == desired_python
 
 
 def test_start_daemon_restarts_running_daemon_when_python_executable_differs(monkeypatch, tmp_path):

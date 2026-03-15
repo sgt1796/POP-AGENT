@@ -83,15 +83,57 @@ def _resolve_project_path(project_root: str, value: Optional[str], default_relpa
     return os.path.realpath(candidate)
 
 
-def _resolve_python_executable(value: Optional[str] = None) -> str:
-    candidate = _normalize_platform_path(value or sys.executable)
+def _normalize_executable_path(value: Optional[str]) -> str:
+    candidate = _normalize_platform_path(value)
     if not candidate:
-        candidate = sys.executable
+        return ""
     if candidate and not os.path.isabs(candidate):
         resolved = shutil.which(candidate)
         if resolved:
             candidate = resolved
-    return os.path.realpath(candidate) if candidate else ""
+    return os.path.abspath(candidate) if candidate else ""
+
+
+def _virtualenv_python_path(env_root: Optional[str]) -> str:
+    root = _normalize_platform_path(env_root)
+    if not root:
+        return ""
+    candidates = [
+        os.path.join(root, "bin", "python"),
+        os.path.join(root, "bin", "python3"),
+        os.path.join(root, "Scripts", "python.exe"),
+        os.path.join(root, "Scripts", "python"),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return os.path.abspath(candidate)
+    return ""
+
+
+def _python_environment_identity(value: Optional[str]) -> str:
+    candidate = _normalize_executable_path(value)
+    if not candidate:
+        return ""
+    parent = os.path.dirname(candidate)
+    if os.path.basename(parent) in {"bin", "Scripts"}:
+        env_root = os.path.dirname(parent)
+        if os.path.isfile(os.path.join(env_root, "pyvenv.cfg")):
+            return f"venv:{os.path.realpath(env_root)}"
+    return f"python:{os.path.realpath(candidate)}"
+
+
+def _resolve_python_executable(value: Optional[str] = None, *, project_root: Optional[str] = None) -> str:
+    explicit = _normalize_executable_path(value)
+    if explicit:
+        return explicit
+    active_env_python = _virtualenv_python_path(os.environ.get("VIRTUAL_ENV"))
+    if active_env_python:
+        return active_env_python
+    root = _project_root(project_root)
+    project_env_python = _virtualenv_python_path(os.path.join(root, ".venv"))
+    if project_env_python:
+        return project_env_python
+    return _normalize_executable_path(sys.executable)
 
 
 def _read_pid_file(path: str) -> Optional[int]:
@@ -134,6 +176,21 @@ def _process_executable(pid: int) -> Optional[str]:
     return os.path.realpath(text) if text else None
 
 
+def _process_command_path(pid: int) -> Optional[str]:
+    if int(pid or 0) <= 0:
+        return None
+    if os.name == "nt":
+        return None
+    try:
+        with open(f"/proc/{int(pid)}/cmdline", "rb") as handle:
+            raw = handle.read().split(b"\0", 1)[0]
+    except Exception:
+        return None
+    text = raw.decode("utf-8", errors="ignore").strip()
+    normalized = _normalize_executable_path(text)
+    return normalized or None
+
+
 def _remove_pid_file(path: str, *, expected_pid: Optional[int] = None) -> None:
     if expected_pid is not None:
         current_pid = _read_pid_file(path)
@@ -164,7 +221,9 @@ def get_daemon_status(
     pid_file_exists = os.path.exists(pid_path)
     running = bool(pid and _process_is_running(pid))
     stale_pid_file = bool(pid_file_exists and not running)
-    python_executable = _process_executable(int(pid or 0)) if running else None
+    python_executable = None
+    if running:
+        python_executable = _process_command_path(int(pid or 0)) or _process_executable(int(pid or 0))
     return {
         "ok": True,
         "running": running,
@@ -190,12 +249,14 @@ def start_daemon(
     root = _project_root(project_root)
     pid_path = _resolve_project_path(root, pid_file, DEFAULT_DAEMON_PID_PATH)
     log_path = _resolve_project_path(root, log_file, DEFAULT_DAEMON_LOG_PATH)
-    resolved_python = _resolve_python_executable(python_executable)
+    resolved_python = _resolve_python_executable(python_executable, project_root=root)
+    desired_python_identity = _python_environment_identity(resolved_python)
     status = get_daemon_status(project_root=root, pid_file=pid_path, log_file=log_path)
     running_python_raw = str(status.get("python_executable") or "").strip()
-    running_python = _resolve_python_executable(running_python_raw) if running_python_raw else ""
+    running_python = _normalize_executable_path(running_python_raw) if running_python_raw else ""
+    running_python_identity = _python_environment_identity(running_python) if running_python else ""
     if bool(status.get("running")):
-        if running_python and resolved_python and running_python != resolved_python:
+        if running_python_identity and desired_python_identity and running_python_identity != desired_python_identity:
             stopped = stop_daemon(project_root=root, pid_file=pid_path, log_file=log_path)
             if not bool(stopped.get("ok")):
                 return {
