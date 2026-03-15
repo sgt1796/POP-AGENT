@@ -339,10 +339,11 @@ def test_build_runtime_overrides_from_session_uses_current_session_settings():
 def test_execute_scheduled_task_runs_runtime_lifecycle(monkeypatch):
     fake_session = SimpleNamespace(agent=SimpleNamespace(state=SimpleNamespace(messages=[], error=None)))
     calls = []
+    task = {"id": "abc123", "prompt": "run prompt"}
 
     def _fake_create_runtime_session(**kwargs):
         assert kwargs["enable_event_logger"] is False
-        assert kwargs["overrides"] is None
+        assert kwargs["overrides"].exclude_tools == ["task_scheduler"]
         calls.append("create")
         return fake_session
 
@@ -352,7 +353,7 @@ def test_execute_scheduled_task_runs_runtime_lifecycle(monkeypatch):
 
     async def _fake_run_user_turn(session, prompt, on_warning=None):
         assert session is fake_session
-        assert prompt == "run prompt"
+        assert prompt == runtime._build_scheduled_task_prompt(task)
         assert callable(on_warning)
         calls.append("run")
         return "assistant-reply"
@@ -368,7 +369,7 @@ def test_execute_scheduled_task_runs_runtime_lifecycle(monkeypatch):
 
     result = asyncio.run(
         execute_scheduled_task(
-            {"id": "abc123", "prompt": "run prompt"},
+            task,
             enable_event_logger=False,
             on_warning=lambda _text: None,
         )
@@ -378,8 +379,29 @@ def test_execute_scheduled_task_runs_runtime_lifecycle(monkeypatch):
     assert calls == ["create", ("switch", "scheduled:abc123"), "run", "shutdown"]
 
 
+def test_build_scheduled_task_overrides_preserves_existing_fields_and_blocks_scheduler():
+    overrides = runtime._build_scheduled_task_overrides(
+        runtime.RuntimeOverrides(
+            include_tools=["agentmail_send", "task_scheduler"],
+            exclude_tools=["bash_exec"],
+            bash_prompt_approval=False,
+            execution_profile="aggressive",
+            memory_top_k=9,
+            model_override={"provider": "gemini", "id": "flash"},
+        )
+    )
+
+    assert overrides.include_tools == ["agentmail_send", "task_scheduler"]
+    assert overrides.exclude_tools == ["bash_exec", "task_scheduler"]
+    assert overrides.bash_prompt_approval is False
+    assert overrides.execution_profile == "aggressive"
+    assert overrides.memory_top_k == 9
+    assert overrides.model_override == {"provider": "gemini", "id": "flash"}
+
+
 def test_execute_scheduled_task_marks_failed_tool_result_as_error(monkeypatch):
     fake_session = SimpleNamespace(agent=SimpleNamespace(state=SimpleNamespace(messages=[], error=None)))
+    task = {"id": "abc123", "prompt": "run prompt"}
 
     def _fake_create_runtime_session(**kwargs):
         del kwargs
@@ -391,7 +413,7 @@ def test_execute_scheduled_task_marks_failed_tool_result_as_error(monkeypatch):
 
     async def _fake_run_user_turn(session, prompt, on_warning=None):
         assert session is fake_session
-        assert prompt == "run prompt"
+        assert prompt == runtime._build_scheduled_task_prompt(task)
         assert callable(on_warning)
         session.agent.state.messages.extend(
             [
@@ -430,7 +452,7 @@ def test_execute_scheduled_task_marks_failed_tool_result_as_error(monkeypatch):
 
     result = asyncio.run(
         execute_scheduled_task(
-            {"id": "abc123", "prompt": "run prompt"},
+            task,
             enable_event_logger=False,
             on_warning=lambda _text: None,
         )
@@ -444,6 +466,7 @@ def test_execute_scheduled_task_marks_failed_tool_result_as_error(monkeypatch):
 
 def test_execute_scheduled_task_marks_runtime_error_as_error(monkeypatch):
     fake_session = SimpleNamespace(agent=SimpleNamespace(state=SimpleNamespace(messages=[], error=None)))
+    task = {"id": "abc123", "prompt": "run prompt"}
 
     def _fake_create_runtime_session(**kwargs):
         del kwargs
@@ -455,7 +478,7 @@ def test_execute_scheduled_task_marks_runtime_error_as_error(monkeypatch):
 
     async def _fake_run_user_turn(session, prompt, on_warning=None):
         assert session is fake_session
-        assert prompt == "run prompt"
+        assert prompt == runtime._build_scheduled_task_prompt(task)
         assert callable(on_warning)
         session.agent.state.error = "llm backend timeout"
         return "(no assistant text returned)"
@@ -470,7 +493,7 @@ def test_execute_scheduled_task_marks_runtime_error_as_error(monkeypatch):
 
     result = asyncio.run(
         execute_scheduled_task(
-            {"id": "abc123", "prompt": "run prompt"},
+            task,
             enable_event_logger=False,
             on_warning=lambda _text: None,
         )
@@ -479,6 +502,28 @@ def test_execute_scheduled_task_marks_runtime_error_as_error(monkeypatch):
     assert result["status"] == "error"
     assert result["summary"] == "llm backend timeout"
     assert result["reply"] == "(no assistant text returned)"
+
+
+def test_build_scheduled_task_prompt_marks_relative_time_as_original_request():
+    prompt = runtime._build_scheduled_task_prompt(
+        {
+            "id": "abc123",
+            "task_name": "Scheduled_Test_Email",
+            "schedule_type": "one_time",
+            "run_at": "2026-03-14T20:21:55-04:00",
+            "timezone": "UTC",
+            "next_run_at_utc": "2026-03-15T00:21:55Z",
+            "prompt": (
+                "Send an email to the owner with subject 'Test Email' and body "
+                "'This is a scheduled test email sent 5 seconds after your request.' using agentmail_send."
+            ),
+        }
+    )
+
+    assert "This task is already due and is being executed now" in prompt
+    assert "they do not mean to delay or schedule the task again" in prompt
+    assert "Task prompt:" in prompt
+    assert "5 seconds after your request" in prompt
 
 
 def test_run_due_scheduled_tasks_delegates_to_agent_store(monkeypatch):

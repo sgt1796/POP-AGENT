@@ -566,6 +566,61 @@ def _scheduled_task_failed_tool_result(agent: Any) -> Optional[Dict[str, str]]:
     return None
 
 
+def _build_scheduled_task_prompt(task: Dict[str, Any]) -> str:
+    prompt = str(task.get("prompt") or "").strip()
+    task_id = str(task.get("id") or "").strip() or "(unknown)"
+    task_name = str(task.get("task_name") or "").strip() or "(unnamed)"
+    schedule_type = str(task.get("schedule_type") or "").strip() or "one_time"
+    run_at = str(task.get("run_at") or "").strip() or "(not set)"
+    next_run_at_utc = str(task.get("next_run_at_utc") or "").strip() or "(due now)"
+    timezone = str(task.get("timezone") or "").strip() or "UTC"
+    return "\n".join(
+        [
+            "Scheduled task execution context:",
+            f"- task_id: {task_id}",
+            f"- task_name: {task_name}",
+            f"- schedule_type: {schedule_type}",
+            f"- run_at: {run_at}",
+            f"- timezone: {timezone}",
+            f"- next_run_at_utc: {next_run_at_utc}",
+            "",
+            "This task is already due and is being executed now by the scheduled runner.",
+            "Carry out the task prompt now using the available tools.",
+            (
+                "Relative timing phrases in the stored prompt refer to the original scheduling request; "
+                "they do not mean to delay or schedule the task again from the current time."
+            ),
+            (
+                "Do not call task_scheduler to recreate, delay, or requeue this task unless the task prompt "
+                "explicitly asks you to manage schedules as part of the work."
+            ),
+            "",
+            "Task prompt:",
+            prompt,
+        ]
+    )
+
+
+def _build_scheduled_task_overrides(overrides: Optional[RuntimeOverrides]) -> RuntimeOverrides:
+    base = overrides or RuntimeOverrides()
+    include_tools = list(base.include_tools) if base.include_tools is not None else None
+    exclude_tools = [str(item).strip() for item in list(base.exclude_tools or []) if str(item).strip()]
+    if "task_scheduler" not in exclude_tools:
+        exclude_tools.append("task_scheduler")
+    model_override = dict(base.model_override) if isinstance(base.model_override, dict) else None
+    return RuntimeOverrides(
+        long_memory_base_path=base.long_memory_base_path,
+        enable_memory=base.enable_memory,
+        include_tools=include_tools,
+        exclude_tools=exclude_tools,
+        model_override=model_override,
+        bash_prompt_approval=base.bash_prompt_approval,
+        log_level=base.log_level,
+        execution_profile=base.execution_profile,
+        memory_top_k=base.memory_top_k,
+    )
+
+
 def build_runtime_overrides_from_session(session: RuntimeSession) -> RuntimeOverrides:
     model_override: Optional[Dict[str, Any]] = None
     raw_model = getattr(session.agent.state, "model", None)
@@ -831,14 +886,15 @@ async def execute_scheduled_task(
     on_warning: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     task_id = str(task.get("id") or "")
-    prompt = str(task.get("prompt") or "").strip()
+    prompt = _build_scheduled_task_prompt(task)
+    effective_overrides = _build_scheduled_task_overrides(overrides)
     session: Optional[RuntimeSession] = None
     try:
         session = create_runtime_session(
             enable_event_logger=enable_event_logger,
             debug_log=debug_log,
             bash_approval_fn=bash_approval_fn,
-            overrides=overrides,
+            overrides=effective_overrides,
         )
         if task_id:
             switch_session(session, f"scheduled:{task_id}")
