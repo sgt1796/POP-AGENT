@@ -6,3 +6,4 @@ pypdf
 google-auth
 croniter
 tzdata
+pandas

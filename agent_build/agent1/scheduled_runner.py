@@ -126,6 +126,9 @@ def _resolve_python_executable(value: Optional[str] = None, *, project_root: Opt
     explicit = _normalize_executable_path(value)
     if explicit:
         return explicit
+    current_python = _normalize_executable_path(getattr(sys, "executable", ""))
+    if current_python:
+        return current_python
     active_env_python = _virtualenv_python_path(os.environ.get("VIRTUAL_ENV"))
     if active_env_python:
         return active_env_python
@@ -133,7 +136,7 @@ def _resolve_python_executable(value: Optional[str] = None, *, project_root: Opt
     project_env_python = _virtualenv_python_path(os.path.join(root, ".venv"))
     if project_env_python:
         return project_env_python
-    return _normalize_executable_path(sys.executable)
+    return current_python
 
 
 def _read_pid_file(path: str) -> Optional[int]:
