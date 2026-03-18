@@ -291,7 +291,7 @@ python -m eval.cli run \
 - `benchmark`: adapter key (`gaia`)
 - `split`: split name (`validation` default)
 - `limit`: optional sample cap
-- `seed`: used when adapter supports shuffling
+- `seed`: optional; used when adapter supports shuffling. If omitted, shuffled order is non-deterministic.
 - `timeout_s`: per-sample timeout
 - `output_root`: run directory root
 - `run_id`: optional explicit run id

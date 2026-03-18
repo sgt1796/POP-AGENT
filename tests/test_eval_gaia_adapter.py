@@ -85,3 +85,32 @@ def test_gaia_adapter_schema_error_lists_discovered_columns(monkeypatch: pytest.
     assert "GAIA schema error" in message
     assert "discovered columns" in message
     assert "unexpected" in message
+
+
+def test_gaia_adapter_shuffle_without_seed_leaves_random_state_unset(monkeypatch: pytest.MonkeyPatch):
+    frame = pd.DataFrame(
+        [
+            {"task_id": "t1", "question": "q1", "final_answer": "a1"},
+            {"task_id": "t2", "question": "q2", "final_answer": "a2"},
+        ]
+    )
+    captured = {}
+
+    monkeypatch.setattr(pd, "read_parquet", lambda _path: frame)
+
+    def _sample(self, frac=1.0, random_state=None, *args, **kwargs):
+        del frac, args, kwargs
+        captured["random_state"] = random_state
+        return self
+
+    monkeypatch.setattr(pd.DataFrame, "sample", _sample, raising=False)
+
+    adapter = GaiaAdapter()
+    adapter.load_samples(
+        split="validation",
+        limit=None,
+        seed=None,
+        options={"parquet_path": "dummy", "shuffle": True},
+    )
+
+    assert captured["random_state"] is None

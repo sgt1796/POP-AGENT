@@ -118,3 +118,41 @@ def test_cli_summarize_accepts_runs_prefixed_path(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
     summarize_code = cli.main(["summarize", "--run-dir", f"runs/{run_dirs[0].name}"])
     assert summarize_code == 0
+
+
+def test_cli_run_without_seed_preserves_null_seed_in_manifest(monkeypatch, tmp_path: Path):
+    frame = pd.DataFrame(
+        [
+            {
+                "task_id": "t1",
+                "question": "echo me",
+                "final_answer": "echo me",
+            }
+        ]
+    )
+    monkeypatch.setattr(pd, "read_parquet", lambda _path: frame)
+
+    config_path = tmp_path / "cfg.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "benchmark": "gaia",
+                "split": "validation",
+                "limit": 1,
+                "output_root": str(tmp_path / "runs"),
+                "executor": "echo",
+                "continue_on_error": True,
+                "benchmark_options": {"parquet_path": "dummy", "shuffle": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(["run", "--quiet", "--config", str(config_path)])
+    assert exit_code == 0
+
+    run_dirs = [p for p in (tmp_path / "runs").iterdir() if p.is_dir()]
+    assert len(run_dirs) == 1
+
+    manifest = json.loads((run_dirs[0] / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["config"]["seed"] is None

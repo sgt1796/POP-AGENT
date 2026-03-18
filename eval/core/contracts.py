@@ -9,7 +9,7 @@ class EvalConfig:
     benchmark: str = "gaia"
     split: str = "validation"
     limit: Optional[int] = None
-    seed: int = 0
+    seed: Optional[int] = None
     timeout_s: float = 120.0
     output_root: str = "eval/runs"
     run_id: Optional[str] = None
@@ -88,7 +88,7 @@ class BenchmarkAdapter(Protocol):
         *,
         split: str,
         limit: Optional[int],
-        seed: int,
+        seed: Optional[int],
         options: Dict[str, Any],
     ) -> List[BenchmarkSample]:
         ...

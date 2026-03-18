@@ -30,7 +30,7 @@ class GaiaAdapter:
         *,
         split: str,
         limit: Optional[int],
-        seed: int,
+        seed: Optional[int],
         options: Dict[str, Any],
     ) -> List[BenchmarkSample]:
         split_key = str(split or "validation").strip().lower()
@@ -70,7 +70,8 @@ class GaiaAdapter:
 
         should_shuffle = bool(options.get("shuffle", False))
         if should_shuffle:
-            frame = frame.sample(frac=1.0, random_state=int(seed or 0)).reset_index(drop=True)
+            random_state = int(seed) if seed is not None else None
+            frame = frame.sample(frac=1.0, random_state=random_state).reset_index(drop=True)
 
         if limit is not None:
             n = max(0, int(limit))
