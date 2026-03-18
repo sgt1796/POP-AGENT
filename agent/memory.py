@@ -168,7 +168,6 @@ class ConversationMemory:
         top_indices = np.argsort(scores)[-k:][::-1]
         return [entries[i].text for i in top_indices]
 
-
 class DiskMemory:
     """
     Persistent text+vector memory split across two files:
@@ -287,12 +286,25 @@ class DiskMemory:
         top_k: int = 3,
         session_id: Optional[str] = None,
         include_default: bool = True,
+        exclude_session_ids: Optional[Sequence[str]] = None,
     ) -> List[str]:
         if not os.path.exists(self.emb_path) or self._n_text == 0:
             return []
 
         query_vec = self.embedder.get_embedding([query])[0].astype("float32")
         matrix = np.load(self.emb_path, mmap_mode="r")
+        candidate_indices = self._candidate_indices(
+            session_id=session_id,
+            include_default=include_default,
+            exclude_session_ids=exclude_session_ids,
+        )
+        if not candidate_indices:
+            return []
+        candidate_array = np.asarray(candidate_indices, dtype="int64")
+        candidate_array = candidate_array[(candidate_array >= 0) & (candidate_array < matrix.shape[0])]
+        if candidate_array.size == 0:
+            return []
+        candidate_matrix = np.asarray(matrix[candidate_array], dtype="float32")
 
         def _norm(arr: np.ndarray) -> np.ndarray:
             norms = np.linalg.norm(arr, axis=-1, keepdims=True)
@@ -300,13 +312,12 @@ class DiskMemory:
             return arr / norms
 
         query_n = _norm(query_vec[None, :])[0]
-        matrix_n = _norm(matrix)
+        matrix_n = _norm(candidate_matrix)
         sims = (matrix_n @ query_n).astype("float32")
         k = max(1, min(int(top_k or 1), sims.shape[0]))
         idx = np.argpartition(-sims, k - 1)[:k]
         idx = idx[np.argsort(-sims[idx])]
-        filtered = self._read_records_by_index(idx.tolist(), session_id=session_id, include_default=include_default)
-        return [item["text"] for item in filtered]
+        return self._read_lines_by_index(candidate_array[idx].tolist())
 
     def _count_lines(self, path: str) -> int:
         if not os.path.exists(path):
@@ -338,39 +349,52 @@ class DiskMemory:
         ordered = [found.get(i, "") for i in indices]
         return [t for t in ordered if t]
 
-    def _read_records_by_index(
+    def _candidate_indices(
         self,
-        indices: Sequence[int],
         session_id: Optional[str],
         include_default: bool,
-    ) -> List[Dict[str, Any]]:
+        exclude_session_ids: Optional[Sequence[str]] = None,
+    ) -> List[int]:
         retrievable_kinds = {"message", "compression_summary"}
         target_session = (session_id or "").strip() or None
-        results: List[Dict[str, Any]] = []
-        ordered_records = self._read_raw_lines_by_index(indices)
-        for raw in ordered_records:
-            try:
-                payload = json.loads(raw) if raw.startswith("{") else {"text": raw}
-            except Exception:
-                payload = {"text": raw}
-            text = str(payload.get("text", "")).strip()
-            if not text:
-                continue
-            memory_type = (
-                str(payload.get("memory_type", payload.get("memory_kind", "message"))).strip().lower() or "message"
-            )
-            if memory_type not in retrievable_kinds:
-                continue
-            record_session = str(payload.get("session_id", "default")).strip() or "default"
-            if target_session is not None:
-                if record_session == target_session:
-                    results.append({"text": text})
+        excluded_sessions = {
+            str(item or "").strip()
+            for item in (exclude_session_ids or [])
+            if str(item or "").strip()
+        }
+        results: List[int] = []
+        if not os.path.exists(self.text_path):
+            return results
+        with open(self.text_path, "r", encoding="utf-8") as handle:
+            for index, line in enumerate(handle):
+                raw = line.strip()
+                if not raw:
                     continue
-                if include_default and record_session == "default":
-                    results.append({"text": text})
+                try:
+                    payload = json.loads(raw) if raw.startswith("{") else {"text": raw}
+                except Exception:
+                    payload = {"text": raw}
+                text = str(payload.get("text", "")).strip()
+                if not text:
                     continue
-                continue
-            results.append({"text": text})
+                memory_type = (
+                    str(payload.get("memory_type", payload.get("memory_kind", "message"))).strip().lower()
+                    or "message"
+                )
+                if memory_type not in retrievable_kinds:
+                    continue
+                record_session = str(payload.get("session_id", "default")).strip() or "default"
+                if record_session in excluded_sessions:
+                    continue
+                if target_session is not None:
+                    if record_session == target_session:
+                        results.append(index)
+                        continue
+                    if include_default and record_session == "default":
+                        results.append(index)
+                        continue
+                    continue
+                results.append(index)
         return results
 
     def _prune(self) -> None:
@@ -440,6 +464,68 @@ class MemoryRetriever:
 
     def retrieve(self, query: str, top_k: int = 3, scope: str = "both", session_id: Optional[str] = None) -> List[str]:
         short_hits, long_hits = self.retrieve_sections(query, top_k=top_k, scope=scope, session_id=session_id)
+        seen = set()
+        merged: List[str] = []
+        for item in short_hits + long_hits:
+            if item not in seen:
+                merged.append(item)
+                seen.add(item)
+        return merged
+
+    def retrieve_sections_with_fallback(
+        self,
+        query: str,
+        top_k: int = 3,
+        scope: str = "both",
+        session_id: Optional[str] = None,
+    ) -> Tuple[List[str], List[str]]:
+        short_hits, long_hits = self.retrieve_sections(query, top_k=top_k, scope=scope, session_id=session_id)
+        scope = (scope or "both").strip().lower()
+        if scope not in {"short", "long", "both"}:
+            scope = "both"
+        k = max(1, int(top_k or 1))
+        if scope not in {"long", "both"} or self.long_term is None:
+            return short_hits, long_hits
+
+        merged_hits: List[str] = []
+        seen = set()
+        for item in short_hits + long_hits:
+            if item not in seen:
+                merged_hits.append(item)
+                seen.add(item)
+        if len(merged_hits) >= k:
+            return short_hits, long_hits
+
+        sid = self._resolve_session_id(session_id)
+        extra_pool = max(k * 3, 10)
+        fallback_long = self.long_term.retrieve(
+            query,
+            top_k=extra_pool,
+            session_id=None,
+            exclude_session_ids=[sid],
+        )
+        for item in fallback_long:
+            if item in seen:
+                continue
+            long_hits.append(item)
+            seen.add(item)
+            if len(seen) >= k:
+                break
+        return short_hits, long_hits
+
+    def retrieve_with_fallback(
+        self,
+        query: str,
+        top_k: int = 3,
+        scope: str = "both",
+        session_id: Optional[str] = None,
+    ) -> List[str]:
+        short_hits, long_hits = self.retrieve_sections_with_fallback(
+            query,
+            top_k=top_k,
+            scope=scope,
+            session_id=session_id,
+        )
         seen = set()
         merged: List[str] = []
         for item in short_hits + long_hits:

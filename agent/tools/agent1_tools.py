@@ -50,10 +50,16 @@ class MemorySearchTool(AgentTool):
         try:
             raw_session = params.get("session_id")
             session_id = str(raw_session).strip() if raw_session is not None else ""
+            implicit_session = False
             if not session_id:
                 default_session = getattr(self.retriever, "default_session_id", "default")
                 session_id = str(default_session or "default").strip() or "default"
-            hits = self.retriever.retrieve(query=query, top_k=top_k, scope=scope, session_id=session_id)
+                implicit_session = True
+            retrieve_with_fallback = getattr(self.retriever, "retrieve_with_fallback", None)
+            if implicit_session and callable(retrieve_with_fallback):
+                hits = retrieve_with_fallback(query=query, top_k=top_k, scope=scope, session_id=session_id)
+            else:
+                hits = self.retriever.retrieve(query=query, top_k=top_k, scope=scope, session_id=session_id)
         except Exception as exc:
             return AgentToolResult(
                 content=[TextContent(type="text", text=f"memory_search error: {exc}")],

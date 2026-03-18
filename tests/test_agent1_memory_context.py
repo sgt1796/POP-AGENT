@@ -23,6 +23,39 @@ class _FakeEmbedder:
         return vectors
 
 
+class _KeywordEmbedder:
+    def get_embedding(self, texts):
+        vectors = []
+        for text in texts:
+            lowered = str(text).lower()
+            vectors.append(
+                np.array(
+                    [
+                        1.0 if "alpha" in lowered else 0.0,
+                        1.0 if "target" in lowered else 0.0,
+                        1.0 if "extra" in lowered else 0.0,
+                    ],
+                    dtype="float32",
+                )
+            )
+        return vectors
+
+
+class _ServerEmbedder:
+    def get_embedding(self, texts):
+        keywords = ("server", "pricing", "digitalocean", "hetzner", "answer")
+        vectors = []
+        for text in texts:
+            lowered = str(text).lower()
+            vectors.append(
+                np.array(
+                    [1.0 if keyword in lowered else 0.0 for keyword in keywords],
+                    dtype="float32",
+                )
+            )
+        return vectors
+
+
 class _CaptureWorker:
     def __init__(self):
         self.calls = []
@@ -65,6 +98,18 @@ def test_retriever_filters_disk_memory_by_session(tmp_path):
 
     assert any("session one" in hit for hit in s1_hits)
     assert all("session two" not in hit for hit in s1_hits)
+
+
+def test_disk_memory_ranks_after_session_filter(tmp_path):
+    embedder = _KeywordEmbedder()
+    disk_memory = DiskMemory(filepath=str(tmp_path / "chat"), embedder=embedder, max_entries=20)
+
+    disk_memory.add("assistant: alpha target", session_id="s1")
+    disk_memory.add("assistant: alpha target extra", session_id="s2")
+
+    hits = disk_memory.retrieve("alpha target extra", top_k=1, session_id="s1")
+
+    assert hits == ["assistant: alpha target"]
 
 
 def test_context_compressor_replaces_old_messages_with_summary(tmp_path):
@@ -230,3 +275,44 @@ def test_retriever_uses_default_session_when_missing():
     hits = retriever.retrieve("alpha", top_k=1, scope="short", session_id=None)
 
     assert hits == ["user: alpha memory"]
+
+
+def test_retriever_falls_back_across_sessions_when_current_session_is_empty(tmp_path):
+    embedder = _FakeEmbedder()
+    short_memory = ConversationMemory(embedder=embedder)
+    disk_memory = DiskMemory(filepath=str(tmp_path / "chat"), embedder=embedder, max_entries=20)
+    disk_memory.add("assistant: server pricing comparison", session_id="pricing-session")
+
+    retriever = MemoryRetriever(short_term=short_memory, long_term=disk_memory, default_session_id="fresh-session")
+
+    hits = retriever.retrieve_with_fallback("server pricing comparison", top_k=3, scope="both", session_id="fresh-session")
+
+    assert any("server pricing comparison" in hit for hit in hits)
+
+
+def test_retriever_supplements_partial_session_hits_with_other_sessions(tmp_path):
+    embedder = _ServerEmbedder()
+    short_memory = ConversationMemory(embedder=embedder)
+    disk_memory = DiskMemory(filepath=str(tmp_path / "chat"), embedder=embedder, max_entries=20)
+
+    user_hit_one = "user: can you show the server pricing answer again?"
+    user_hit_two = "user: search memory for the server pricing result"
+    prior_answer = "assistant: DigitalOcean is about $24 and Hetzner about $15 for this server pricing comparison"
+
+    short_memory.add("current-session", user_hit_one)
+    short_memory.add("current-session", user_hit_two)
+    disk_memory.add(user_hit_one, session_id="current-session")
+    disk_memory.add(user_hit_two, session_id="current-session")
+    disk_memory.add(prior_answer, session_id="pricing-session")
+
+    retriever = MemoryRetriever(short_term=short_memory, long_term=disk_memory, default_session_id="current-session")
+
+    hits = retriever.retrieve_with_fallback(
+        "suitable server pricing DigitalOcean Hetzner answer",
+        top_k=3,
+        scope="both",
+        session_id="current-session",
+    )
+
+    assert hits[:2] == [user_hit_one, user_hit_two]
+    assert prior_answer in hits

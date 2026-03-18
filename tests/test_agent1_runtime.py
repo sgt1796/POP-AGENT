@@ -178,6 +178,15 @@ class _FakeRetriever:
         return ["user: previous"], ["assistant: previous"]
 
 
+class _FallbackRetriever:
+    def __init__(self):
+        self.calls = []
+
+    def retrieve_sections_with_fallback(self, query, top_k=3, scope="both", session_id="default"):
+        self.calls.append((query, top_k, scope, session_id))
+        return [], ["assistant: recalled from long-term memory"]
+
+
 class _FailingRetriever(_FakeRetriever):
     def retrieve_sections(self, query, top_k=3, scope="both", session_id="default"):
         self.calls.append((query, top_k, scope, session_id))
@@ -650,6 +659,34 @@ def test_run_user_turn_builds_augmented_prompt_and_flushes():
     assert "Current user message" in agent.prompts[0]
     assert "UTC:" in agent.prompts[0]
     assert "|Current user message|:\nhello" in agent.prompts[0]
+
+
+def test_run_user_turn_uses_fallback_retrieval_when_available():
+    agent = _FakeAgent()
+    retriever = _FallbackRetriever()
+    worker = _FakeWorker()
+
+    session = RuntimeSession(
+        agent=agent,
+        retriever=retriever,
+        ingestion_worker=worker,
+        active_session_id="default",
+        context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
+        top_k=3,
+        bash_prompt_approval=True,
+        execution_profile="balanced",
+        include_demo_tools=False,
+        unsubscribe_log=lambda: None,
+        unsubscribe_memory=lambda: None,
+        unsubscribe_approval=lambda: None,
+    )
+
+    reply = asyncio.run(run_user_turn(session, "show the previous server answer"))
+
+    assert reply == "ok"
+    assert worker.flushed == 1
+    assert retriever.calls == [("show the previous server answer", 3, "both", "default")]
+    assert "assistant: recalled from long-term memory" in agent.prompts[0]
 
 
 class _FakeMemory:

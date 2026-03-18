@@ -972,12 +972,21 @@ async def run_user_turn(
 
     memory_text = "(no relevant memories)"
     try:
-        short_hits, long_hits = session.retriever.retrieve_sections(
-            user_message,
-            top_k=session.top_k,
-            scope="both",
-            session_id=session.active_session_id,
-        )
+        retrieve_sections_with_fallback = getattr(session.retriever, "retrieve_sections_with_fallback", None)
+        if callable(retrieve_sections_with_fallback):
+            short_hits, long_hits = retrieve_sections_with_fallback(
+                user_message,
+                top_k=session.top_k,
+                scope="both",
+                session_id=session.active_session_id,
+            )
+        else:
+            short_hits, long_hits = session.retriever.retrieve_sections(
+                user_message,
+                top_k=session.top_k,
+                scope="both",
+                session_id=session.active_session_id,
+            )
         memory_text = format_memory_sections(short_hits, long_hits)
         if session.debug_log is not None:
             session.debug_log(
