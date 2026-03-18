@@ -43,6 +43,7 @@ def test_cli_run_and_summarize_smoke(monkeypatch, tmp_path: Path):
 
     summarize_code = cli.main(["summarize", "--run-dir", str(run_dirs[0])])
     assert summarize_code == 0
+    assert (run_dirs[0] / "report.html").exists()
     assert (run_dirs[0] / "summary.json").exists()
     assert (run_dirs[0] / "summary.md").exists()
 
@@ -79,6 +80,43 @@ def test_cli_quiet_suppresses_progress_lines(monkeypatch, tmp_path: Path, capsys
     assert exit_code == 0
     output = capsys.readouterr().out
     assert "[eval]" not in output
+
+
+def test_cli_run_no_report_skips_default_html_generation(monkeypatch, tmp_path: Path):
+    frame = pd.DataFrame(
+        [
+            {
+                "task_id": "t1",
+                "question": "echo me",
+                "final_answer": "echo me",
+                "Level": "1",
+            }
+        ]
+    )
+    monkeypatch.setattr(pd, "read_parquet", lambda _path: frame)
+
+    config_path = tmp_path / "cfg.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "benchmark": "gaia",
+                "split": "validation",
+                "limit": 1,
+                "output_root": str(tmp_path / "runs"),
+                "executor": "echo",
+                "continue_on_error": True,
+                "benchmark_options": {"parquet_path": "dummy"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(["run", "--quiet", "--no-report", "--config", str(config_path)])
+    assert exit_code == 0
+
+    run_dirs = [p for p in (tmp_path / "runs").iterdir() if p.is_dir()]
+    assert len(run_dirs) == 1
+    assert not (run_dirs[0] / "report.html").exists()
 
 
 def test_cli_summarize_accepts_runs_prefixed_path(monkeypatch, tmp_path: Path):

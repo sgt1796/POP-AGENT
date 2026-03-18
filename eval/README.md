@@ -16,7 +16,9 @@ Primary goal:
 - `test.py`
   Convenience entrypoint that runs `eval.cli main(["run"])`.
 - `cli.py`
-  CLI interface: `run` and `summarize`.
+  CLI interface: `run`, `summarize`, and `report`.
+- `report_html.py`
+  Standalone HTML report renderer used by the CLI report flow.
 - `requirements.txt`
   Eval-specific dependency list.
 
@@ -156,6 +158,9 @@ pip install pytest
 python -m eval.cli run --config eval/configs/gaia_validation.yaml
 ```
 
+By default, `run` also generates `report.html` inside the run directory.
+Use `--no-report` to skip that post-processing step.
+
 ## 3. Override common options from CLI
 
 ```bash
@@ -169,13 +174,31 @@ python -m eval.cli run \
   --executor-option enable_memory=true
 ```
 
+To skip the automatic HTML report:
+
+```bash
+python -m eval.cli run \
+  --config eval/configs/gaia_validation.yaml \
+  --no-report
+```
+
 ## 4. Summarize an existing run directory
 
 ```bash
 python -m eval.cli summarize --run-dir eval/runs/<timestamp_runid>
 ```
 
-## 5. Alternate entrypoint
+## 5. Generate or regenerate an HTML report manually
+
+```bash
+python -m eval.cli report \
+  --run-dir eval/runs/<timestamp_runid> \
+  --output report.html
+```
+
+If `--output` is omitted, the report command writes `<run-id>_report.html` in the current directory.
+
+## 6. Alternate entrypoint
 
 ```bash
 python eval/test.py
@@ -229,6 +252,8 @@ Required files:
   - final aggregate metrics and paths
 - `summary.md`
   - human-readable summary
+- `report.html`
+  - generated automatically by `python -m eval.cli run` unless `--no-report` is set
 
 ## Redaction/safety in artifacts
 

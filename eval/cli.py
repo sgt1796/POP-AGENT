@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from eval.core.contracts import EvalConfig
 from eval.core.runner import run_evaluation, summarize_run
+from eval.report_html import generate_html_report
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -20,11 +21,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Run directory: {summary.run_dir}")
         print(f"Accuracy: {summary.accuracy:.4f} ({summary.correct}/{summary.total})")
         print(f"Errors: {summary.error_count}")
+        if not args.no_report:
+            report_path = _generate_default_run_report(summary.run_dir)
+            if report_path is not None:
+                print(f"HTML report: {report_path}")
         return 0
 
     if args.command == "summarize":
         payload = summarize_run(args.run_dir)
         print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "report":
+        # Generate an HTML report from a run directory or zip file
+        run_dir = args.run_dir
+        # If the user did not provide an explicit output, derive one from the run id
+        output_path = args.output or (Path(run_dir).stem + "_report.html")
+        out = generate_html_report(run_dir, output_path)
+        print(f"HTML report generated at: {out}")
         return 0
 
     parser.print_help()
@@ -37,6 +51,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     default_config = Path(__file__).resolve().parent / "configs" / "gaia_validation.yaml"
 
+    # run subcommand
     run_parser = subparsers.add_parser("run", help="Run an evaluation")
     run_parser.add_argument("--config", default=str(default_config), help="Config file path (yaml or json)")
     run_parser.add_argument("--benchmark", help="Benchmark name")
@@ -75,9 +90,23 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Suppress live progress output and print only final summary.",
     )
+    run_parser.add_argument(
+        "--no-report",
+        action="store_true",
+        help="Skip automatic HTML report generation after the run completes.",
+    )
 
+    # summarize subcommand
     summarize_parser = subparsers.add_parser("summarize", help="Rewrite and print run summary")
     summarize_parser.add_argument("--run-dir", required=True, help="Run directory or summary.json path")
+
+    # report subcommand
+    report_parser = subparsers.add_parser("report", help="Generate an HTML report from a run")
+    report_parser.add_argument("--run-dir", required=True, help="Run directory or zip file containing run results")
+    report_parser.add_argument(
+        "--output",
+        help="Path to output HTML report file; defaults to <run-id>_report.html in current directory",
+    )
 
     return parser
 
@@ -190,6 +219,15 @@ def _build_progress_printer():
     return _printer
 
 
+def _generate_default_run_report(run_dir: str) -> Optional[str]:
+    output_path = Path(run_dir) / "report.html"
+    try:
+        return generate_html_report(run_dir, str(output_path))
+    except Exception as exc:
+        print(f"HTML report generation failed: {exc}")
+        return None
+
+
 def _merge_nested_dict(base: Any, override: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = dict(base or {})
     out.update(override)
@@ -247,7 +285,7 @@ def _load_config_file(path: str) -> Dict[str, Any]:
 
     if suffix in {".yaml", ".yml"}:
         try:
-            import yaml
+            import yaml  # type: ignore
         except Exception as exc:
             raise RuntimeError("PyYAML is required to read YAML configs") from exc
         loaded = yaml.safe_load(text) or {}
