@@ -18,7 +18,8 @@ Primary goal:
 - `cli.py`
   CLI interface: `run`, `summarize`, and `report`.
 - `report_html.py`
-  Standalone HTML report renderer used by the CLI report flow.
+  Standalone HTML report bundle renderer used by the CLI report flow. It writes
+  a main summary page plus per-sample detail pages.
 - `requirements.txt`
   Eval-specific dependency list.
 
@@ -159,6 +160,8 @@ python -m eval.cli run --config eval/configs/gaia_validation.yaml
 ```
 
 By default, `run` also generates `report.html` inside the run directory.
+That summary page links to per-sample detail pages under a sibling
+`report_samples/` directory.
 Use `--no-report` to skip that post-processing step.
 
 ## 3. Override common options from CLI
@@ -188,6 +191,11 @@ python -m eval.cli run \
 python -m eval.cli summarize --run-dir eval/runs/<timestamp_runid>
 ```
 
+This rewrites `summary.json` and `summary.md`, and also regenerates the default
+HTML report bundle for that run:
+- `report.html`
+- `report_samples/<index>_<sample_id>.html`
+
 ## 5. Generate or regenerate an HTML report manually
 
 ```bash
@@ -197,6 +205,17 @@ python -m eval.cli report \
 ```
 
 If `--output` is omitted, the report command writes `<run-id>_report.html` in the current directory.
+
+The report command now generates a static multipage bundle:
+- the main summary page at the exact `--output` path
+- a sibling sample-detail directory named `<output_stem>_samples/`
+
+Each sample row in the summary page links to a dedicated detail page containing:
+- prompt, ground truth, prediction, and score diagnostics
+- GAIA sample metadata and annotator steps when present
+- usage snapshots, warnings, and staged attachments when present
+- matched error records and a curated event timeline
+- raw event JSON behind a collapsible `<details>` block
 
 ## 6. Alternate entrypoint
 
@@ -254,6 +273,10 @@ Required files:
   - human-readable summary
 - `report.html`
   - generated automatically by `python -m eval.cli run` unless `--no-report` is set
+  - main summary page with run metrics and a linked sample table
+- `report_samples/`
+  - generated alongside `report.html`
+  - one static HTML page per sample, named `<index>_<sample_id>.html`
 
 ## Redaction/safety in artifacts
 

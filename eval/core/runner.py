@@ -337,6 +337,9 @@ def summarize_run(run_dir: str) -> Dict[str, Any]:
     payload = json.loads(summary_json_path.read_text(encoding="utf-8"))
     writer = JsonArtifactWriter(str(summary_json_path.parent))
     writer.write_summary(payload)
+    from eval.report_html import generate_html_report
+
+    generate_html_report(str(summary_json_path.parent), str(summary_json_path.parent / "report.html"))
     return payload
 
 
