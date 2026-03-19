@@ -36,7 +36,8 @@ class Agent1RuntimeExecutor(AgentExecutor):
 
         overrides = agent_runtime.RuntimeOverrides(
             long_memory_base_path=str(opts.get("long_memory_base_path") or memory_dir),
-            enable_memory=self._coerce_optional_bool(opts.get("enable_memory"), default=True),
+            enable_memory=self._coerce_optional_bool(opts.get("enable_memory"), default=False),
+            enable_auto_title=self._coerce_optional_bool(opts.get("enable_auto_title"), default=False),
             include_tools=self._coerce_tool_list(opts.get("include_tools")),
             exclude_tools=self._coerce_tool_list(opts.get("exclude_tools")),
             model_override=self._coerce_optional_dict(opts.get("model_override")),

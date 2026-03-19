@@ -83,6 +83,7 @@ class RuntimeSession:
 class RuntimeOverrides:
     long_memory_base_path: Optional[str] = None
     enable_memory: Optional[bool] = None
+    enable_auto_title: Optional[bool] = None
     include_tools: Optional[List[str]] = None
     exclude_tools: Optional[List[str]] = None
     model_override: Optional[Dict[str, Any]] = None
@@ -866,7 +867,7 @@ def create_runtime_session(
         unsubscribe_debug_file_log=unsubscribe_debug_file_log,
         close_debug_log_file=close_debug_log_file,
         auto_session_id=initial_session_id,
-        auto_title_enabled=True,
+        auto_title_enabled=_resolve_bool_override(overrides.enable_auto_title, True),
         auto_title_task=None,
     )
     if effective_debug_log is not None:

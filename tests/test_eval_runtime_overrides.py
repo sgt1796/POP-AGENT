@@ -98,11 +98,13 @@ def test_runtime_overrides_backward_compat(monkeypatch):
     # Backward compatibility: no overrides still works.
     session_default = runtime.create_runtime_session(enable_event_logger=False)
     assert session_default.agent._model["id"] == "gemini-3-flash-preview"
+    assert session_default.auto_title_enabled is True
 
     session_overridden = runtime.create_runtime_session(
         enable_event_logger=False,
         overrides=runtime.RuntimeOverrides(
             enable_memory=False,
+            enable_auto_title=False,
             include_tools=["jina_web_snapshot"],
             exclude_tools=["memory_search"],
             model_override={"provider": "openai", "id": "gpt-test", "api": None},
@@ -114,6 +116,7 @@ def test_runtime_overrides_backward_compat(monkeypatch):
     assert session_overridden.agent._model["id"] == "gpt-test"
     assert [tool.name for tool in session_overridden.agent._tools] == ["jina_web_snapshot"]
     assert session_overridden.bash_prompt_approval is False
+    assert session_overridden.auto_title_enabled is False
 
 
 def test_runtime_overrides_memory_path_and_disable_toggle(monkeypatch, tmp_path):

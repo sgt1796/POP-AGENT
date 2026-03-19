@@ -177,6 +177,10 @@ python -m eval.cli run \
   --executor-option enable_memory=true
 ```
 
+Eval runs default to `enable_memory=false` and `enable_auto_title=false` so each
+sample shuts down cleanly without carrying chat-runtime background work. Re-enable
+either option explicitly if you need that behavior during benchmarking.
+
 To generate and persist model-assisted agent step summaries for the per-sample report:
 
 ```bash
@@ -333,6 +337,7 @@ Default executor behavior:
 Forwarded to `agent_build.agent1.runtime.RuntimeOverrides`:
 - `long_memory_base_path` (str)
 - `enable_memory` (bool)
+- `enable_auto_title` (bool)
 - `include_tools` (list[str] or comma string)
 - `exclude_tools` (list[str] or comma string)
 - `model_override` (dict)

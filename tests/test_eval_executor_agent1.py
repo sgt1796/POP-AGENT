@@ -43,11 +43,15 @@ class _FakeSession(SimpleNamespace):
 
 def test_per_sample_isolation_uses_unique_memory_paths(monkeypatch, tmp_path):
     seen_paths = []
+    seen_memory_flags = []
+    seen_auto_title_flags = []
 
     def _fake_create_runtime_session(*, log_level=None, enable_event_logger=True, overrides=None, **kwargs):
         del log_level, enable_event_logger, kwargs
         assert overrides is not None
         seen_paths.append(overrides.long_memory_base_path)
+        seen_memory_flags.append(overrides.enable_memory)
+        seen_auto_title_flags.append(overrides.enable_auto_title)
         return _FakeSession(agent=_FakeAgent())
 
     async def _fake_run_user_turn(session, prompt, on_warning=None):
@@ -95,6 +99,48 @@ def test_per_sample_isolation_uses_unique_memory_paths(monkeypatch, tmp_path):
     assert seen_paths[0] != seen_paths[1]
     assert "sample_000000" in seen_paths[0]
     assert "sample_000001" in seen_paths[1]
+    assert seen_memory_flags == [False, False]
+    assert seen_auto_title_flags == [False, False]
+
+
+def test_executor_allows_reenabling_memory_and_auto_title(monkeypatch, tmp_path):
+    seen_overrides = []
+
+    def _fake_create_runtime_session(*, log_level=None, enable_event_logger=True, overrides=None, **kwargs):
+        del log_level, enable_event_logger, kwargs
+        seen_overrides.append(overrides)
+        return _FakeSession(agent=_FakeAgent())
+
+    async def _fake_run_user_turn(session, prompt, on_warning=None):
+        del session, prompt, on_warning
+        return "pred"
+
+    async def _fake_shutdown_runtime_session(session):
+        del session
+        return None
+
+    monkeypatch.setattr(agent_runtime, "create_runtime_session", _fake_create_runtime_session)
+    monkeypatch.setattr(agent_runtime, "run_user_turn", _fake_run_user_turn)
+    monkeypatch.setattr(agent_runtime, "shutdown_runtime_session", _fake_shutdown_runtime_session)
+
+    executor = Agent1RuntimeExecutor()
+
+    async def _run() -> None:
+        sample = BenchmarkSample(sample_id="a", prompt="q", ground_truth="g")
+        await executor.run_sample(
+            sample,
+            timeout_s=5,
+            sample_index=0,
+            run_id="run",
+            run_dir=str(tmp_path),
+            executor_options={"enable_memory": True, "enable_auto_title": True},
+        )
+
+    asyncio.run(_run())
+
+    assert len(seen_overrides) == 1
+    assert seen_overrides[0].enable_memory is True
+    assert seen_overrides[0].enable_auto_title is True
 
 
 def test_executor_forwards_enable_event_logger_option(monkeypatch, tmp_path):
