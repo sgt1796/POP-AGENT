@@ -22,13 +22,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Accuracy: {summary.accuracy:.4f} ({summary.correct}/{summary.total})")
         print(f"Errors: {summary.error_count}")
         if not args.no_report:
-            report_path = _generate_default_run_report(summary.run_dir)
+            report_path = _generate_default_run_report(
+                summary.run_dir,
+                summarize_agent_steps=bool(args.summarize_agent_steps),
+                step_summary_provider=args.step_summary_provider,
+                step_summary_model=args.step_summary_model,
+            )
             if report_path is not None:
                 print(f"HTML report: {report_path}")
         return 0
 
     if args.command == "summarize":
-        payload = summarize_run(args.run_dir)
+        try:
+            payload = summarize_run(
+                args.run_dir,
+                summarize_agent_steps=bool(args.summarize_agent_steps),
+                step_summary_provider=args.step_summary_provider,
+                step_summary_model=args.step_summary_model,
+            )
+        except Exception as exc:
+            print(f"Summarize failed: {exc}")
+            return 1
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
@@ -37,7 +51,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         run_dir = args.run_dir
         # If the user did not provide an explicit output, derive one from the run id
         output_path = args.output or (Path(run_dir).stem + "_report.html")
-        out = generate_html_report(run_dir, output_path)
+        try:
+            out = generate_html_report(
+                run_dir,
+                output_path,
+                summarize_agent_steps=bool(args.summarize_agent_steps),
+                step_summary_provider=args.step_summary_provider,
+                step_summary_model=args.step_summary_model,
+            )
+        except Exception as exc:
+            print(f"HTML report generation failed: {exc}")
+            return 1
         print(f"HTML report generated at: {out}")
         return 0
 
@@ -95,10 +119,36 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip automatic HTML report generation after the run completes.",
     )
+    run_parser.add_argument(
+        "--summarize-agent-steps",
+        action="store_true",
+        help="Generate and persist PromptFunction-based agent step summaries when building the report.",
+    )
+    run_parser.add_argument(
+        "--step-summary-provider",
+        help="PromptFunction provider override for agent step summarization during report generation.",
+    )
+    run_parser.add_argument(
+        "--step-summary-model",
+        help="PromptFunction model override for agent step summarization during report generation.",
+    )
 
     # summarize subcommand
     summarize_parser = subparsers.add_parser("summarize", help="Rewrite and print run summary")
     summarize_parser.add_argument("--run-dir", required=True, help="Run directory or summary.json path")
+    summarize_parser.add_argument(
+        "--summarize-agent-steps",
+        action="store_true",
+        help="Regenerate and persist PromptFunction-based agent step summaries before rebuilding the report.",
+    )
+    summarize_parser.add_argument(
+        "--step-summary-provider",
+        help="PromptFunction provider override for agent step summarization during report generation.",
+    )
+    summarize_parser.add_argument(
+        "--step-summary-model",
+        help="PromptFunction model override for agent step summarization during report generation.",
+    )
 
     # report subcommand
     report_parser = subparsers.add_parser("report", help="Generate an HTML report from a run")
@@ -106,6 +156,19 @@ def _build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument(
         "--output",
         help="Path to output HTML report file; defaults to <run-id>_report.html in current directory",
+    )
+    report_parser.add_argument(
+        "--summarize-agent-steps",
+        action="store_true",
+        help="Generate and persist PromptFunction-based agent step summaries before building the report.",
+    )
+    report_parser.add_argument(
+        "--step-summary-provider",
+        help="PromptFunction provider override for agent step summarization during report generation.",
+    )
+    report_parser.add_argument(
+        "--step-summary-model",
+        help="PromptFunction model override for agent step summarization during report generation.",
     )
 
     return parser
@@ -219,10 +282,22 @@ def _build_progress_printer():
     return _printer
 
 
-def _generate_default_run_report(run_dir: str) -> Optional[str]:
+def _generate_default_run_report(
+    run_dir: str,
+    *,
+    summarize_agent_steps: bool = False,
+    step_summary_provider: Optional[str] = None,
+    step_summary_model: Optional[str] = None,
+) -> Optional[str]:
     output_path = Path(run_dir) / "report.html"
     try:
-        return generate_html_report(run_dir, str(output_path))
+        return generate_html_report(
+            run_dir,
+            str(output_path),
+            summarize_agent_steps=summarize_agent_steps,
+            step_summary_provider=step_summary_provider,
+            step_summary_model=step_summary_model,
+        )
     except Exception as exc:
         print(f"HTML report generation failed: {exc}")
         return None

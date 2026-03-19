@@ -151,6 +151,7 @@ async def run_evaluation_async(
         )
 
         try:
+            sample_started_at = _utc_now_iso()
             execution = await resolved_executor.run_sample(
                 sample,
                 timeout_s=cfg.timeout_s,
@@ -160,9 +161,11 @@ async def run_evaluation_async(
                 executor_options=dict(cfg.executor_options),
             )
         except Exception as exc:
+            sample_ended_at = _utc_now_iso()
             execution = None
             execution_error = str(exc)
         else:
+            sample_ended_at = _utc_now_iso()
             execution_error = None
 
         if execution is None:
@@ -182,6 +185,8 @@ async def run_evaluation_async(
                 latency_ms=0.0,
                 error=execution_error,
                 trace_ref=f"events.jsonl#sample_id={sample.sample_id}",
+                started_at=sample_started_at,
+                ended_at=sample_ended_at,
                 metadata=dict(sample.metadata or {}),
             )
             sample_results.append(sample_result)
@@ -239,6 +244,8 @@ async def run_evaluation_async(
             latency_ms=float(execution.latency_ms or 0.0),
             error=sample_error,
             trace_ref=execution.trace_ref,
+            started_at=sample_started_at,
+            ended_at=sample_ended_at,
             metadata=dict(sample.metadata or {}),
         )
         sample_results.append(sample_result)
@@ -331,7 +338,13 @@ async def run_evaluation_async(
     )
 
 
-def summarize_run(run_dir: str) -> Dict[str, Any]:
+def summarize_run(
+    run_dir: str,
+    *,
+    summarize_agent_steps: bool = False,
+    step_summary_provider: Optional[str] = None,
+    step_summary_model: Optional[str] = None,
+) -> Dict[str, Any]:
     summary_json_path = _resolve_summary_json_path(run_dir)
 
     payload = json.loads(summary_json_path.read_text(encoding="utf-8"))
@@ -339,7 +352,13 @@ def summarize_run(run_dir: str) -> Dict[str, Any]:
     writer.write_summary(payload)
     from eval.report_html import generate_html_report
 
-    generate_html_report(str(summary_json_path.parent), str(summary_json_path.parent / "report.html"))
+    generate_html_report(
+        str(summary_json_path.parent),
+        str(summary_json_path.parent / "report.html"),
+        summarize_agent_steps=summarize_agent_steps,
+        step_summary_provider=step_summary_provider,
+        step_summary_model=step_summary_model,
+    )
     return payload
 
 

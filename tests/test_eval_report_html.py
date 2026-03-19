@@ -2,6 +2,9 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
+from eval import agent_step_summary
 from eval.report_html import generate_html_report
 
 
@@ -15,7 +18,40 @@ def _build_sample(
     correct: bool,
     score_reason: str,
     error: str | None,
+    started_at: str | None = "2026-03-18T20:01:00+00:00",
+    ended_at: str | None = "2026-03-18T20:01:04+00:00",
+    agent_execution_summary: dict | None = None,
 ) -> dict:
+    result = {
+        "sample_id": sample_id,
+        "status": status,
+        "prediction": prediction,
+        "score_result": {
+            "correct": correct,
+            "score": 1.0 if correct else 0.0,
+            "reason": score_reason,
+            "normalized_prediction": prediction.lower(),
+            "normalized_ground_truth": ground_truth.lower(),
+        },
+        "usage": {
+            "before": {"calls": 0, "total_tokens": 0},
+            "after": {"calls": 2, "total_tokens": 300},
+            "delta": {"calls": 2, "input_tokens": 120, "output_tokens": 15, "total_tokens": 300},
+            "last": {"provider": "gemini", "model": "gemini-3-pro-preview", "latency_ms": 1234},
+            "warnings": ["warning text"] if status == "ok" else [],
+            "attachments": [{"name": "evidence.txt", "workspace_path": "attachments/evidence.txt", "source_uri": "hf://dataset/evidence.txt"}],
+        },
+        "latency_ms": 4567.0,
+        "error": error,
+        "trace_ref": f"events.jsonl#sample_id={sample_id}",
+    }
+    if started_at is not None:
+        result["started_at"] = started_at
+    if ended_at is not None:
+        result["ended_at"] = ended_at
+    if agent_execution_summary is not None:
+        result["agent_execution_summary"] = agent_execution_summary
+
     return {
         "sample_id": sample_id,
         "prompt": prompt,
@@ -31,29 +67,7 @@ def _build_sample(
             },
         },
         "assets": {},
-        "result": {
-            "sample_id": sample_id,
-            "status": status,
-            "prediction": prediction,
-            "score_result": {
-                "correct": correct,
-                "score": 1.0 if correct else 0.0,
-                "reason": score_reason,
-                "normalized_prediction": prediction.lower(),
-                "normalized_ground_truth": ground_truth.lower(),
-            },
-            "usage": {
-                "before": {"calls": 0, "total_tokens": 0},
-                "after": {"calls": 2, "total_tokens": 300},
-                "delta": {"calls": 2, "input_tokens": 120, "output_tokens": 15, "total_tokens": 300},
-                "last": {"provider": "gemini", "model": "gemini-3-pro-preview", "latency_ms": 1234},
-                "warnings": ["warning text"] if status == "ok" else [],
-                "attachments": [{"name": "evidence.txt", "workspace_path": "attachments/evidence.txt", "source_uri": "hf://dataset/evidence.txt"}],
-            },
-            "latency_ms": 4567.0,
-            "error": error,
-            "trace_ref": f"events.jsonl#sample_id={sample_id}",
-        },
+        "result": result,
     }
 
 
@@ -62,7 +76,7 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _create_run_dir(tmp_path: Path, *, include_optional: bool = True) -> Path:
+def _create_run_dir(tmp_path: Path, *, include_optional: bool = True, persisted_summary: bool = False, include_timing: bool = True) -> Path:
     run_dir = tmp_path / "run"
     run_dir.mkdir(parents=True)
     samples = [
@@ -75,6 +89,19 @@ def _create_run_dir(tmp_path: Path, *, include_optional: bool = True) -> Path:
             correct=True,
             score_reason="exact_match",
             error=None,
+            started_at="2026-03-18T20:01:00+00:00" if include_timing else None,
+            ended_at="2026-03-18T20:01:04+00:00" if include_timing else None,
+            agent_execution_summary={
+                "steps": ["Search for the source", "Compare the retrieved evidence", "Return the answer"],
+                "step_count": 3,
+                "tool_names": ["search_engine", "web_browser"],
+                "tool_count": 2,
+                "summary_model": "gemini / gemini-3-pro-preview",
+                "generated_at": "2026-03-18T20:10:00+00:00",
+                "source": "promptfunction",
+            }
+            if persisted_summary
+            else None,
         ),
         _build_sample(
             sample_id="sample-error",
@@ -85,6 +112,8 @@ def _create_run_dir(tmp_path: Path, *, include_optional: bool = True) -> Path:
             correct=False,
             score_reason="execution_error",
             error="timeout after 180s",
+            started_at="2026-03-18T20:02:00+00:00" if include_timing else None,
+            ended_at="2026-03-18T20:02:05+00:00" if include_timing else None,
         ),
     ]
     (run_dir / "summary.json").write_text(
@@ -138,13 +167,47 @@ def _create_run_dir(tmp_path: Path, *, include_optional: bool = True) -> Path:
         _write_jsonl(
             run_dir / "events.jsonl",
             [
-                {"sample_id": "sample-ok", "event_index": 0, "event": {"type": "agent_start"}},
+                {"sample_id": "sample-ok", "event_index": 0, "event": {"type": "agent_start", "timestamp": "2026-03-18T20:01:00+00:00"}},
                 {
                     "sample_id": "sample-ok",
                     "event_index": 1,
                     "event": {
+                        "type": "tool_execution_start",
+                        "toolName": "search_engine",
+                        "args": {"query": "Prompt A"},
+                        "timestamp": "2026-03-18T20:01:01+00:00",
+                    },
+                },
+                {
+                    "sample_id": "sample-ok",
+                    "event_index": 2,
+                    "event": {
+                        "type": "tool_execution_end",
+                        "toolName": "search_engine",
+                        "result": {"details": {"ok": True}},
+                        "timestamp": "2026-03-18T20:01:02+00:00",
+                    },
+                },
+                {
+                    "sample_id": "sample-ok",
+                    "event_index": 3,
+                    "event": {
+                        "type": "tool_execution_start",
+                        "toolName": "web_browser",
+                        "args": {"open": "https://example.test"},
+                        "timestamp": "2026-03-18T20:01:03+00:00",
+                    },
+                },
+                {
+                    "sample_id": "sample-ok",
+                    "event_index": 4,
+                    "event": {
                         "type": "message_end",
-                        "message": {"role": "assistant", "content": [{"type": "text", "text": "Answer A"}]},
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Answer A"}],
+                            "timestamp": "2026-03-18T20:01:04+00:00",
+                        },
                     },
                 },
                 {
@@ -154,6 +217,7 @@ def _create_run_dir(tmp_path: Path, *, include_optional: bool = True) -> Path:
                         "type": "tool_execution_end",
                         "toolName": "web_snapshot",
                         "result": {"details": {"error": "network unavailable"}},
+                        "timestamp": "2026-03-18T20:02:05+00:00",
                     },
                 },
             ],
@@ -162,7 +226,7 @@ def _create_run_dir(tmp_path: Path, *, include_optional: bool = True) -> Path:
 
 
 def test_generate_html_report_builds_bundle(tmp_path: Path):
-    run_dir = _create_run_dir(tmp_path, include_optional=True)
+    run_dir = _create_run_dir(tmp_path, include_optional=True, persisted_summary=True)
     output_path = tmp_path / "report.html"
 
     out = generate_html_report(str(run_dir), str(output_path))
@@ -181,7 +245,13 @@ def test_generate_html_report_builds_bundle(tmp_path: Path):
     assert "Prompt A" in ok_html
     assert "Answer A" in ok_html
     assert "exact_match" in ok_html
-    assert "1. Search" in ok_html
+    assert "Annotator Summary" in ok_html
+    assert "Agent Summary" in ok_html
+    assert "Annotator Steps" in ok_html
+    assert "Agent Steps" in ok_html
+    assert "Search for the source" in ok_html
+    assert "Web Browser" in ok_html
+    assert "Mar 18, 2026 20:01:00" in ok_html
     assert "warning text" in ok_html
     assert "Show raw event JSON" in ok_html
 
@@ -202,7 +272,7 @@ def test_generate_html_report_tolerates_missing_optional_artifacts(tmp_path: Pat
 
 
 def test_generate_html_report_accepts_zip_input(tmp_path: Path):
-    run_dir = _create_run_dir(tmp_path / "src", include_optional=True)
+    run_dir = _create_run_dir(tmp_path / "src", include_optional=True, persisted_summary=True)
     zip_path = tmp_path / "run.zip"
     with zipfile.ZipFile(zip_path, "w") as zf:
         for file_path in run_dir.iterdir():
@@ -214,3 +284,135 @@ def test_generate_html_report_accepts_zip_input(tmp_path: Path):
     assert out == str(output_path.resolve())
     assert output_path.exists()
     assert (tmp_path / "zip_report_samples").exists()
+
+
+def test_generate_html_report_summarizes_agent_steps_and_persists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    class _FakePromptFunction:
+        init_clients: list[str] = []
+        execute_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def __init__(self, sys_prompt: str = "", prompt: str = "", client: str | None = None):
+            del sys_prompt, prompt
+            _FakePromptFunction.init_clients.append(str(client))
+
+        def execute(self, *args, **kwargs):
+            _FakePromptFunction.execute_calls.append((args, kwargs))
+            return json.dumps({"steps": ["Search the web", "Open the relevant page", "Answer the question"]})
+
+    monkeypatch.setattr(agent_step_summary, "PromptFunction", _FakePromptFunction)
+
+    run_dir = _create_run_dir(tmp_path, include_optional=True, persisted_summary=False)
+    output_path = tmp_path / "report.html"
+    out = generate_html_report(str(run_dir), str(output_path), summarize_agent_steps=True)
+
+    assert out == str(output_path.resolve())
+    assert _FakePromptFunction.init_clients == ["gemini"]
+    assert _FakePromptFunction.execute_calls
+    assert _FakePromptFunction.execute_calls[0][1]["model"] == "gemini-3-pro-preview"
+
+    samples = [
+        json.loads(line)
+        for line in (run_dir / "samples.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    persisted = samples[0]["result"]["agent_execution_summary"]
+    assert persisted["steps"] == ["Search the web", "Open the relevant page", "Answer the question"]
+    assert persisted["step_count"] == 3
+    assert persisted["tool_names"] == ["search_engine", "web_browser"]
+    assert persisted["tool_count"] == 2
+    assert persisted["source"] == "promptfunction"
+    assert "generated_at" in persisted
+
+    html = (tmp_path / "report_samples" / "0001_sample-ok.html").read_text(encoding="utf-8")
+    assert "Search the web" in html
+    assert "Open the relevant page" in html
+
+
+def test_generate_html_report_summary_overrides_provider_and_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    class _FakePromptFunction:
+        init_clients: list[str] = []
+        execute_kwargs: list[dict[str, object]] = []
+
+        def __init__(self, sys_prompt: str = "", prompt: str = "", client: str | None = None):
+            del sys_prompt, prompt
+            _FakePromptFunction.init_clients.append(str(client))
+
+        def execute(self, *_args, **kwargs):
+            _FakePromptFunction.execute_kwargs.append(kwargs)
+            return {"steps": ["Use override model"]}
+
+    monkeypatch.setattr(agent_step_summary, "PromptFunction", _FakePromptFunction)
+
+    run_dir = _create_run_dir(tmp_path, include_optional=True, persisted_summary=False)
+    output_path = tmp_path / "override.html"
+    generate_html_report(
+        str(run_dir),
+        str(output_path),
+        summarize_agent_steps=True,
+        step_summary_provider="openai",
+        step_summary_model="gpt-5-mini",
+    )
+
+    assert _FakePromptFunction.init_clients == ["openai"]
+    assert _FakePromptFunction.execute_kwargs[0]["model"] == "gpt-5-mini"
+
+
+def test_generate_html_report_reuses_persisted_summary_without_model_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError("PromptFunction should not be used when reusing persisted summaries")
+
+    monkeypatch.setattr(agent_step_summary, "PromptFunction", _fail_prompt)
+
+    run_dir = _create_run_dir(tmp_path, include_optional=True, persisted_summary=True)
+    output_path = tmp_path / "report.html"
+    generate_html_report(str(run_dir), str(output_path))
+
+    html = (tmp_path / "report_samples" / "0001_sample-ok.html").read_text(encoding="utf-8")
+    assert "Search for the source" in html
+
+
+def test_generate_html_report_falls_back_to_event_timestamps_for_old_runs(tmp_path: Path):
+    run_dir = _create_run_dir(tmp_path, include_optional=True, include_timing=False)
+    output_path = tmp_path / "fallback.html"
+    generate_html_report(str(run_dir), str(output_path))
+
+    html = (tmp_path / "fallback_samples" / "0001_sample-ok.html").read_text(encoding="utf-8")
+    assert "Mar 18, 2026 20:01:00" in html
+    assert "Mar 18, 2026 20:01:04" in html
+    assert "Search Engine" in html
+
+
+def test_generate_html_report_marks_summary_failures_without_aborting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    class _FailingPromptFunction:
+        def __init__(self, sys_prompt: str = "", prompt: str = "", client: str | None = None):
+            del sys_prompt, prompt, client
+
+        def execute(self, *_args, **_kwargs):
+            raise RuntimeError("prompt failure")
+
+    monkeypatch.setattr(agent_step_summary, "PromptFunction", _FailingPromptFunction)
+
+    run_dir = _create_run_dir(tmp_path, include_optional=True, persisted_summary=False)
+    output_path = tmp_path / "report.html"
+    generate_html_report(str(run_dir), str(output_path), summarize_agent_steps=True)
+
+    html = (tmp_path / "report_samples" / "0001_sample-ok.html").read_text(encoding="utf-8")
+    assert "Agent step summarization failed: prompt failure" in html
+
+    samples = [
+        json.loads(line)
+        for line in (run_dir / "samples.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert samples[0]["result"]["agent_execution_summary"]["error"] == "prompt failure"
+
+
+def test_generate_html_report_rejects_zip_input_when_summarizing(tmp_path: Path):
+    run_dir = _create_run_dir(tmp_path / "src", include_optional=True)
+    zip_path = tmp_path / "run.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for file_path in run_dir.iterdir():
+            zf.write(file_path, arcname=f"archived-run/{file_path.name}")
+
+    with pytest.raises(ValueError, match="--summarize-agent-steps"):
+        generate_html_report(str(zip_path), str(tmp_path / "zip_report.html"), summarize_agent_steps=True)

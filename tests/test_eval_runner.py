@@ -99,6 +99,9 @@ def test_runner_continue_on_error_and_artifacts(tmp_path: Path):
 
     sample_lines = [line for line in (run_dir / "samples.jsonl").read_text(encoding="utf-8").splitlines() if line]
     assert len(sample_lines) == 2
+    sample_payloads = [json.loads(line) for line in sample_lines]
+    assert all(payload["result"]["started_at"] for payload in sample_payloads)
+    assert all(payload["result"]["ended_at"] for payload in sample_payloads)
 
     error_lines = [line for line in (run_dir / "errors.jsonl").read_text(encoding="utf-8").splitlines() if line]
     assert len(error_lines) == 1

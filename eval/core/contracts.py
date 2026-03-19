@@ -60,6 +60,8 @@ class SampleResult:
     latency_ms: float = 0.0
     error: Optional[str] = None
     trace_ref: Optional[str] = None
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 

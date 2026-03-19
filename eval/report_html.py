@@ -11,8 +11,17 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from html import escape
+from pathlib import Path
 from string import Template
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from eval.agent_step_summary import (
+    collect_distinct_tool_names,
+    humanize_tool_name,
+    normalize_agent_execution_summary,
+    persist_agent_execution_summaries,
+    resolve_result_timing,
+)
 
 
 BASE_STYLE = """
@@ -87,6 +96,10 @@ class SampleView:
     attachments: List[Dict[str, Any]]
     error_record: Optional[Dict[str, Any]]
     events: List[Dict[str, Any]]
+    agent_started_at: Optional[str]
+    agent_ended_at: Optional[str]
+    agent_tool_names: List[str]
+    agent_execution_summary: Dict[str, Any]
     normalized_prediction: Any
     normalized_ground_truth: Any
     raw_sample: Dict[str, Any]
@@ -97,6 +110,34 @@ def _read_run_data(run_dir_or_zip: str) -> RunArtifacts:
     if source.lower().endswith(".zip"):
         return _read_run_data_from_zip(source)
     return _read_run_data_from_dir(source)
+
+
+def _prepare_run_artifacts(
+    run_dir_or_zip: str,
+    *,
+    summarize_agent_steps: bool = False,
+    step_summary_provider: Optional[str] = None,
+    step_summary_model: Optional[str] = None,
+) -> RunArtifacts:
+    source = str(run_dir_or_zip or "").strip()
+    if source.lower().endswith(".zip"):
+        if summarize_agent_steps:
+            raise ValueError(
+                "--summarize-agent-steps is not supported for zip inputs because report generation needs to rewrite samples.jsonl."
+            )
+        return _read_run_data_from_zip(source)
+
+    artifacts = _read_run_data_from_dir(source)
+    if summarize_agent_steps:
+        artifacts.samples = persist_agent_execution_summaries(
+            source,
+            samples=artifacts.samples,
+            manifest=artifacts.manifest,
+            events_by_sample=artifacts.events_by_sample,
+            provider_override=step_summary_provider,
+            model_override=step_summary_model,
+        )
+    return artifacts
 
 
 def _read_run_data_from_dir(run_dir: str) -> RunArtifacts:
@@ -249,6 +290,10 @@ def _build_sample_views(artifacts: RunArtifacts, sample_dir_name: str) -> List[S
         usage_last = usage.get("last") if isinstance(usage.get("last"), dict) else {}
         warnings = [str(item).strip() for item in usage.get("warnings", []) if str(item).strip()] if isinstance(usage.get("warnings"), list) else []
         attachments = [item for item in usage.get("attachments", []) if isinstance(item, dict)] if isinstance(usage.get("attachments"), list) else []
+        sample_events = list(artifacts.events_by_sample.get(str(sample_record.get("sample_id") or f"sample-{index}"), []))
+        agent_execution_summary = normalize_agent_execution_summary(result.get("agent_execution_summary"))
+        agent_tool_names = list(agent_execution_summary.get("tool_names") or collect_distinct_tool_names(sample_events))
+        agent_started_at, agent_ended_at = resolve_result_timing(sample_record, sample_events)
         sample_id = str(sample_record.get("sample_id") or f"sample-{index}")
         status = str(result.get("status", "unknown"))
         correct = bool(score_result.get("correct", False))
@@ -300,7 +345,11 @@ def _build_sample_views(artifacts: RunArtifacts, sample_dir_name: str) -> List[S
                 warnings=warnings,
                 attachments=attachments,
                 error_record=errors_by_sample.get(sample_id),
-                events=list(artifacts.events_by_sample.get(sample_id, [])),
+                events=sample_events,
+                agent_started_at=agent_started_at,
+                agent_ended_at=agent_ended_at,
+                agent_tool_names=agent_tool_names,
+                agent_execution_summary=agent_execution_summary,
                 normalized_prediction=score_result.get("normalized_prediction"),
                 normalized_ground_truth=score_result.get("normalized_ground_truth"),
                 raw_sample=sample_record,
@@ -479,6 +528,23 @@ def _text_block(value: Any) -> str:
     return f"<pre>{_escape(text)}</pre>"
 
 
+def _multiline_value(value: Any) -> str:
+    text = _display(value)
+    if text == "n/a":
+        return '<p class="empty">n/a</p>'
+    return f'<div style="white-space:pre-wrap; line-height:1.6">{_escape(text)}</div>'
+
+
+def _step_list_block(value: Any) -> str:
+    steps = _coerce_steps(value)
+    if steps:
+        return '<ol class="plain-list">' + "".join(f"<li>{_escape(step)}</li>" for step in steps) + "</ol>"
+    text = _display(value)
+    if text == "n/a":
+        return '<p class="empty">n/a</p>'
+    return f"<pre>{_escape(text)}</pre>"
+
+
 def _kv_table(rows: List[Tuple[str, str]]) -> str:
     if not rows:
         return '<p class="empty">n/a</p>'
@@ -490,6 +556,86 @@ def _string_list(items: List[str]) -> str:
     if not items:
         return '<p class="empty">n/a</p>'
     return '<ul class="plain-list">' + "".join(f"<li>{_escape(item)}</li>" for item in items) + "</ul>"
+
+
+def _coerce_steps(value: Any) -> List[str]:
+    if isinstance(value, list):
+        output = [str(item).strip() for item in value if str(item).strip()]
+        return output
+    text = str(value or "").strip()
+    if not text:
+        return []
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines and all(_looks_numbered_step(line) for line in lines):
+        return [_strip_step_number(line) for line in lines]
+    return []
+
+
+def _looks_numbered_step(line: str) -> bool:
+    text = str(line or "").strip()
+    if not text:
+        return False
+    if len(text) > 1 and text[0].isdigit() and "." in text[:4]:
+        return True
+    if len(text) > 1 and text[0].isdigit() and ")" in text[:4]:
+        return True
+    return False
+
+
+def _strip_step_number(line: str) -> str:
+    text = str(line or "").strip()
+    for marker in (".", ")"):
+        position = text.find(marker)
+        if 0 < position <= 3 and text[:position].isdigit():
+            return text[position + 1 :].strip()
+    return text
+
+
+def _fmt_sample_time_window(started_at: Optional[str], ended_at: Optional[str], latency_ms: float) -> str:
+    if started_at and ended_at:
+        start_dt = _parse_iso_dt(started_at)
+        end_dt = _parse_iso_dt(ended_at)
+        if start_dt is not None and end_dt is not None:
+            duration_s = max((end_dt - start_dt).total_seconds(), 0.0)
+            return f"{_fmt_ts(started_at)} -> {_fmt_ts(ended_at)} ({_fmt_duration(duration_s)})"
+        return f"{_fmt_ts(started_at)} -> {_fmt_ts(ended_at)}"
+    if started_at:
+        suffix = f" ({_fmt_duration(latency_ms / 1000.0)})" if latency_ms > 0 else ""
+        return f"Started {_fmt_ts(started_at)}{suffix}"
+    if ended_at:
+        suffix = f" ({_fmt_duration(latency_ms / 1000.0)})" if latency_ms > 0 else ""
+        return f"Ended {_fmt_ts(ended_at)}{suffix}"
+    return "n/a"
+
+
+def _parse_iso_dt(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def _format_tool_name_list(tool_names: List[str]) -> str:
+    if not tool_names:
+        return "n/a"
+    lines = [f"{index}. {humanize_tool_name(name) or name}" for index, name in enumerate(tool_names, 1)]
+    return "\n".join(lines)
+
+
+def _render_agent_steps(sample: SampleView) -> str:
+    summary = sample.agent_execution_summary
+    steps = summary.get("steps") if isinstance(summary.get("steps"), list) else []
+    if steps:
+        return _step_list_block(steps)
+    error_text = str(summary.get("error") or "").strip()
+    if error_text:
+        return f'<p class="subtle">Agent step summarization failed: {_escape(error_text)}</p>'
+    return '<p class="subtle">No agent step summary was generated. Rebuild the report with <span class="mono">--summarize-agent-steps</span> to add it.</p>'
 
 
 def _attachments_table(attachments: List[Dict[str, Any]]) -> str:
@@ -817,7 +963,17 @@ def _render_sample_html(summary: Dict[str, Any], manifest: Dict[str, Any], sampl
             ("Number of steps", _escape(_display(sample.annotator_metadata.get("Number of steps")))),
             ("How long did this take?", _escape(_display(sample.annotator_metadata.get("How long did this take?")))),
             ("Number of tools", _escape(_display(sample.annotator_metadata.get("Number of tools")))),
-            ("Tools", _escape(_display(sample.annotator_metadata.get("Tools")))),
+            ("Tools", _multiline_value(sample.annotator_metadata.get("Tools"))),
+        ]
+    )
+    agent_step_count = len(sample.agent_execution_summary.get("steps", [])) if isinstance(sample.agent_execution_summary.get("steps"), list) else 0
+    agent_tool_count = str(len(sample.agent_tool_names)) if (sample.agent_tool_names or sample.events) else "n/a"
+    agent_rows = _kv_table(
+        [
+            ("Number of steps", _escape(str(agent_step_count) if sample.agent_execution_summary else "n/a")),
+            ("How long did this take?", _multiline_value(_fmt_sample_time_window(sample.agent_started_at, sample.agent_ended_at, sample.latency_ms))),
+            ("Number of tools", _escape(agent_tool_count)),
+            ("Tools", _multiline_value(_format_tool_name_list(sample.agent_tool_names))),
         ]
     )
     error_payload = sample.error_record or ({"sample_id": sample.sample_id, "status": sample.status, "error": sample.error, "trace_ref": sample.trace_ref} if sample.error else {})
@@ -849,12 +1005,14 @@ def _render_sample_html(summary: Dict[str, Any], manifest: Dict[str, Any], sampl
       </div>
     </section>
     <section class="panel">
-      <div class="section-head"><div><h2>Run Context</h2><p class="section-copy">Run-level metadata, benchmark metadata, and GAIA annotator guidance carried with the sample.</p></div></div>
+      <div class="section-head"><div><h2>Run Context</h2><p class="section-copy">Run-level metadata, benchmark metadata, and side-by-side annotator versus agent execution guidance for this sample.</p></div></div>
       <div class="columns">
         <article class="subpanel"><h3>Run Metadata</h3>{run_rows}</article>
         <article class="subpanel"><h3>Sample Metadata</h3>{_metadata_table(sample.metadata)}</article>
         <article class="subpanel"><h3>Annotator Summary</h3>{annotator_rows}</article>
-        <article class="subpanel"><h3>Annotator Steps</h3>{_text_block(sample.annotator_metadata.get("Steps"))}</article>
+        <article class="subpanel"><h3>Agent Summary</h3>{agent_rows}</article>
+        <article class="subpanel"><h3>Annotator Steps</h3>{_step_list_block(sample.annotator_metadata.get("Steps"))}</article>
+        <article class="subpanel"><h3>Agent Steps</h3>{_render_agent_steps(sample)}</article>
       </div>
     </section>
     <section class="panel">
@@ -879,8 +1037,20 @@ def _render_sample_html(summary: Dict[str, Any], manifest: Dict[str, Any], sampl
     return _render_doc(f"Sample Report - {sample.sample_id}", body)
 
 
-def _write_report_bundle(run_dir: str, output: str) -> str:
-    artifacts = _read_run_data(run_dir)
+def _write_report_bundle(
+    run_dir: str,
+    output: str,
+    *,
+    summarize_agent_steps: bool = False,
+    step_summary_provider: Optional[str] = None,
+    step_summary_model: Optional[str] = None,
+) -> str:
+    artifacts = _prepare_run_artifacts(
+        run_dir,
+        summarize_agent_steps=summarize_agent_steps,
+        step_summary_provider=step_summary_provider,
+        step_summary_model=step_summary_model,
+    )
     out_path = os.path.abspath(output)
     out_dir = os.path.dirname(out_path)
     os.makedirs(out_dir, exist_ok=True)
@@ -914,20 +1084,42 @@ def _write_report_bundle(run_dir: str, output: str) -> str:
         with open(os.path.join(sample_dir_path, sample.filename), "w", encoding="utf-8") as handle:
             handle.write(sample_html)
 
-    return out_path
+    return str(Path(out_path).resolve())
 
 
-def generate_html_report(run_dir: str, output: str) -> str:
-    return _write_report_bundle(run_dir, output)
+def generate_html_report(
+    run_dir: str,
+    output: str,
+    *,
+    summarize_agent_steps: bool = False,
+    step_summary_provider: Optional[str] = None,
+    step_summary_model: Optional[str] = None,
+) -> str:
+    return _write_report_bundle(
+        run_dir,
+        output,
+        summarize_agent_steps=summarize_agent_steps,
+        step_summary_provider=step_summary_provider,
+        step_summary_model=step_summary_model,
+    )
 
 
 def main(argv: List[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Generate HTML report from POP-Agent evaluation run")
     parser.add_argument("--run-dir", required=True, help="Run directory or zip file containing run results")
     parser.add_argument("--output", required=False, help="Path to output HTML report file")
+    parser.add_argument("--summarize-agent-steps", action="store_true", help="Generate and persist PromptFunction-based agent step summaries before building the report.")
+    parser.add_argument("--step-summary-provider", required=False, help="PromptFunction provider override for agent step summarization.")
+    parser.add_argument("--step-summary-model", required=False, help="PromptFunction model override for agent step summarization.")
     args = parser.parse_args(argv)
     output_path = args.output or (os.path.splitext(os.path.basename(args.run_dir))[0] + "_report.html")
-    out = generate_html_report(args.run_dir, output_path)
+    out = generate_html_report(
+        args.run_dir,
+        output_path,
+        summarize_agent_steps=bool(args.summarize_agent_steps),
+        step_summary_provider=args.step_summary_provider,
+        step_summary_model=args.step_summary_model,
+    )
     print(f"HTML report generated at: {out}")
 
 

@@ -177,6 +177,16 @@ python -m eval.cli run \
   --executor-option enable_memory=true
 ```
 
+To generate and persist model-assisted agent step summaries for the per-sample report:
+
+```bash
+python -m eval.cli run \
+  --config eval/configs/gaia_validation.yaml \
+  --summarize-agent-steps \
+  --step-summary-provider gemini \
+  --step-summary-model gemini-3-pro-preview
+```
+
 To skip the automatic HTML report:
 
 ```bash
@@ -196,6 +206,9 @@ HTML report bundle for that run:
 - `report.html`
 - `report_samples/<index>_<sample_id>.html`
 
+Pass `--summarize-agent-steps` to regenerate persisted agent-step summaries in
+`samples.jsonl` before rebuilding the report.
+
 ## 5. Generate or regenerate an HTML report manually
 
 ```bash
@@ -212,10 +225,13 @@ The report command now generates a static multipage bundle:
 
 Each sample row in the summary page links to a dedicated detail page containing:
 - prompt, ground truth, prediction, and score diagnostics
-- GAIA sample metadata and annotator steps when present
+- GAIA sample metadata plus side-by-side annotator vs. agent execution comparison
 - usage snapshots, warnings, and staged attachments when present
 - matched error records and a curated event timeline
 - raw event JSON behind a collapsible `<details>` block
+
+Use `--summarize-agent-steps` on `report` or `summarize` to generate and persist
+PromptFunction-based agent step summaries before the HTML bundle is built.
 
 ## 6. Alternate entrypoint
 
