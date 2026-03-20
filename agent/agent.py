@@ -27,7 +27,9 @@ from .agent_types import (
     AgentState,
     AgentTool,
     AgentToolResult,
+    ThinkingContent,
     ThinkingLevel,
+    ToolCallContent,
     TextContent,
     ImageContent,
 )
@@ -58,13 +60,68 @@ def _default_convert_to_llm(messages: List[AgentMessage]) -> Awaitable[List[dict
     they are not echoed back into the model context because they can
     dramatically inflate token usage without helping the next turn.
     """
+    def _sanitize_content_item(item: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(item, TextContent):
+            return {"type": "text", "text": str(item.text or "")}
+        if isinstance(item, ToolCallContent):
+            arguments = item.arguments if isinstance(item.arguments, dict) else {}
+            return {
+                "type": "toolCall",
+                "id": str(item.id or ""),
+                "name": str(item.name or ""),
+                "arguments": dict(arguments),
+            }
+        if isinstance(item, ImageContent):
+            return {
+                "type": "image",
+                "data": item.data,
+                "mime_type": str(item.mime_type or "image/png"),
+            }
+        if isinstance(item, ThinkingContent):
+            return None
+        if dataclasses.is_dataclass(item):
+            try:
+                return _sanitize_content_item(dataclasses.asdict(item))
+            except Exception:
+                return None
+        if isinstance(item, dict):
+            item_type = str(item.get("type") or "").strip()
+            if item_type == "text":
+                return {"type": "text", "text": str(item.get("text") or "")}
+            if item_type == "toolCall":
+                arguments = item.get("arguments")
+                return {
+                    "type": "toolCall",
+                    "id": str(item.get("id") or ""),
+                    "name": str(item.get("name") or ""),
+                    "arguments": dict(arguments) if isinstance(arguments, dict) else {},
+                }
+            if item_type == "image":
+                return {
+                    "type": "image",
+                    "data": item.get("data", b""),
+                    "mime_type": str(item.get("mime_type") or "image/png"),
+                }
+            if item_type == "thinking":
+                return None
+            return None
+        text = str(item or "")
+        if not text:
+            return None
+        return {"type": "text", "text": text}
+
     llm_msgs: List[dict] = []
     for m in messages:
         if m.role in {"user", "assistant", "toolResult"}:
             try:
+                content: List[Dict[str, Any]] = []
+                for item in m.content:
+                    sanitized = _sanitize_content_item(item)
+                    if sanitized is not None:
+                        content.append(sanitized)
                 payload: Dict[str, Any] = {
                     "role": m.role,
-                    "content": [dataclasses.asdict(item) for item in m.content],
+                    "content": content,
                 }
                 if m.role == "toolResult":
                     if m.tool_call_id is not None:
@@ -74,9 +131,14 @@ def _default_convert_to_llm(messages: List[AgentMessage]) -> Awaitable[List[dict
                 llm_msgs.append(payload)
             except Exception:
                 # Fallback: best effort conversion
+                fallback_content: List[Dict[str, Any]] = []
+                for item in m.content:
+                    sanitized = _sanitize_content_item(item)
+                    if sanitized is not None:
+                        fallback_content.append(sanitized)
                 llm_msgs.append({
                     "role": m.role,
-                    "content": [vars(c) for c in m.content],
+                    "content": fallback_content,
                 })
     async def _return():
         return llm_msgs

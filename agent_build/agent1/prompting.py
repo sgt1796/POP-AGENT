@@ -60,6 +60,15 @@ def build_system_prompt(
     )
     lines.append("Use file_read for attachments and structured files before falling back to shell file reads.")
     lines.append("Prefer file_read for downloaded local documents and text-like files when its suffix is supported.")
+    lines.append(
+        "Treat staged attachments, downloaded files, and local scientific text files (.pdb, .cif, .mmcif) as primary evidence before remote fetches."
+    )
+    lines.append(
+        "For attached or downloaded scientific text files, use bounded local reads first with file_read, then allowed local shell reads only if needed."
+    )
+    lines.append(
+        "Do not fetch a remote copy or snapshot of a file that already exists locally unless the local path fails or is clearly incomplete."
+    )
     lines.append("Use file_write for creating files, writing text, and replacing words in text files.")
     lines.append(
         "Use task_scheduler when the user asks to run work later or on a recurring cadence "
@@ -100,6 +109,9 @@ def build_system_prompt(
     lines.append("After a hard bash_exec block, switch tools instead of retrying shell syntax variants.")
     lines.append(
         "If search results drift to irrelevant sites, tighten the query or add search_domain_filter instead of repeating broad searches."
+    )
+    lines.append(
+        "If you already have an exact local file path or exact document identifier, do not use generic web search to rediscover the same source."
     )
     lines.append("Do not use search tools as calculators or ask them to execute code for you.")
     lines.append(

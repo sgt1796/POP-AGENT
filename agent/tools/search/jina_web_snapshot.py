@@ -31,12 +31,13 @@ def _to_int(value: Any, default: int) -> int:
 
 class JinaWebSnapshotTool(AgentTool):
     name = "jina_web_snapshot"
-    description = "Fetch a text snapshot of a webpage using POP.utils.web_snapshot."
+    description = "Fetch a bounded text snapshot for a known webpage URL using POP.utils.web_snapshot."
     parameters = {
         "type": "object",
         "properties": {
             "web_url": {"type": "string", "description": "URL to snapshot"},
             "url": {"type": "string", "description": "Alias for web_url"},
+            "max_chars": {"type": "integer", "description": "Optional max returned characters for the snapshot text."},
             "use_api_key": {"type": "boolean"},
             "return_format": {"type": "string"},
             "timeout": {"type": "number"},
@@ -96,6 +97,7 @@ class JinaWebSnapshotTool(AgentTool):
             "image_caption": _to_bool(params.get("image_caption"), False),
             "cookie": params.get("cookie"),
         }
+        max_chars = max(1, _to_int(params.get("max_chars"), 12_000))
         try:
             snapshot = websnapshot.get_text_snapshot(web_url=web_url, **kwargs)
         except Exception as exc:
@@ -103,7 +105,20 @@ class JinaWebSnapshotTool(AgentTool):
                 f"jina_web_snapshot error: {exc}",
                 {"error": str(exc), "url": web_url},
             )
-        return self._ok(str(snapshot), {"url": web_url})
+        snapshot_text = str(snapshot)
+        char_count = len(snapshot_text)
+        truncated = char_count > max_chars
+        if truncated:
+            snapshot_text = snapshot_text[:max_chars]
+        return self._ok(
+            snapshot_text,
+            {
+                "url": web_url,
+                "char_count": char_count,
+                "truncated": truncated,
+                "max_chars": max_chars,
+            },
+        )
 
 
 # Backward-compatible class name.

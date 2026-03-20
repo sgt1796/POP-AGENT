@@ -5,6 +5,10 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from ...agent_types import AgentTool, AgentToolResult, TextContent
 
+_DEFAULT_MAX_RESULTS = 3
+_DEFAULT_MAX_TOKENS_PER_PAGE = 1024
+_RENDER_RESULT_LIMIT = 3
+_SNIPPET_CHAR_LIMIT = 280
 _VALID_RECENCY = {"day", "week", "month", "year"}
 _DATE_FIELDS = (
     "from_date",
@@ -53,6 +57,15 @@ def _first_non_empty(source: Any, keys: Iterable[str]) -> str:
         if text:
             return text
     return ""
+
+
+def _truncate_text(value: str, limit: int) -> str:
+    text = str(value or "").strip()
+    if limit <= 0 or len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[: limit - 3].rstrip() + "..."
 
 
 class PerplexitySearchTool(AgentTool):
@@ -104,14 +117,16 @@ class PerplexitySearchTool(AgentTool):
         filters: Dict[str, Any] = {}
 
         max_results = _to_optional_positive_int(params.get("max_results"), "max_results")
-        if max_results is not None:
-            payload["max_results"] = max_results
-            filters["max_results"] = max_results
+        if max_results is None:
+            max_results = _DEFAULT_MAX_RESULTS
+        payload["max_results"] = max_results
+        filters["max_results"] = max_results
 
         max_tokens_per_page = _to_optional_positive_int(params.get("max_tokens_per_page"), "max_tokens_per_page")
-        if max_tokens_per_page is not None:
-            payload["max_tokens_per_page"] = max_tokens_per_page
-            filters["max_tokens_per_page"] = max_tokens_per_page
+        if max_tokens_per_page is None:
+            max_tokens_per_page = _DEFAULT_MAX_TOKENS_PER_PAGE
+        payload["max_tokens_per_page"] = max_tokens_per_page
+        filters["max_tokens_per_page"] = max_tokens_per_page
 
         country = _to_text(params.get("country"))
         if country:
@@ -178,17 +193,15 @@ class PerplexitySearchTool(AgentTool):
             return f"No results returned for query: {query}"
 
         lines: List[str] = [f"Perplexity search results for: {query}", ""]
-        for idx, item in enumerate(results, start=1):
+        for idx, item in enumerate(results[:_RENDER_RESULT_LIMIT], start=1):
             title = item.get("title") or "(untitled)"
             lines.append(f"{idx}. {title}")
             if item.get("url"):
                 lines.append(f"   URL: {item['url']}")
             if item.get("date"):
                 lines.append(f"   Date: {item['date']}")
-            if item.get("updated_date"):
-                lines.append(f"   Updated: {item['updated_date']}")
             if item.get("snippet"):
-                lines.append(f"   Snippet: {item['snippet']}")
+                lines.append(f"   Snippet: {_truncate_text(str(item['snippet']), _SNIPPET_CHAR_LIMIT)}")
         return "\n".join(lines).strip()
 
     async def execute(
