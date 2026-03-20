@@ -240,6 +240,10 @@ def test_generate_html_report_builds_bundle(tmp_path: Path):
     assert "report_samples/0001_sample-ok.html" in summary_html
     assert "Score Reason" in summary_html
     assert "Provider / Model" in summary_html
+    assert "Correlation Overview" in summary_html
+    assert "Outcome Cohorts" in summary_html
+    assert "Failure Causes" in summary_html
+    assert "Level Breakdown" in summary_html
 
     ok_html = (sample_dir / "0001_sample-ok.html").read_text(encoding="utf-8")
     assert "Prompt A" in ok_html
@@ -254,10 +258,12 @@ def test_generate_html_report_builds_bundle(tmp_path: Path):
     assert "Mar 18, 2026 20:01:00" in ok_html
     assert "warning text" in ok_html
     assert "Show raw event JSON" in ok_html
+    assert "Failure Analysis" in ok_html
 
     error_html = (sample_dir / "0002_sample-error.html").read_text(encoding="utf-8")
     assert "timeout after 180s" in error_html
     assert "network unavailable" in error_html
+    assert "Failure Analysis" in error_html
 
 
 def test_generate_html_report_tolerates_missing_optional_artifacts(tmp_path: Path):
@@ -284,6 +290,7 @@ def test_generate_html_report_accepts_zip_input(tmp_path: Path):
     assert out == str(output_path.resolve())
     assert output_path.exists()
     assert (tmp_path / "zip_report_samples").exists()
+    assert "Correlation Overview" in output_path.read_text(encoding="utf-8")
 
 
 def test_generate_html_report_summarizes_agent_steps_and_persists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -349,8 +356,8 @@ def test_generate_html_report_summary_overrides_provider_and_model(tmp_path: Pat
         str(run_dir),
         str(output_path),
         summarize_agent_steps=True,
-        step_summary_provider="openai",
-        step_summary_model="gpt-5-mini",
+        summary_provider="openai",
+        summary_model="gpt-5-mini",
     )
 
     assert _FakePromptFunction.init_clients == ["openai"]
@@ -405,6 +412,37 @@ def test_generate_html_report_marks_summary_failures_without_aborting(tmp_path: 
         if line.strip()
     ]
     assert samples[0]["result"]["agent_execution_summary"]["error"] == "prompt failure"
+
+
+def test_generate_html_report_hides_level_breakdown_without_level_metadata(tmp_path: Path):
+    run_dir = _create_run_dir(tmp_path, include_optional=True, persisted_summary=False)
+    samples = [
+        json.loads(line)
+        for line in (run_dir / "samples.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    for sample in samples:
+        if isinstance(sample.get("metadata"), dict):
+            sample["metadata"].pop("Level", None)
+    _write_jsonl(run_dir / "samples.jsonl", samples)
+
+    output_path = tmp_path / "report.html"
+    generate_html_report(str(run_dir), str(output_path))
+
+    html = output_path.read_text(encoding="utf-8")
+    assert "Correlation Overview" in html
+    assert "Level Breakdown" not in html
+
+
+def test_generate_html_report_rejects_zip_input_when_summarizing_failure_causes(tmp_path: Path):
+    run_dir = _create_run_dir(tmp_path / "src", include_optional=True)
+    zip_path = tmp_path / "run.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for file_path in run_dir.iterdir():
+            zf.write(file_path, arcname=f"archived-run/{file_path.name}")
+
+    with pytest.raises(ValueError, match="--summarize-failure-causes"):
+        generate_html_report(str(zip_path), str(tmp_path / "zip_report.html"), summarize_failure_causes=True)
 
 
 def test_generate_html_report_rejects_zip_input_when_summarizing(tmp_path: Path):

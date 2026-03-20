@@ -177,9 +177,9 @@ python -m eval.cli run \
   --executor-option enable_memory=true
 ```
 
-Eval runs default to `enable_memory=false` and `enable_auto_title=false` so each
-sample shuts down cleanly without carrying chat-runtime background work. Re-enable
-either option explicitly if you need that behavior during benchmarking.
+Eval runs default to `enable_memory=true` and `enable_auto_title=false`, so
+per-sample memory artifacts are preserved while auto-title background work stays
+disabled during benchmarking.
 
 To generate and persist model-assisted agent step summaries for the per-sample report:
 
@@ -187,9 +187,29 @@ To generate and persist model-assisted agent step summaries for the per-sample r
 python -m eval.cli run \
   --config eval/configs/gaia_validation.yaml \
   --summarize-agent-steps \
-  --step-summary-provider gemini \
-  --step-summary-model gemini-3-pro-preview
+  --summary-provider gemini \
+  --summary-model gemini-3-pro-preview
 ```
+
+To add optional PromptFunction summaries for ambiguous non-correct samples:
+
+```bash
+python -m eval.cli run \
+  --config eval/configs/gaia_validation.yaml \
+  --summarize-failure-causes \
+  --summary-provider gemini \
+  --summary-model gemini-3-pro-preview
+```
+
+Deterministic run analysis now persists automatically after each run, even when
+`--no-report` is used. It adds:
+- `result.failure_analysis` to non-correct samples in `samples.jsonl`
+- `metrics.analysis` to `summary.json`
+- correlation, cohort, and failure-cause aggregates to `summary.md`
+
+`--summary-provider` and `--summary-model` are shared by both agent-step
+summaries and failure-cause summaries, so one provider/model pair configures all
+PromptFunction-based eval summarization.
 
 To skip the automatic HTML report:
 
@@ -213,6 +233,10 @@ HTML report bundle for that run:
 Pass `--summarize-agent-steps` to regenerate persisted agent-step summaries in
 `samples.jsonl` before rebuilding the report.
 
+Pass `--summarize-failure-causes` to regenerate optional PromptFunction-based
+failure summaries for low-confidence non-correct samples before rebuilding the
+report.
+
 ## 5. Generate or regenerate an HTML report manually
 
 ```bash
@@ -229,6 +253,7 @@ The report command now generates a static multipage bundle:
 
 Each sample row in the summary page links to a dedicated detail page containing:
 - prompt, ground truth, prediction, and score diagnostics
+- deterministic failure analysis for non-correct samples, plus optional AI summaries
 - GAIA sample metadata plus side-by-side annotator vs. agent execution comparison
 - usage snapshots, warnings, and staged attachments when present
 - matched error records and a curated event timeline
@@ -236,6 +261,15 @@ Each sample row in the summary page links to a dedicated detail page containing:
 
 Use `--summarize-agent-steps` on `report` or `summarize` to generate and persist
 PromptFunction-based agent step summaries before the HTML bundle is built.
+
+Use `--summarize-failure-causes` on `run`, `summarize`, or `report` to generate
+and persist optional PromptFunction-based summaries for ambiguous failures.
+
+The summary page now leads with benchmark-agnostic analysis:
+- correlation overview for correctness, runtime errors, tokens, latency, calls, and distinct tools
+- cohort tables comparing correct, incorrect, and runtime-error samples
+- aggregated failure-cause counts
+- an optional secondary level breakdown when the benchmark exposes usable level metadata
 
 ## 6. Alternate entrypoint
 

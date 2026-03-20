@@ -11,7 +11,7 @@ concurrency: 0
 benchmark_options: 
   shuffle: true
 executor_options:
-  enable_memory: false
+  enable_memory: true
   enable_auto_title: false
   bash_prompt_approval: false
   log_level: simple

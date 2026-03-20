@@ -57,6 +57,7 @@ def test_cli_run_and_summarize_smoke(monkeypatch, tmp_path: Path, capsys):
     summarize_output = capsys.readouterr().out
     payload = json.loads(summarize_output)
     assert payload["run_id"]
+    assert "analysis" in payload["metrics"]
     assert report_path.exists()
     assert sample_pages_dir.exists()
     assert any(sample_pages_dir.iterdir())
@@ -259,6 +260,47 @@ def test_cli_report_writes_custom_bundle(monkeypatch, tmp_path: Path):
     assert any(sample_pages_dir.iterdir())
 
 
+def test_cli_run_forwards_failure_cause_flags(monkeypatch, tmp_path: Path, capsys):
+    config_path = tmp_path / "cfg.json"
+    config_path.write_text("{}", encoding="utf-8")
+    captured = {}
+
+    def _fake_run_evaluation(config, progress_callback=None):
+        captured["config"] = config
+        del progress_callback
+        return SimpleNamespace(run_dir=str(tmp_path / "runs" / "run1"), accuracy=1.0, correct=1, total=1, error_count=0)
+
+    def _fake_generate_default_run_report(run_dir, **kwargs):
+        captured["run_dir"] = run_dir
+        captured.update(kwargs)
+        return str(tmp_path / "runs" / "run1" / "report.html")
+
+    monkeypatch.setattr(cli, "run_evaluation", _fake_run_evaluation)
+    monkeypatch.setattr(cli, "_generate_default_run_report", _fake_generate_default_run_report)
+
+    exit_code = cli.main(
+        [
+            "run",
+            "--config",
+            str(config_path),
+            "--summarize-failure-causes",
+            "--summary-provider",
+            "openai",
+            "--summary-model",
+            "gpt-5-mini",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["config"].summarize_failure_causes is True
+    assert captured["config"].summary_provider == "openai"
+    assert captured["config"].summary_model == "gpt-5-mini"
+    assert captured["summarize_failure_causes"] is True
+    assert captured["summary_provider"] == "openai"
+    assert captured["summary_model"] == "gpt-5-mini"
+    capsys.readouterr()
+
+
 def test_cli_run_forwards_step_summary_flags(monkeypatch, tmp_path: Path, capsys):
     config_path = tmp_path / "cfg.json"
     config_path.write_text("{}", encoding="utf-8")
@@ -282,17 +324,17 @@ def test_cli_run_forwards_step_summary_flags(monkeypatch, tmp_path: Path, capsys
             "--config",
             str(config_path),
             "--summarize-agent-steps",
-            "--step-summary-provider",
+            "--summary-provider",
             "openai",
-            "--step-summary-model",
+            "--summary-model",
             "gpt-5-mini",
         ]
     )
 
     assert exit_code == 0
     assert captured["summarize_agent_steps"] is True
-    assert captured["step_summary_provider"] == "openai"
-    assert captured["step_summary_model"] == "gpt-5-mini"
+    assert captured["summary_provider"] == "openai"
+    assert captured["summary_model"] == "gpt-5-mini"
     assert captured["run_dir"].endswith("run1")
     capsys.readouterr()
 
@@ -313,9 +355,9 @@ def test_cli_summarize_forwards_step_summary_flags(monkeypatch, capsys):
             "--run-dir",
             "eval/runs/run123",
             "--summarize-agent-steps",
-            "--step-summary-provider",
+            "--summary-provider",
             "gemini",
-            "--step-summary-model",
+            "--summary-model",
             "gemini-3-pro-preview",
         ]
     )
@@ -323,8 +365,8 @@ def test_cli_summarize_forwards_step_summary_flags(monkeypatch, capsys):
     assert exit_code == 0
     assert captured["run_dir"] == "eval/runs/run123"
     assert captured["summarize_agent_steps"] is True
-    assert captured["step_summary_provider"] == "gemini"
-    assert captured["step_summary_model"] == "gemini-3-pro-preview"
+    assert captured["summary_provider"] == "gemini"
+    assert captured["summary_model"] == "gemini-3-pro-preview"
     printed = json.loads(capsys.readouterr().out)
     assert printed["run_id"] == "run123"
 
@@ -349,9 +391,9 @@ def test_cli_report_forwards_step_summary_flags(monkeypatch, tmp_path: Path, cap
             "--output",
             str(output_path),
             "--summarize-agent-steps",
-            "--step-summary-provider",
+            "--summary-provider",
             "openai",
-            "--step-summary-model",
+            "--summary-model",
             "gpt-5-mini",
         ]
     )
@@ -360,6 +402,74 @@ def test_cli_report_forwards_step_summary_flags(monkeypatch, tmp_path: Path, cap
     assert captured["run_dir"] == "eval/runs/run123"
     assert captured["output"] == str(output_path)
     assert captured["summarize_agent_steps"] is True
-    assert captured["step_summary_provider"] == "openai"
-    assert captured["step_summary_model"] == "gpt-5-mini"
+    assert captured["summary_provider"] == "openai"
+    assert captured["summary_model"] == "gpt-5-mini"
+    assert "custom_report.html" in capsys.readouterr().out
+
+
+def test_cli_summarize_forwards_failure_cause_flags(monkeypatch, capsys):
+    captured = {}
+
+    def _fake_summarize_run(run_dir, **kwargs):
+        captured["run_dir"] = run_dir
+        captured.update(kwargs)
+        return {"run_id": "run123"}
+
+    monkeypatch.setattr(cli, "summarize_run", _fake_summarize_run)
+
+    exit_code = cli.main(
+        [
+            "summarize",
+            "--run-dir",
+            "eval/runs/run123",
+            "--summarize-failure-causes",
+            "--summary-provider",
+            "gemini",
+            "--summary-model",
+            "gemini-3-pro-preview",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["run_dir"] == "eval/runs/run123"
+    assert captured["summarize_failure_causes"] is True
+    assert captured["summary_provider"] == "gemini"
+    assert captured["summary_model"] == "gemini-3-pro-preview"
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["run_id"] == "run123"
+
+
+def test_cli_report_forwards_failure_cause_flags(monkeypatch, tmp_path: Path, capsys):
+    captured = {}
+    output_path = tmp_path / "custom_report.html"
+
+    def _fake_generate_html_report(run_dir, output, **kwargs):
+        captured["run_dir"] = run_dir
+        captured["output"] = output
+        captured.update(kwargs)
+        return str(output_path)
+
+    monkeypatch.setattr(cli, "generate_html_report", _fake_generate_html_report)
+
+    exit_code = cli.main(
+        [
+            "report",
+            "--run-dir",
+            "eval/runs/run123",
+            "--output",
+            str(output_path),
+            "--summarize-failure-causes",
+            "--summary-provider",
+            "openai",
+            "--summary-model",
+            "gpt-5-mini",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["run_dir"] == "eval/runs/run123"
+    assert captured["output"] == str(output_path)
+    assert captured["summarize_failure_causes"] is True
+    assert captured["summary_provider"] == "openai"
+    assert captured["summary_model"] == "gpt-5-mini"
     assert "custom_report.html" in capsys.readouterr().out

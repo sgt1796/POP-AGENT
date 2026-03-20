@@ -99,7 +99,54 @@ class JsonArtifactWriter:
         if not isinstance(metrics, dict) or not metrics:
             lines.append("(no additional metrics)")
         else:
+            analysis = metrics.get("analysis") if isinstance(metrics.get("analysis"), dict) else {}
             for key in sorted(metrics.keys()):
+                if key == "analysis":
+                    continue
                 lines.append(f"- `{key}`: `{metrics[key]}`")
+            if analysis:
+                lines.extend(
+                    [
+                        "",
+                        "## Analysis",
+                        "",
+                        f"- Factors: `{', '.join(str(item) for item in analysis.get('factor_names', []))}`",
+                    ]
+                )
+                correlations = [item for item in analysis.get("correlations", []) if isinstance(item, dict) and item.get("r") is not None]
+                correlations.sort(key=lambda item: abs(float(item.get("r", 0.0))), reverse=True)
+                if correlations:
+                    lines.append("- Top correlations:")
+                    for item in correlations[:5]:
+                        lines.append(
+                            f"  - `{item.get('x')}` vs `{item.get('y')}`: `r={float(item.get('r', 0.0)):.4f}` over `{item.get('n', 0)}` samples"
+                        )
+                cohorts = analysis.get("cohorts") if isinstance(analysis.get("cohorts"), dict) else {}
+                if cohorts:
+                    lines.append("- Cohorts:")
+                    for cohort_name in ("correct", "incorrect", "runtime_error"):
+                        cohort = cohorts.get(cohort_name)
+                        if not isinstance(cohort, dict):
+                            continue
+                        lines.append(
+                            "  - "
+                            f"`{cohort_name}` count=`{cohort.get('count', 0)}` avg_tokens=`{self._fmt_markdown_number(cohort.get('avg_total_tokens'))}` "
+                            f"avg_latency_ms=`{self._fmt_markdown_number(cohort.get('avg_latency_ms'))}` avg_calls=`{self._fmt_markdown_number(cohort.get('avg_call_count'))}`"
+                        )
+                failure_causes = analysis.get("failure_causes") if isinstance(analysis.get("failure_causes"), dict) else {}
+                if failure_causes:
+                    lines.append(f"- Non-correct samples: `{failure_causes.get('total_non_correct', 0)}`")
+                    for scope in ("runtime_error", "incorrect"):
+                        rows = [item for item in failure_causes.get(scope, []) if isinstance(item, dict)]
+                        if not rows:
+                            continue
+                        rendered = ", ".join(f"{item.get('cause')}={item.get('count')}" for item in rows)
+                        lines.append(f"- {scope}: `{rendered}`")
 
         return "\n".join(lines) + "\n"
+
+    def _fmt_markdown_number(self, value: Any) -> str:
+        try:
+            return f"{float(value):.1f}"
+        except Exception:
+            return str(value)

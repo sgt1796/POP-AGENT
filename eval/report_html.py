@@ -22,6 +22,12 @@ from eval.agent_step_summary import (
     persist_agent_execution_summaries,
     resolve_result_timing,
 )
+from eval.run_analysis import (
+    analyze_run_artifacts,
+    build_run_analysis,
+    has_persisted_run_analysis,
+    persist_run_analysis,
+)
 
 
 BASE_STYLE = """
@@ -78,9 +84,11 @@ class SampleView:
     latency_ms: float
     total_tokens: int
     call_count: int
+    distinct_tool_count: int
     provider_model: str
     warning_count: int
     error: str
+    failure_analysis: Dict[str, Any]
     note_text: str
     prompt: str
     ground_truth: str
@@ -116,8 +124,9 @@ def _prepare_run_artifacts(
     run_dir_or_zip: str,
     *,
     summarize_agent_steps: bool = False,
-    step_summary_provider: Optional[str] = None,
-    step_summary_model: Optional[str] = None,
+    summary_provider: Optional[str] = None,
+    summary_model: Optional[str] = None,
+    summarize_failure_causes: bool = False,
 ) -> RunArtifacts:
     source = str(run_dir_or_zip or "").strip()
     if source.lower().endswith(".zip"):
@@ -125,7 +134,19 @@ def _prepare_run_artifacts(
             raise ValueError(
                 "--summarize-agent-steps is not supported for zip inputs because report generation needs to rewrite samples.jsonl."
             )
-        return _read_run_data_from_zip(source)
+        if summarize_failure_causes:
+            raise ValueError(
+                "--summarize-failure-causes is not supported for zip inputs because report generation needs to rewrite samples.jsonl."
+            )
+        artifacts = _read_run_data_from_zip(source)
+        if not has_persisted_run_analysis(artifacts.summary, artifacts.samples):
+            artifacts.summary, artifacts.samples, _analysis = analyze_run_artifacts(
+                artifacts.summary,
+                artifacts.samples,
+                artifacts.manifest,
+                artifacts.events_by_sample,
+            )
+        return artifacts
 
     artifacts = _read_run_data_from_dir(source)
     if summarize_agent_steps:
@@ -134,8 +155,19 @@ def _prepare_run_artifacts(
             samples=artifacts.samples,
             manifest=artifacts.manifest,
             events_by_sample=artifacts.events_by_sample,
-            provider_override=step_summary_provider,
-            model_override=step_summary_model,
+            provider_override=summary_provider,
+            model_override=summary_model,
+        )
+    if summarize_failure_causes or not has_persisted_run_analysis(artifacts.summary, artifacts.samples):
+        artifacts.summary, artifacts.samples, _analysis = persist_run_analysis(
+            source,
+            summary=artifacts.summary,
+            samples=artifacts.samples,
+            manifest=artifacts.manifest,
+            events_by_sample=artifacts.events_by_sample,
+            summarize_failure_causes=summarize_failure_causes,
+            summary_provider=summary_provider,
+            summary_model=summary_model,
         )
     return artifacts
 
@@ -293,6 +325,7 @@ def _build_sample_views(artifacts: RunArtifacts, sample_dir_name: str) -> List[S
         sample_events = list(artifacts.events_by_sample.get(str(sample_record.get("sample_id") or f"sample-{index}"), []))
         agent_execution_summary = normalize_agent_execution_summary(result.get("agent_execution_summary"))
         agent_tool_names = list(agent_execution_summary.get("tool_names") or collect_distinct_tool_names(sample_events))
+        failure_analysis = result.get("failure_analysis") if isinstance(result.get("failure_analysis"), dict) else {}
         agent_started_at, agent_ended_at = resolve_result_timing(sample_record, sample_events)
         sample_id = str(sample_record.get("sample_id") or f"sample-{index}")
         status = str(result.get("status", "unknown"))
@@ -308,7 +341,8 @@ def _build_sample_views(artifacts: RunArtifacts, sample_dir_name: str) -> List[S
         model = str(usage_last.get("model") or model_hint[1]).strip()
         provider_model = " / ".join(part for part in [provider, model] if part)
         error_text = _clean_text(result.get("error"))
-        note_text = error_text or (f"{len(warnings)} warning(s)" if warnings else "")
+        cause_text = _humanize_failure_cause(failure_analysis)
+        note_text = error_text or cause_text or (f"{len(warnings)} warning(s)" if warnings else "")
         slug = _slugify(sample_id)
         sample_views.append(
             SampleView(
@@ -328,9 +362,11 @@ def _build_sample_views(artifacts: RunArtifacts, sample_dir_name: str) -> List[S
                 latency_ms=_to_float(result.get("latency_ms")),
                 total_tokens=_to_int(usage_delta.get("total_tokens")),
                 call_count=_to_int(usage_delta.get("calls")),
+                distinct_tool_count=len(agent_tool_names),
                 provider_model=provider_model,
                 warning_count=len(warnings),
                 error=error_text,
+                failure_analysis=failure_analysis,
                 note_text=note_text,
                 prompt=str(sample_record.get("prompt") or ""),
                 ground_truth=str(sample_record.get("ground_truth") or ""),
@@ -372,7 +408,7 @@ def _manifest_model_hint(manifest: Dict[str, Any]) -> Tuple[str, str]:
 
 
 def _aggregate_metrics(samples: Iterable[SampleView]) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
-    overall = {"total": 0, "correct": 0, "error_count": 0, "latencies": [], "tokens": [], "calls": []}
+    overall = {"total": 0, "correct": 0, "error_count": 0, "latencies": [], "tokens": [], "calls": [], "tools": []}
     by_level: Dict[str, Dict[str, Any]] = {}
     for sample in samples:
         overall["total"] += 1
@@ -383,9 +419,10 @@ def _aggregate_metrics(samples: Iterable[SampleView]) -> Tuple[Dict[str, Any], D
         overall["latencies"].append(sample.latency_ms)
         overall["tokens"].append(sample.total_tokens)
         overall["calls"].append(sample.call_count)
+        overall["tools"].append(sample.distinct_tool_count)
         bucket = by_level.setdefault(
             sample.level,
-            {"total": 0, "correct": 0, "error_count": 0, "latencies": [], "tokens": [], "calls": []},
+            {"total": 0, "correct": 0, "error_count": 0, "latencies": [], "tokens": [], "calls": [], "tools": []},
         )
         bucket["total"] += 1
         if sample.correct:
@@ -395,6 +432,7 @@ def _aggregate_metrics(samples: Iterable[SampleView]) -> Tuple[Dict[str, Any], D
         bucket["latencies"].append(sample.latency_ms)
         bucket["tokens"].append(sample.total_tokens)
         bucket["calls"].append(sample.call_count)
+        bucket["tools"].append(sample.distinct_tool_count)
 
     def derive(metrics: Dict[str, Any]) -> None:
         total = metrics["total"]
@@ -406,6 +444,7 @@ def _aggregate_metrics(samples: Iterable[SampleView]) -> Tuple[Dict[str, Any], D
         metrics["median_tokens"] = float(statistics.median(metrics["tokens"])) if metrics["tokens"] else 0.0
         metrics["max_tokens"] = float(max(metrics["tokens"])) if metrics["tokens"] else 0.0
         metrics["avg_calls"] = float(statistics.mean(metrics["calls"])) if metrics["calls"] else 0.0
+        metrics["avg_tools"] = float(statistics.mean(metrics["tools"])) if metrics["tools"] else 0.0
 
     derive(overall)
     for item in by_level.values():
@@ -627,6 +666,27 @@ def _format_tool_name_list(tool_names: List[str]) -> str:
     return "\n".join(lines)
 
 
+def _humanize_failure_cause(value: Dict[str, Any]) -> str:
+    cause = str((value or {}).get("primary_cause") or "").strip()
+    if not cause:
+        return ""
+    return " ".join(part.capitalize() for part in cause.split("_"))
+
+
+def _failure_confidence_label(value: Dict[str, Any]) -> str:
+    confidence = str((value or {}).get("confidence") or "").strip()
+    return confidence.capitalize() if confidence else "n/a"
+
+
+def _failure_tone(value: Dict[str, Any]) -> str:
+    scope = str((value or {}).get("scope") or "").strip()
+    if scope == "runtime_error":
+        return "danger"
+    if scope == "incorrect":
+        return "warning"
+    return "neutral"
+
+
 def _render_agent_steps(sample: SampleView) -> str:
     summary = sample.agent_execution_summary
     steps = summary.get("steps") if isinstance(summary.get("steps"), list) else []
@@ -673,6 +733,23 @@ def _usage_panels(sample: SampleView) -> str:
     ]:
         panels.append(f'<article class="subpanel"><h3>{_escape(title)}</h3>{_json_block(value)}</article>')
     return '<div class="subpanel-grid">' + "".join(panels) + "</div>"
+
+
+def _render_failure_analysis(sample: SampleView) -> str:
+    failure = sample.failure_analysis if isinstance(sample.failure_analysis, dict) else {}
+    if not failure:
+        return '<p class="empty">n/a</p>'
+    rows = [
+        ("Scope", _pill(_display(failure.get("scope")).replace("_", " ").upper(), _failure_tone(failure))),
+        ("Primary Cause", _escape(_humanize_failure_cause(failure) or "n/a")),
+        ("Confidence", _escape(_failure_confidence_label(failure))),
+        ("Source", _escape(_display(failure.get("source")))),
+        ("Evidence", _string_list([str(item).strip() for item in failure.get("evidence", []) if str(item).strip()] if isinstance(failure.get("evidence"), list) else [])),
+        ("AI Summary", _multiline_value(failure.get("ai_summary"))),
+        ("Summary Model", _escape(_display(failure.get("summary_model")))),
+        ("Summary Error", _escape(_display(failure.get("summary_error")))),
+    ]
+    return _kv_table(rows)
 
 
 def _event_summary(event_record: Dict[str, Any]) -> Tuple[str, str, str]:
@@ -748,6 +825,87 @@ def _timeline(sample: SampleView) -> str:
     return '<div class="timeline">' + "".join(items) + f'</div><details class="raw-toggle"><summary>Show raw event JSON</summary><pre>{_escape(raw)}</pre></details>'
 
 
+def _correlation_matrix_table(run_analysis: Dict[str, Any]) -> str:
+    factor_names = [str(item).strip() for item in run_analysis.get("factor_names", []) if str(item).strip()]
+    correlations = run_analysis.get("correlations") if isinstance(run_analysis.get("correlations"), list) else []
+    lookup: Dict[Tuple[str, str], Any] = {}
+    for item in correlations:
+        if not isinstance(item, dict):
+            continue
+        x_name = str(item.get("x") or "").strip()
+        y_name = str(item.get("y") or "").strip()
+        if not x_name or not y_name:
+            continue
+        lookup[(x_name, y_name)] = item.get("r")
+        lookup[(y_name, x_name)] = item.get("r")
+
+    if not factor_names:
+        return '<p class="empty">n/a</p>'
+
+    header = "<tr><th>Factor</th>" + "".join(f"<th>{_escape(name.replace('_', ' ').title())}</th>" for name in factor_names) + "</tr>"
+    rows = []
+    for x_name in factor_names:
+        cells = [f"<td><strong>{_escape(x_name.replace('_', ' ').title())}</strong></td>"]
+        for y_name in factor_names:
+            if x_name == y_name:
+                cells.append('<td class="mono">1.0000</td>')
+                continue
+            r_value = lookup.get((x_name, y_name))
+            cells.append(f'<td class="mono">{_escape(_fmt_float(r_value, digits=4)) if r_value is not None else "n/a"}</td>')
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    return '<div class="table-shell"><table><thead>' + header + "</thead><tbody>" + "".join(rows) + "</tbody></table></div>"
+
+
+def _cohort_table(run_analysis: Dict[str, Any]) -> str:
+    cohorts = run_analysis.get("cohorts") if isinstance(run_analysis.get("cohorts"), dict) else {}
+    if not cohorts:
+        return '<p class="empty">n/a</p>'
+    rows = []
+    for key in ("correct", "incorrect", "runtime_error"):
+        item = cohorts.get(key) if isinstance(cohorts.get(key), dict) else {}
+        rows.append(
+            "<tr>"
+            f"<td>{_escape(key.replace('_', ' ').title())}</td>"
+            f"<td>{_fmt_int(item.get('count'))}</td>"
+            f"<td>{_fmt_float(item.get('avg_total_tokens'))}</td>"
+            f"<td>{_fmt_float(item.get('median_total_tokens'))}</td>"
+            f"<td>{_fmt_float(item.get('avg_latency_ms'), suffix=' ms')}</td>"
+            f"<td>{_fmt_float(item.get('median_latency_ms'), suffix=' ms')}</td>"
+            f"<td>{_fmt_float(item.get('avg_call_count'))}</td>"
+            f"<td>{_fmt_float(item.get('avg_distinct_tool_count'))}</td>"
+            "</tr>"
+        )
+    return (
+        '<div class="table-shell"><table><thead><tr><th>Cohort</th><th>Count</th><th>Avg Tokens</th><th>Median Tokens</th>'
+        "<th>Avg Latency</th><th>Median Latency</th><th>Avg Calls</th><th>Avg Distinct Tools</th></tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>"
+    )
+
+
+def _failure_causes_table(run_analysis: Dict[str, Any]) -> str:
+    failure_causes = run_analysis.get("failure_causes") if isinstance(run_analysis.get("failure_causes"), dict) else {}
+    rows = []
+    for scope in ("runtime_error", "incorrect"):
+        for item in failure_causes.get(scope, []) if isinstance(failure_causes.get(scope), list) else []:
+            if not isinstance(item, dict):
+                continue
+            rows.append(
+                "<tr>"
+                f"<td>{_escape(scope.replace('_', ' ').title())}</td>"
+                f"<td>{_escape(_humanize_failure_cause({'primary_cause': item.get('cause')}) or 'n/a')}</td>"
+                f"<td>{_fmt_int(item.get('count'))}</td>"
+                "</tr>"
+            )
+    if not rows:
+        return '<p class="empty">n/a</p>'
+    return (
+        '<div class="table-shell"><table><thead><tr><th>Scope</th><th>Primary Cause</th><th>Count</th></tr></thead><tbody>'
+        + "".join(rows)
+        + "</tbody></table></div>"
+    )
+
+
 def _render_doc(title: str, body: str, *, include_chart_js: bool = False, script: str = "") -> str:
     chart_head = '  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>\n' if include_chart_js else ""
     return f"""<!DOCTYPE html>
@@ -764,13 +922,44 @@ def _render_doc(title: str, body: str, *, include_chart_js: bool = False, script
 </html>"""
 
 
-def _chart_script(levels: List[str], by_level: Dict[str, Dict[str, Any]]) -> str:
+def _chart_script(
+    samples: List[SampleView],
+    levels: List[str],
+    by_level: Dict[str, Dict[str, Any]],
+    *,
+    include_level_breakdown: bool,
+) -> str:
+    def scatter_points(x_attr: str, y_attr: str, *, kind: str) -> List[Dict[str, Any]]:
+        points: List[Dict[str, Any]] = []
+        for sample in samples:
+            sample_kind = "runtime_error" if sample.status == "error" else ("correct" if sample.correct else "incorrect")
+            if sample_kind != kind:
+                continue
+            points.append(
+                {
+                    "x": getattr(sample, x_attr),
+                    "y": getattr(sample, y_attr),
+                    "sample_id": sample.sample_id,
+                }
+            )
+        return points
+
     accuracy = [round(by_level[level]["accuracy"] * 100.0, 2) for level in levels]
     latency = [round(by_level[level]["avg_latency_ms"], 2) for level in levels]
     tokens = [round(by_level[level]["avg_tokens"], 2) for level in levels]
     correct = [by_level[level]["correct"] for level in levels]
     errors = [by_level[level]["error_count"] for level in levels]
     incorrect = [max(by_level[level]["total"] - by_level[level]["correct"] - by_level[level]["error_count"], 0) for level in levels]
+    token_latency = {
+        "correct": scatter_points("total_tokens", "latency_ms", kind="correct"),
+        "incorrect": scatter_points("total_tokens", "latency_ms", kind="incorrect"),
+        "runtime_error": scatter_points("total_tokens", "latency_ms", kind="runtime_error"),
+    }
+    calls_tokens = {
+        "correct": scatter_points("call_count", "total_tokens", kind="correct"),
+        "incorrect": scatter_points("call_count", "total_tokens", kind="incorrect"),
+        "runtime_error": scatter_points("call_count", "total_tokens", kind="runtime_error"),
+    }
     template = Template(
         """
 <script>
@@ -779,12 +968,55 @@ def _chart_script(levels: List[str], by_level: Dict[str, Dict[str, Any]]) -> str
     const css = getComputedStyle(document.documentElement);
     const colors = { ink: css.getPropertyValue("--ink").trim() || "#1f2937", muted: css.getPropertyValue("--muted").trim() || "#5b6675", line: css.getPropertyValue("--line").trim() || "rgba(31,41,55,.10)", teal: css.getPropertyValue("--teal").trim() || "#1c7c7d", mint: css.getPropertyValue("--mint").trim() || "#2d8c68", blue: css.getPropertyValue("--blue").trim() || "#356ea9", gold: css.getPropertyValue("--gold").trim() || "#c48824", coral: css.getPropertyValue("--coral").trim() || "#c65b39", sans: css.getPropertyValue("--sans").trim() || "sans-serif" };
     const labels = ${labels}, accuracy = ${accuracy}, latency = ${latency}, tokens = ${tokens}, correct = ${correct}, incorrect = ${incorrect}, errors = ${errors};
+    const tokenLatency = ${token_latency}, callsTokens = ${calls_tokens};
     const intFmt = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }), compactFmt = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
     Chart.defaults.color = colors.muted; Chart.defaults.font.family = colors.sans;
     const plugins = { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 10, color: colors.ink } }, tooltip: { backgroundColor: "rgba(28,33,39,.92)", titleColor: "#fff", bodyColor: "#fff", padding: 12 } };
-    new Chart(document.getElementById("accuracyChart").getContext("2d"), { type: "bar", data: { labels, datasets: [{ label: "Correct", data: correct, backgroundColor: "rgba(45,140,104,.14)", borderColor: colors.mint, borderWidth: 1, stack: "count", borderRadius: 10, maxBarThickness: 42 }, { label: "Incorrect", data: incorrect, backgroundColor: "rgba(196,136,36,.14)", borderColor: colors.gold, borderWidth: 1, stack: "count", borderRadius: 10, maxBarThickness: 42 }, { label: "Errors", data: errors, backgroundColor: "rgba(198,91,57,.14)", borderColor: colors.coral, borderWidth: 1, stack: "count", borderRadius: 10, maxBarThickness: 42 }, { label: "Accuracy", type: "line", data: accuracy, yAxisID: "accuracy", borderColor: colors.teal, backgroundColor: colors.teal, borderWidth: 3, tension: .34, pointRadius: 4, pointHoverRadius: 5 }] }, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false }, plugins, scales: { x: { stacked: true, grid: { display: false }, ticks: { color: colors.muted } }, y: { stacked: true, beginAtZero: true, ticks: { precision: 0, color: colors.muted, callback: v => intFmt.format(v) }, grid: { color: colors.line } }, accuracy: { position: "right", beginAtZero: true, max: 100, grid: { drawOnChartArea: false }, ticks: { color: colors.muted, callback: v => v + "%" } } } } });
-    new Chart(document.getElementById("latencyChart").getContext("2d"), { type: "line", data: { labels, datasets: [{ label: "Avg Latency (ms)", data: latency, fill: true, borderColor: colors.blue, backgroundColor: "rgba(53,110,169,.14)", borderWidth: 3, tension: .35, pointRadius: 4, pointHoverRadius: 5 }] }, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false }, plugins, scales: { x: { grid: { display: false }, ticks: { color: colors.muted } }, y: { beginAtZero: true, ticks: { color: colors.muted, callback: v => compactFmt.format(v) + " ms" }, grid: { color: colors.line } } } } });
-    new Chart(document.getElementById("tokenChart").getContext("2d"), { type: "line", data: { labels, datasets: [{ label: "Avg Tokens", data: tokens, fill: true, borderColor: colors.gold, backgroundColor: "rgba(196,136,36,.14)", borderWidth: 3, tension: .35, pointRadius: 4, pointHoverRadius: 5 }] }, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false }, plugins, scales: { x: { grid: { display: false }, ticks: { color: colors.muted } }, y: { beginAtZero: true, ticks: { color: colors.muted, callback: v => compactFmt.format(v) }, grid: { color: colors.line } } } } });
+    const makeScatter = (id, datasets, xLabel, yLabel) => {
+      const node = document.getElementById(id);
+      if (!node) { return; }
+      new Chart(node.getContext("2d"), {
+        type: "scatter",
+        data: {
+          datasets: datasets,
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            ...plugins,
+            tooltip: {
+              ...plugins.tooltip,
+              callbacks: {
+                label: ctx => {
+                  const point = ctx.raw || {};
+                  return (ctx.dataset.label || "") + ": " + (point.sample_id || "") + " (" + compactFmt.format(point.x || 0) + ", " + compactFmt.format(point.y || 0) + ")";
+                },
+              },
+            },
+          },
+          scales: {
+            x: { title: { display: true, text: xLabel }, ticks: { color: colors.muted, callback: v => compactFmt.format(v) }, grid: { color: colors.line } },
+            y: { title: { display: true, text: yLabel }, ticks: { color: colors.muted, callback: v => compactFmt.format(v) }, grid: { color: colors.line } },
+          },
+        },
+      });
+    };
+    makeScatter("tokenLatencyChart", [
+      { label: "Correct", data: tokenLatency.correct, backgroundColor: "rgba(45,140,104,.70)", borderColor: colors.mint, pointRadius: 5 },
+      { label: "Incorrect", data: tokenLatency.incorrect, backgroundColor: "rgba(196,136,36,.75)", borderColor: colors.gold, pointRadius: 5 },
+      { label: "Runtime Error", data: tokenLatency.runtime_error, backgroundColor: "rgba(198,91,57,.75)", borderColor: colors.coral, pointRadius: 6 },
+    ], "Total Tokens", "Latency (ms)");
+    makeScatter("callsTokensChart", [
+      { label: "Correct", data: callsTokens.correct, backgroundColor: "rgba(45,140,104,.70)", borderColor: colors.mint, pointRadius: 5 },
+      { label: "Incorrect", data: callsTokens.incorrect, backgroundColor: "rgba(196,136,36,.75)", borderColor: colors.gold, pointRadius: 5 },
+      { label: "Runtime Error", data: callsTokens.runtime_error, backgroundColor: "rgba(198,91,57,.75)", borderColor: colors.coral, pointRadius: 6 },
+    ], "Call Count", "Total Tokens");
+    if (${include_level_breakdown}) {
+      new Chart(document.getElementById("levelOutcomeChart").getContext("2d"), { type: "bar", data: { labels, datasets: [{ label: "Correct", data: correct, backgroundColor: "rgba(45,140,104,.14)", borderColor: colors.mint, borderWidth: 1, stack: "count", borderRadius: 10, maxBarThickness: 42 }, { label: "Incorrect", data: incorrect, backgroundColor: "rgba(196,136,36,.14)", borderColor: colors.gold, borderWidth: 1, stack: "count", borderRadius: 10, maxBarThickness: 42 }, { label: "Errors", data: errors, backgroundColor: "rgba(198,91,57,.14)", borderColor: colors.coral, borderWidth: 1, stack: "count", borderRadius: 10, maxBarThickness: 42 }, { label: "Accuracy", type: "line", data: accuracy, yAxisID: "accuracy", borderColor: colors.teal, backgroundColor: colors.teal, borderWidth: 3, tension: .34, pointRadius: 4, pointHoverRadius: 5 }] }, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false }, plugins, scales: { x: { stacked: true, grid: { display: false }, ticks: { color: colors.muted } }, y: { stacked: true, beginAtZero: true, ticks: { precision: 0, color: colors.muted, callback: v => intFmt.format(v) }, grid: { color: colors.line } }, accuracy: { position: "right", beginAtZero: true, max: 100, grid: { drawOnChartArea: false }, ticks: { color: colors.muted, callback: v => v + "%" } } } } });
+      new Chart(document.getElementById("levelLatencyChart").getContext("2d"), { type: "line", data: { labels, datasets: [{ label: "Avg Latency (ms)", data: latency, fill: true, borderColor: colors.blue, backgroundColor: "rgba(53,110,169,.14)", borderWidth: 3, tension: .35, pointRadius: 4, pointHoverRadius: 5 }] }, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false }, plugins, scales: { x: { grid: { display: false }, ticks: { color: colors.muted } }, y: { beginAtZero: true, ticks: { color: colors.muted, callback: v => compactFmt.format(v) + " ms" }, grid: { color: colors.line } } } } });
+      new Chart(document.getElementById("levelTokenChart").getContext("2d"), { type: "line", data: { labels, datasets: [{ label: "Avg Tokens", data: tokens, fill: true, borderColor: colors.gold, backgroundColor: "rgba(196,136,36,.14)", borderWidth: 3, tension: .35, pointRadius: 4, pointHoverRadius: 5 }] }, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false }, plugins, scales: { x: { grid: { display: false }, ticks: { color: colors.muted } }, y: { beginAtZero: true, ticks: { color: colors.muted, callback: v => compactFmt.format(v) }, grid: { color: colors.line } } } } });
+    }
   })();
 </script>
 """
@@ -797,15 +1029,27 @@ def _chart_script(levels: List[str], by_level: Dict[str, Dict[str, Any]]) -> str
         correct=json.dumps(correct),
         incorrect=json.dumps(incorrect),
         errors=json.dumps(errors),
+        token_latency=json.dumps(token_latency),
+        calls_tokens=json.dumps(calls_tokens),
+        include_level_breakdown=json.dumps(bool(include_level_breakdown)),
     )
 
 
-def _render_summary_html(summary: Dict[str, Any], manifest: Dict[str, Any], overall: Dict[str, Any], by_level: Dict[str, Dict[str, Any]], samples: List[SampleView], title: str) -> str:
-    levels = list(by_level.keys())
+def _render_summary_html(
+    summary: Dict[str, Any],
+    manifest: Dict[str, Any],
+    overall: Dict[str, Any],
+    by_level: Dict[str, Dict[str, Any]],
+    run_analysis: Dict[str, Any],
+    samples: List[SampleView],
+    title: str,
+) -> str:
+    levels = [value for value in by_level.keys() if str(value or "").strip() and str(value).strip().lower() not in {"unknown", "n/a", "none"}]
     try:
         levels.sort(key=lambda value: (int(value) if str(value).isdigit() else float("inf"), value))
     except Exception:
         levels.sort()
+    include_level_breakdown = bool(levels)
 
     level_rows = []
     for level in levels:
@@ -829,6 +1073,7 @@ def _render_summary_html(summary: Dict[str, Any], manifest: Dict[str, Any], over
     for sample in samples:
         row_class = "error-row" if sample.status == "error" else ("correct-row" if sample.correct else "incorrect-row")
         note_html = f'<span class="error-text" title="{_escape(sample.note_text)}">{_escape(_truncate(sample.note_text))}</span>' if sample.note_text else '<span class="subtle">n/a</span>'
+        cause_html = _escape(_humanize_failure_cause(sample.failure_analysis) or "n/a")
         sample_rows.append(
             f'<tr class="{row_class}">'
             f"<td>{_fmt_int(sample.index)}</td>"
@@ -841,6 +1086,7 @@ def _render_summary_html(summary: Dict[str, Any], manifest: Dict[str, Any], over
             f'<td class="mono model-cell">{_escape(_display(sample.provider_model))}</td>'
             f'<td class="mono">{_fmt_float(sample.latency_ms, suffix=" ms")}</td>'
             f'<td class="mono">{_fmt_int(sample.total_tokens)}</td>'
+            f"<td>{cause_html}</td>"
             f"<td>{note_html}</td>"
             "</tr>"
         )
@@ -859,7 +1105,6 @@ def _render_summary_html(summary: Dict[str, Any], manifest: Dict[str, Any], over
             _chip("Git SHA", _display(manifest.get("git_sha"))),
         ]
     )
-    warning_samples = sum(1 for sample in samples if sample.warning_count > 0)
     completed = max(overall["total"] - overall["error_count"], 0)
     incorrect = max(completed - overall["correct"], 0)
     cards = "".join(
@@ -869,11 +1114,20 @@ def _render_summary_html(summary: Dict[str, Any], manifest: Dict[str, Any], over
             _card("Runtime Errors", _fmt_int(overall["error_count"]), f"{_fmt_pct(overall['error_count'] / overall['total']) if overall['total'] else '0.0%'} of all samples", "coral"),
             _card("Average Latency", _fmt_float(overall["avg_latency_ms"], suffix=" ms"), f"Median {_fmt_float(overall['median_latency_ms'])} / Max {_fmt_float(overall['max_latency_ms'])}", "blue"),
             _card("Average Tokens", _fmt_float(overall["avg_tokens"]), f"Median {_fmt_float(overall['median_tokens'])} / Max {_fmt_float(overall['max_tokens'])}", "gold"),
-            _card("Warnings Present", _fmt_int(warning_samples), f"Avg calls {_fmt_float(overall['avg_calls'])} per sample", "slate"),
+            _card("Average Calls", _fmt_float(overall["avg_calls"]), f"Avg distinct tools {_fmt_float(overall['avg_tools'])} per sample", "slate"),
         ]
     )
     accuracy_pct = overall["accuracy"] * 100.0
     split_text = _display(summary.get("split"))
+    cohorts = run_analysis.get("cohorts") if isinstance(run_analysis.get("cohorts"), dict) else {}
+    failure_causes = run_analysis.get("failure_causes") if isinstance(run_analysis.get("failure_causes"), dict) else {}
+    failure_cards = "".join(
+        [
+            _card("Non-Correct Samples", _fmt_int(failure_causes.get("total_non_correct")), "All incorrect or runtime-error samples", "gold"),
+            _card("Incorrect", _fmt_int((cohorts.get("incorrect") or {}).get("count")), "Completed runs with wrong final answers", "warning"),
+            _card("Runtime Errors", _fmt_int((cohorts.get("runtime_error") or {}).get("count")), "Runs that ended with status=error", "danger"),
+        ]
+    )
     body = f"""
   <div class="page">
     <section class="panel hero">
@@ -892,22 +1146,48 @@ def _render_summary_html(summary: Dict[str, Any], manifest: Dict[str, Any], over
       <div class="metric-grid">{cards}</div>
     </section>
     <section class="panel">
-      <div class="section-head"><div><h2>Performance By Level</h2><p class="section-copy">Difficulty-level breakdown for outcomes, latency, and token usage.</p></div></div>
-      <div class="chart-grid">
-        <article class="chart"><h3>Outcome Mix</h3><p class="chart-copy">Correct, incorrect, and runtime-error counts with accuracy overlaid.</p><div class="chart-frame"><canvas id="accuracyChart"></canvas></div><p class="chart-empty">Charts are unavailable because Chart.js did not load.</p></article>
-        <article class="chart"><h3>Latency Profile</h3><p class="chart-copy">Average latency in milliseconds per level.</p><div class="chart-frame"><canvas id="latencyChart"></canvas></div><p class="chart-empty">Charts are unavailable because Chart.js did not load.</p></article>
-        <article class="chart"><h3>Token Profile</h3><p class="chart-copy">Average token use per level.</p><div class="chart-frame"><canvas id="tokenChart"></canvas></div><p class="chart-empty">Charts are unavailable because Chart.js did not load.</p></article>
+      <div class="section-head"><div><h2>Correlation Overview</h2><p class="section-copy">These are correlations, not causation. The matrix and scatter plots show how correctness, runtime errors, tokens, latency, calls, and tool breadth move together.</p></div></div>
+      <article class="subpanel"><h3>Correlation Matrix</h3>{_correlation_matrix_table(run_analysis)}</article>
+      <div class="chart-grid" style="grid-template-columns:repeat(2, minmax(0,1fr)); margin-top:16px">
+        <article class="chart"><h3>Total Tokens vs Latency</h3><p class="chart-copy">Each point is a sample, colored by outcome.</p><div class="chart-frame"><canvas id="tokenLatencyChart"></canvas></div><p class="chart-empty">Charts are unavailable because Chart.js did not load.</p></article>
+        <article class="chart"><h3>Calls vs Total Tokens</h3><p class="chart-copy">Shows how tool-call volume tracks overall token usage.</p><div class="chart-frame"><canvas id="callsTokensChart"></canvas></div><p class="chart-empty">Charts are unavailable because Chart.js did not load.</p></article>
       </div>
-      <div class="table-shell" style="margin-top:18px"><table><thead><tr><th>Level</th><th>Total</th><th>Correct</th><th>Incorrect</th><th>Errors</th><th>Accuracy</th><th>Avg Latency</th><th>Avg Tokens</th></tr></thead><tbody>{"".join(level_rows)}</tbody></table></div>
     </section>
     <section class="panel">
+      <div class="section-head"><div><h2>Outcome Cohorts</h2><p class="section-copy">Averages and medians for correct, incorrect, and runtime-error samples.</p></div></div>
+      {_cohort_table(run_analysis)}
+    </section>
+    <section class="panel">
+      <div class="section-head"><div><h2>Failure Causes</h2><p class="section-copy">Primary cause counts for all non-correct samples, combining runtime failures and completed-but-wrong answers.</p></div></div>
+      <div class="metric-grid">{failure_cards}</div>
+      <div style="margin-top:18px">{_failure_causes_table(run_analysis)}</div>
+    </section>
+    {(
+        f'''<section class="panel">
+      <div class="section-head"><div><h2>Level Breakdown</h2><p class="section-copy">Secondary benchmark-specific view retained when level metadata is available.</p></div></div>
+      <div class="chart-grid">
+        <article class="chart"><h3>Outcome Mix</h3><p class="chart-copy">Correct, incorrect, and runtime-error counts with accuracy overlaid.</p><div class="chart-frame"><canvas id="levelOutcomeChart"></canvas></div><p class="chart-empty">Charts are unavailable because Chart.js did not load.</p></article>
+        <article class="chart"><h3>Latency Profile</h3><p class="chart-copy">Average latency in milliseconds per level.</p><div class="chart-frame"><canvas id="levelLatencyChart"></canvas></div><p class="chart-empty">Charts are unavailable because Chart.js did not load.</p></article>
+        <article class="chart"><h3>Token Profile</h3><p class="chart-copy">Average token use per level.</p><div class="chart-frame"><canvas id="levelTokenChart"></canvas></div><p class="chart-empty">Charts are unavailable because Chart.js did not load.</p></article>
+      </div>
+      <div class="table-shell" style="margin-top:18px"><table><thead><tr><th>Level</th><th>Total</th><th>Correct</th><th>Incorrect</th><th>Errors</th><th>Accuracy</th><th>Avg Latency</th><th>Avg Tokens</th></tr></thead><tbody>{"".join(level_rows)}</tbody></table></div>
+    </section>'''
+        if include_level_breakdown
+        else ""
+    )}
+    <section class="panel">
       <div class="section-head"><div><h2>Sample Results</h2><p class="section-copy">{_escape(f"{_fmt_int(len(samples))} samples listed. Click a sample ID to open the detailed page with prompt, score details, usage, metadata, and the raw event trace toggle.")}</p></div></div>
-      <div class="table-shell" style="margin-top:18px"><table><thead><tr><th>#</th><th>Sample ID</th><th>Level</th><th>Status</th><th>Outcome</th><th>Score Reason</th><th>Calls</th><th>Provider / Model</th><th>Latency</th><th>Total Tokens</th><th>Warnings / Error</th></tr></thead><tbody>{"".join(sample_rows)}</tbody></table></div>
+      <div class="table-shell" style="margin-top:18px"><table><thead><tr><th>#</th><th>Sample ID</th><th>Level</th><th>Status</th><th>Outcome</th><th>Score Reason</th><th>Calls</th><th>Provider / Model</th><th>Latency</th><th>Total Tokens</th><th>Failure Cause</th><th>Warnings / Error</th></tr></thead><tbody>{"".join(sample_rows)}</tbody></table></div>
       <p class="subtle" style="margin-top:16px">Generated from <span class="mono">summary.json</span>, <span class="mono">samples.jsonl</span>, and optional manifest, events, and error artifacts.</p>
     </section>
   </div>
 """
-    return _render_doc(title, body, include_chart_js=True, script=_chart_script(levels, by_level))
+    return _render_doc(
+        title,
+        body,
+        include_chart_js=True,
+        script=_chart_script(samples, levels, by_level, include_level_breakdown=include_level_breakdown),
+    )
 
 
 def _render_sample_html(summary: Dict[str, Any], manifest: Dict[str, Any], sample: SampleView, previous_sample: Optional[SampleView], next_sample: Optional[SampleView], back_href: str) -> str:
@@ -934,7 +1214,12 @@ def _render_sample_html(summary: Dict[str, Any], manifest: Dict[str, Any], sampl
             _card("Latency", _fmt_float(sample.latency_ms, suffix=" ms"), f"Trace {_display(sample.trace_ref)}", "blue"),
             _card("Tokens", _fmt_int(sample.total_tokens), f"Calls {_fmt_int(sample.call_count)}", "gold"),
             _card("Provider / Model", _display(sample.provider_model), f"Level {_display(sample.level)}", "slate"),
-            _card("Warnings", _fmt_int(sample.warning_count), _display(sample.error or "No runtime error"), "coral"),
+            _card(
+                "Failure Cause",
+                _display(_humanize_failure_cause(sample.failure_analysis), fallback="n/a"),
+                _display(sample.error or "No runtime error"),
+                "coral",
+            ),
         ]
     )
     score_rows = _kv_table(
@@ -1024,6 +1309,10 @@ def _render_sample_html(summary: Dict[str, Any], manifest: Dict[str, Any], sampl
       <div style="margin-top:16px">{_usage_panels(sample)}</div>
     </section>
     <section class="panel">
+      <div class="section-head"><div><h2>Failure Analysis</h2><p class="section-copy">Deterministic cause classification for non-correct samples, with optional PromptFunction enrichment when available.</p></div></div>
+      {_render_failure_analysis(sample)}
+    </section>
+    <section class="panel">
       <div class="section-head"><div><h2>Error Record</h2><p class="section-copy">The matched record from <span class="mono">errors.jsonl</span> when available, otherwise the runtime error captured on the sample payload.</p></div></div>
       {_json_block(error_payload)}
     </section>
@@ -1042,14 +1331,16 @@ def _write_report_bundle(
     output: str,
     *,
     summarize_agent_steps: bool = False,
-    step_summary_provider: Optional[str] = None,
-    step_summary_model: Optional[str] = None,
+    summary_provider: Optional[str] = None,
+    summary_model: Optional[str] = None,
+    summarize_failure_causes: bool = False,
 ) -> str:
     artifacts = _prepare_run_artifacts(
         run_dir,
         summarize_agent_steps=summarize_agent_steps,
-        step_summary_provider=step_summary_provider,
-        step_summary_model=step_summary_model,
+        summary_provider=summary_provider,
+        summary_model=summary_model,
+        summarize_failure_causes=summarize_failure_causes,
     )
     out_path = os.path.abspath(output)
     out_dir = os.path.dirname(out_path)
@@ -1063,6 +1354,8 @@ def _write_report_bundle(
 
     sample_views = _build_sample_views(artifacts, sample_dir_name)
     overall, by_level = _aggregate_metrics(sample_views)
+    metrics = artifacts.summary.get("metrics") if isinstance(artifacts.summary.get("metrics"), dict) else {}
+    run_analysis = metrics.get("analysis") if isinstance(metrics.get("analysis"), dict) else build_run_analysis(artifacts.samples, artifacts.events_by_sample)
     benchmark = _display(artifacts.summary.get("benchmark"))
     run_id = _display(artifacts.summary.get("run_id"))
     summary_html = _render_summary_html(
@@ -1070,6 +1363,7 @@ def _write_report_bundle(
         artifacts.manifest,
         overall,
         by_level,
+        run_analysis,
         sample_views,
         f"Evaluation Report - {benchmark} ({run_id})",
     )
@@ -1092,15 +1386,17 @@ def generate_html_report(
     output: str,
     *,
     summarize_agent_steps: bool = False,
-    step_summary_provider: Optional[str] = None,
-    step_summary_model: Optional[str] = None,
+    summary_provider: Optional[str] = None,
+    summary_model: Optional[str] = None,
+    summarize_failure_causes: bool = False,
 ) -> str:
     return _write_report_bundle(
         run_dir,
         output,
         summarize_agent_steps=summarize_agent_steps,
-        step_summary_provider=step_summary_provider,
-        step_summary_model=step_summary_model,
+        summary_provider=summary_provider,
+        summary_model=summary_model,
+        summarize_failure_causes=summarize_failure_causes,
     )
 
 
@@ -1109,16 +1405,18 @@ def main(argv: List[str] | None = None) -> None:
     parser.add_argument("--run-dir", required=True, help="Run directory or zip file containing run results")
     parser.add_argument("--output", required=False, help="Path to output HTML report file")
     parser.add_argument("--summarize-agent-steps", action="store_true", help="Generate and persist PromptFunction-based agent step summaries before building the report.")
-    parser.add_argument("--step-summary-provider", required=False, help="PromptFunction provider override for agent step summarization.")
-    parser.add_argument("--step-summary-model", required=False, help="PromptFunction model override for agent step summarization.")
+    parser.add_argument("--summary-provider", required=False, help="PromptFunction provider override shared by eval summaries.")
+    parser.add_argument("--summary-model", required=False, help="PromptFunction model override shared by eval summaries.")
+    parser.add_argument("--summarize-failure-causes", action="store_true", help="Generate and persist PromptFunction-based summaries for ambiguous non-correct samples.")
     args = parser.parse_args(argv)
     output_path = args.output or (os.path.splitext(os.path.basename(args.run_dir))[0] + "_report.html")
     out = generate_html_report(
         args.run_dir,
         output_path,
         summarize_agent_steps=bool(args.summarize_agent_steps),
-        step_summary_provider=args.step_summary_provider,
-        step_summary_model=args.step_summary_model,
+        summary_provider=args.summary_provider,
+        summary_model=args.summary_model,
+        summarize_failure_causes=bool(args.summarize_failure_causes),
     )
     print(f"HTML report generated at: {out}")
 

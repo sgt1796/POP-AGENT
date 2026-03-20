@@ -19,6 +19,9 @@ class EvalConfig:
     redact_patterns: List[str] = field(default_factory=list)
     continue_on_error: bool = True
     concurrency: int = 1
+    summarize_failure_causes: bool = False
+    summary_provider: Optional[str] = None
+    summary_model: Optional[str] = None
 
 
 @dataclass

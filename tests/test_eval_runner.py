@@ -102,9 +102,14 @@ def test_runner_continue_on_error_and_artifacts(tmp_path: Path):
     sample_payloads = [json.loads(line) for line in sample_lines]
     assert all(payload["result"]["started_at"] for payload in sample_payloads)
     assert all(payload["result"]["ended_at"] for payload in sample_payloads)
+    assert sample_payloads[1]["result"]["failure_analysis"]["primary_cause"] == "no_final_answer_after_error"
 
     error_lines = [line for line in (run_dir / "errors.jsonl").read_text(encoding="utf-8").splitlines() if line]
     assert len(error_lines) == 1
+
+    summary_payload = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert "analysis" in summary_payload["metrics"]
+    assert summary_payload["metrics"]["analysis"]["cohorts"]["runtime_error"]["count"] == 1
 
 
 def test_runner_emits_progress_events(tmp_path: Path):

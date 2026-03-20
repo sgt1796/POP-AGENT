@@ -26,6 +26,8 @@ _USAGE_TOKEN_STAT_KEYS = {
     "input_tokens",
     "output_tokens",
     "total_tokens",
+    "avg_total_tokens",
+    "median_total_tokens",
     "cached_tokens",
     "reasoning_tokens",
     "estimate_input_tokens",

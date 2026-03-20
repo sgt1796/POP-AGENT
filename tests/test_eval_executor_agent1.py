@@ -99,7 +99,7 @@ def test_per_sample_isolation_uses_unique_memory_paths(monkeypatch, tmp_path):
     assert seen_paths[0] != seen_paths[1]
     assert "sample_000000" in seen_paths[0]
     assert "sample_000001" in seen_paths[1]
-    assert seen_memory_flags == [False, False]
+    assert seen_memory_flags == [True, True]
     assert seen_auto_title_flags == [False, False]
 
 

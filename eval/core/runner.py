@@ -24,6 +24,7 @@ from eval.core.contracts import (
 )
 from eval.executors.agent1_runtime_executor import Agent1RuntimeExecutor
 from eval.executors.echo_executor import EchoExecutor
+from eval.run_analysis import persist_run_analysis
 
 
 def run_evaluation(
@@ -307,6 +308,16 @@ async def run_evaluation_async(
     manifest_payload["totals"] = totals
     writer.write_manifest(manifest_payload)
 
+    updated_summary, _updated_samples, _analysis = persist_run_analysis(
+        run_dir,
+        summary=summary_payload,
+        manifest=manifest_payload,
+        summarize_failure_causes=bool(cfg.summarize_failure_causes),
+        summary_provider=cfg.summary_provider,
+        summary_model=cfg.summary_model,
+    )
+    summary_payload = updated_summary
+
     _emit_progress(
         progress_callback,
         {
@@ -333,7 +344,7 @@ async def run_evaluation_async(
         started_at=started_at,
         ended_at=ended_at,
         duration_s=duration_s,
-        metrics=adapter_metrics,
+        metrics=dict(summary_payload.get("metrics") or adapter_metrics),
         artifact_paths=writer.artifact_paths,
     )
 
@@ -342,22 +353,27 @@ def summarize_run(
     run_dir: str,
     *,
     summarize_agent_steps: bool = False,
-    step_summary_provider: Optional[str] = None,
-    step_summary_model: Optional[str] = None,
+    summary_provider: Optional[str] = None,
+    summary_model: Optional[str] = None,
+    summarize_failure_causes: bool = False,
 ) -> Dict[str, Any]:
     summary_json_path = _resolve_summary_json_path(run_dir)
 
-    payload = json.loads(summary_json_path.read_text(encoding="utf-8"))
-    writer = JsonArtifactWriter(str(summary_json_path.parent))
-    writer.write_summary(payload)
+    payload, _samples, _analysis = persist_run_analysis(
+        str(summary_json_path.parent),
+        summarize_failure_causes=summarize_failure_causes,
+        summary_provider=summary_provider,
+        summary_model=summary_model,
+    )
     from eval.report_html import generate_html_report
 
     generate_html_report(
         str(summary_json_path.parent),
         str(summary_json_path.parent / "report.html"),
         summarize_agent_steps=summarize_agent_steps,
-        step_summary_provider=step_summary_provider,
-        step_summary_model=step_summary_model,
+        summary_provider=summary_provider,
+        summary_model=summary_model,
+        summarize_failure_causes=summarize_failure_causes,
     )
     return payload
 

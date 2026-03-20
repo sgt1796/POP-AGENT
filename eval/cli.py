@@ -25,8 +25,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             report_path = _generate_default_run_report(
                 summary.run_dir,
                 summarize_agent_steps=bool(args.summarize_agent_steps),
-                step_summary_provider=args.step_summary_provider,
-                step_summary_model=args.step_summary_model,
+                summary_provider=args.summary_provider,
+                summary_model=args.summary_model,
+                summarize_failure_causes=bool(args.summarize_failure_causes),
             )
             if report_path is not None:
                 print(f"HTML report: {report_path}")
@@ -37,8 +38,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             payload = summarize_run(
                 args.run_dir,
                 summarize_agent_steps=bool(args.summarize_agent_steps),
-                step_summary_provider=args.step_summary_provider,
-                step_summary_model=args.step_summary_model,
+                summary_provider=args.summary_provider,
+                summary_model=args.summary_model,
+                summarize_failure_causes=bool(args.summarize_failure_causes),
             )
         except Exception as exc:
             print(f"Summarize failed: {exc}")
@@ -56,8 +58,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 run_dir,
                 output_path,
                 summarize_agent_steps=bool(args.summarize_agent_steps),
-                step_summary_provider=args.step_summary_provider,
-                step_summary_model=args.step_summary_model,
+                summary_provider=args.summary_provider,
+                summary_model=args.summary_model,
+                summarize_failure_causes=bool(args.summarize_failure_causes),
             )
         except Exception as exc:
             print(f"HTML report generation failed: {exc}")
@@ -125,12 +128,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Generate and persist PromptFunction-based agent step summaries when building the report.",
     )
     run_parser.add_argument(
-        "--step-summary-provider",
-        help="PromptFunction provider override for agent step summarization during report generation.",
+        "--summary-provider",
+        help="PromptFunction provider override shared by eval summaries.",
     )
     run_parser.add_argument(
-        "--step-summary-model",
-        help="PromptFunction model override for agent step summarization during report generation.",
+        "--summary-model",
+        help="PromptFunction model override shared by eval summaries.",
+    )
+    run_parser.add_argument(
+        "--summarize-failure-causes",
+        action="store_true",
+        help="Generate and persist PromptFunction-based summaries for ambiguous non-correct samples.",
     )
 
     # summarize subcommand
@@ -142,12 +150,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Regenerate and persist PromptFunction-based agent step summaries before rebuilding the report.",
     )
     summarize_parser.add_argument(
-        "--step-summary-provider",
-        help="PromptFunction provider override for agent step summarization during report generation.",
+        "--summary-provider",
+        help="PromptFunction provider override shared by eval summaries.",
     )
     summarize_parser.add_argument(
-        "--step-summary-model",
-        help="PromptFunction model override for agent step summarization during report generation.",
+        "--summary-model",
+        help="PromptFunction model override shared by eval summaries.",
+    )
+    summarize_parser.add_argument(
+        "--summarize-failure-causes",
+        action="store_true",
+        help="Generate and persist PromptFunction-based summaries for ambiguous non-correct samples.",
     )
 
     # report subcommand
@@ -163,12 +176,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Generate and persist PromptFunction-based agent step summaries before building the report.",
     )
     report_parser.add_argument(
-        "--step-summary-provider",
-        help="PromptFunction provider override for agent step summarization during report generation.",
+        "--summary-provider",
+        help="PromptFunction provider override shared by eval summaries.",
     )
     report_parser.add_argument(
-        "--step-summary-model",
-        help="PromptFunction model override for agent step summarization during report generation.",
+        "--summary-model",
+        help="PromptFunction model override shared by eval summaries.",
+    )
+    report_parser.add_argument(
+        "--summarize-failure-causes",
+        action="store_true",
+        help="Generate and persist PromptFunction-based summaries for ambiguous non-correct samples.",
     )
 
     return parser
@@ -218,6 +236,13 @@ def _build_run_config(args: argparse.Namespace) -> EvalConfig:
 
     if args.fail_fast:
         merged["continue_on_error"] = False
+
+    if args.summarize_failure_causes:
+        merged["summarize_failure_causes"] = True
+    if args.summary_provider:
+        merged["summary_provider"] = args.summary_provider
+    if args.summary_model:
+        merged["summary_model"] = args.summary_model
 
     return EvalConfig(**merged)
 
@@ -286,8 +311,9 @@ def _generate_default_run_report(
     run_dir: str,
     *,
     summarize_agent_steps: bool = False,
-    step_summary_provider: Optional[str] = None,
-    step_summary_model: Optional[str] = None,
+    summary_provider: Optional[str] = None,
+    summary_model: Optional[str] = None,
+    summarize_failure_causes: bool = False,
 ) -> Optional[str]:
     output_path = Path(run_dir) / "report.html"
     try:
@@ -295,8 +321,9 @@ def _generate_default_run_report(
             run_dir,
             str(output_path),
             summarize_agent_steps=summarize_agent_steps,
-            step_summary_provider=step_summary_provider,
-            step_summary_model=step_summary_model,
+            summary_provider=summary_provider,
+            summary_model=summary_model,
+            summarize_failure_causes=summarize_failure_causes,
         )
     except Exception as exc:
         print(f"HTML report generation failed: {exc}")
