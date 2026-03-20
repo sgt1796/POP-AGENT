@@ -49,6 +49,9 @@ _TEXT_SUFFIXES = {
     ".xml",
     ".sql",
     ".tex",
+    ".pdb",
+    ".cif",
+    ".mmcif",
 }
 _IMAGE_SUFFIXES = {
     ".png",
@@ -415,7 +418,7 @@ class FileReadTool(AgentTool):
     name = "file_read"
     description = (
         "Read and parse files by suffix inside the workspace or allowed roots. "
-        "Supports common text/code/config files, plus json, csv, xlsx, pdf, and image-to-base64."
+        "Supports common text/code/config files, structure text files like pdb/cif, plus json, csv, xlsx, pdf, and image-to-base64."
     )
     parameters = {
         "type": "object",

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import os
 import time
 from collections import deque
@@ -48,22 +49,34 @@ def _default_convert_to_llm(messages: List[AgentMessage]) -> Awaitable[List[dict
     """Default conversion from AgentMessage objects to LLM message dictionaries.
 
     Only messages with roles ``user``, ``assistant`` or ``toolResult``
-    are forwarded to the LLM.  Other message types (e.g. custom
-    notifications) are discarded.  The dataclass is flattened into a
-    dictionary via ``to_dict``; any unknown fields in the dataclass
-    are preserved for downstream consumers.
+    are forwarded to the LLM. Other message types (e.g. custom
+    notifications) are discarded.
+
+    The payload sent back to the LLM is intentionally minimal. Rich
+    metadata such as usage accounting, timestamps, and tool ``details``
+    remain available in the in-memory transcript for UI/reporting, but
+    they are not echoed back into the model context because they can
+    dramatically inflate token usage without helping the next turn.
     """
     llm_msgs: List[dict] = []
     for m in messages:
         if m.role in {"user", "assistant", "toolResult"}:
             try:
-                llm_msgs.append(m.to_dict())
+                payload: Dict[str, Any] = {
+                    "role": m.role,
+                    "content": [dataclasses.asdict(item) for item in m.content],
+                }
+                if m.role == "toolResult":
+                    if m.tool_call_id is not None:
+                        payload["toolCallId"] = m.tool_call_id
+                    if m.tool_name is not None:
+                        payload["toolName"] = m.tool_name
+                llm_msgs.append(payload)
             except Exception:
                 # Fallback: best effort conversion
                 llm_msgs.append({
                     "role": m.role,
                     "content": [vars(c) for c in m.content],
-                    "timestamp": m.timestamp,
                 })
     async def _return():
         return llm_msgs

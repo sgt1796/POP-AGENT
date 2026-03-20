@@ -36,10 +36,12 @@ def test_read_common_text_like_suffixes(tmp_path: Path):
     (tmp_path / "notes.rst").write_text("section", encoding="utf-8")
     (tmp_path / "config.yaml").write_text("mode: fast", encoding="utf-8")
     (tmp_path / "events.jsonl").write_text('{"step": 1}\n{"step": 2}\n', encoding="utf-8")
+    (tmp_path / "structure.pdb").write_text("ATOM      1  N   GLY A   1      11.104  13.207   9.199\n", encoding="utf-8")
 
     rst = read("notes.rst", workspace_root=str(tmp_path))
     yaml = read("config.yaml", workspace_root=str(tmp_path))
     jsonl = read("events.jsonl", workspace_root=str(tmp_path))
+    pdb = read("structure.pdb", workspace_root=str(tmp_path))
 
     assert rst["ok"] is True
     assert rst["kind"] == "text"
@@ -55,6 +57,11 @@ def test_read_common_text_like_suffixes(tmp_path: Path):
     assert jsonl["kind"] == "text"
     assert '{"step": 1}' in jsonl["content"]
     assert jsonl["suffix"] == ".jsonl"
+
+    assert pdb["ok"] is True
+    assert pdb["kind"] == "text"
+    assert "ATOM" in pdb["content"]
+    assert pdb["suffix"] == ".pdb"
 
 
 def test_read_json(tmp_path: Path):

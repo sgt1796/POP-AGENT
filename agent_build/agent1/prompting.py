@@ -51,6 +51,9 @@ def build_system_prompt(
     lines.append(
         "Use calculator for arithmetic, unit conversions, checksum logic, and small brute-force enumeration before reaching for bash_exec."
     )
+    lines.append(
+        "For search tools, prefer narrow queries with domain filters, small result counts, and limited page tokens before broad retries."
+    )
     lines.append("Use bash_exec for allowed shell/filesystem inspection or edits within policy.")
     lines.append(
         "bash_exec runs one program without a shell; do not use pipes, redirection, &&, ||, heredocs, or shell builtins."
@@ -95,6 +98,9 @@ def build_system_prompt(
         "and path_outside_* as hard constraints, not transient errors."
     )
     lines.append("After a hard bash_exec block, switch tools instead of retrying shell syntax variants.")
+    lines.append(
+        "If search results drift to irrelevant sites, tighten the query or add search_domain_filter instead of repeating broad searches."
+    )
     lines.append("Do not use search tools as calculators or ask them to execute code for you.")
     lines.append(
         "If a blocked computation path leaves enough evidence to solve the task, use calculator or direct reasoning and finish."
