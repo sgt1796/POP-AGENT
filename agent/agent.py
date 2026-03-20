@@ -61,16 +61,45 @@ def _default_convert_to_llm(messages: List[AgentMessage]) -> Awaitable[List[dict
     dramatically inflate token usage without helping the next turn.
     """
     def _sanitize_content_item(item: Any) -> Optional[Dict[str, Any]]:
+        def _extract_tool_call_signature(payload: Any) -> Optional[Dict[str, Any]]:
+            if isinstance(payload, ToolCallContent):
+                extra = payload.extra_content
+                if isinstance(extra, dict):
+                    google = extra.get("google")
+                    if isinstance(google, dict):
+                        signature = str(google.get("thought_signature") or "").strip()
+                        if signature:
+                            return {"google": {"thought_signature": signature}}
+                return None
+            if isinstance(payload, dict):
+                extra = payload.get("extra_content")
+                if extra is None:
+                    extra = payload.get("extraContent")
+                if isinstance(extra, dict):
+                    google = extra.get("google")
+                    if isinstance(google, dict):
+                        signature = str(google.get("thought_signature") or google.get("thoughtSignature") or "").strip()
+                        if signature:
+                            return {"google": {"thought_signature": signature}}
+                signature = str(payload.get("thought_signature") or payload.get("thoughtSignature") or "").strip()
+                if signature:
+                    return {"google": {"thought_signature": signature}}
+            return None
+
         if isinstance(item, TextContent):
             return {"type": "text", "text": str(item.text or "")}
         if isinstance(item, ToolCallContent):
             arguments = item.arguments if isinstance(item.arguments, dict) else {}
-            return {
+            sanitized = {
                 "type": "toolCall",
                 "id": str(item.id or ""),
                 "name": str(item.name or ""),
                 "arguments": dict(arguments),
             }
+            signature = _extract_tool_call_signature(item)
+            if signature is not None:
+                sanitized["extra_content"] = signature
+            return sanitized
         if isinstance(item, ImageContent):
             return {
                 "type": "image",
@@ -90,12 +119,16 @@ def _default_convert_to_llm(messages: List[AgentMessage]) -> Awaitable[List[dict
                 return {"type": "text", "text": str(item.get("text") or "")}
             if item_type == "toolCall":
                 arguments = item.get("arguments")
-                return {
+                sanitized = {
                     "type": "toolCall",
                     "id": str(item.get("id") or ""),
                     "name": str(item.get("name") or ""),
                     "arguments": dict(arguments) if isinstance(arguments, dict) else {},
                 }
+                signature = _extract_tool_call_signature(item)
+                if signature is not None:
+                    sanitized["extra_content"] = signature
+                return sanitized
             if item_type == "image":
                 return {
                     "type": "image",

@@ -89,6 +89,7 @@ def test_default_convert_to_llm_sanitizes_replayed_content(tmp_path: Path):
                 "id": "call-1",
                 "name": "jina_web_snapshot",
                 "arguments": {"web_url": "https://example.com"},
+                "extra_content": {"google": {"thought_signature": "x" * 1024}},
             }
         ],
     }
