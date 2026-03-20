@@ -32,6 +32,31 @@ def test_read_txt_and_md(tmp_path: Path):
     assert md["suffix"] == ".md"
 
 
+def test_read_common_text_like_suffixes(tmp_path: Path):
+    (tmp_path / "notes.rst").write_text("section", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text("mode: fast", encoding="utf-8")
+    (tmp_path / "events.jsonl").write_text('{"step": 1}\n{"step": 2}\n', encoding="utf-8")
+
+    rst = read("notes.rst", workspace_root=str(tmp_path))
+    yaml = read("config.yaml", workspace_root=str(tmp_path))
+    jsonl = read("events.jsonl", workspace_root=str(tmp_path))
+
+    assert rst["ok"] is True
+    assert rst["kind"] == "text"
+    assert rst["content"] == "section"
+    assert rst["suffix"] == ".rst"
+
+    assert yaml["ok"] is True
+    assert yaml["kind"] == "text"
+    assert yaml["content"] == "mode: fast"
+    assert yaml["suffix"] == ".yaml"
+
+    assert jsonl["ok"] is True
+    assert jsonl["kind"] == "text"
+    assert '{"step": 1}' in jsonl["content"]
+    assert jsonl["suffix"] == ".jsonl"
+
+
 def test_read_json(tmp_path: Path):
     (tmp_path / "payload.json").write_text('{"a": 1, "b": "two"}', encoding="utf-8")
 

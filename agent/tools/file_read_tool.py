@@ -18,7 +18,38 @@ from openpyxl import load_workbook
 
 
 
-_TEXT_SUFFIXES = {".txt", ".md", ".log"}
+_TEXT_SUFFIXES = {
+    ".txt",
+    ".md",
+    ".log",
+    ".rst",
+    ".jsonl",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".py",
+    ".pyi",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+    ".bat",
+    ".cmd",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".css",
+    ".scss",
+    ".html",
+    ".htm",
+    ".xml",
+    ".sql",
+    ".tex",
+}
 _IMAGE_SUFFIXES = {
     ".png",
     ".jpg",
@@ -384,7 +415,7 @@ class FileReadTool(AgentTool):
     name = "file_read"
     description = (
         "Read and parse files by suffix inside the workspace or allowed roots. "
-        "Supports txt, md, json, csv, xlsx, pdf, and image-to-base64."
+        "Supports common text/code/config files, plus json, csv, xlsx, pdf, and image-to-base64."
     )
     parameters = {
         "type": "object",

@@ -88,7 +88,22 @@ def test_blocks_control_operators(tmp_path: Path):
 
     assert result.details["ok"] is False
     assert result.details["blocked"] is True
-    assert result.details["block_reason"] == "command_not_allowed"
+    assert result.details["block_reason"] == "blocked_shell_operator"
+
+
+def test_blocks_pipe_and_redirection_tokens(tmp_path: Path):
+    tool = _make_tool(tmp_path)
+
+    piped = _run(tool, {"cmd": "cat notes.txt | head -n 1"})
+    redirected = _run(tool, {"cmd": "cat notes.txt > out.txt"})
+
+    assert piped.details["ok"] is False
+    assert piped.details["blocked"] is True
+    assert piped.details["block_reason"] == "blocked_shell_operator"
+
+    assert redirected.details["ok"] is False
+    assert redirected.details["blocked"] is True
+    assert redirected.details["block_reason"] == "blocked_shell_operator"
 
 
 def test_blocks_unknown_command(tmp_path: Path):

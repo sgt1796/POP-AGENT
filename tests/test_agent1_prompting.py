@@ -21,6 +21,8 @@ def test_prompt_includes_execution_first_sections_and_allowlists():
     assert "Execute user requests end-to-end whenever feasible" in prompt
     assert "Tool Policy:" in prompt
     assert "A fresh current timestamp is injected at runtime" in prompt
+    assert "bash_exec runs one program without a shell" in prompt
+    assert "Prefer file_read for downloaded local documents and text-like files" in prompt
     assert "Allowed bash_exec read commands: cat, ls." in prompt
     assert "Allowed bash_exec write commands: touch." in prompt
     assert "Allowed bash_exec git subcommands: status." in prompt
@@ -30,6 +32,8 @@ def test_prompt_includes_execution_first_sections_and_allowlists():
     assert "task_scheduler run_now marks the task as due now" in prompt
     assert "Use agentmail_send when the user asks to email the configured owner" in prompt
     assert "Failure Recovery:" in prompt
+    assert "Treat command_not_allowed, blocked_shell_operator, command_not_available_on_host" in prompt
+    assert "After a hard bash_exec block, switch tools instead of retrying shell syntax variants." in prompt
     assert "Completion Criteria:" in prompt
 
 def test_prompt_includes_missing_capability_fallback_guidance():

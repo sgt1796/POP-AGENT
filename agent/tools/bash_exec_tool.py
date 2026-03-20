@@ -74,7 +74,7 @@ class BashExecTool(AgentTool):
     }
     label = "Bash Exec"
 
-    _BLOCKED_META: Tuple[str, ...] = () # no blocked shell operators for now
+    _BLOCKED_META: Tuple[str, ...] = ("|", ";", ">", "<", "&")
     _FIND_BLOCKED: Set[str] = {
         "-exec",
         "-execdir",
@@ -200,7 +200,7 @@ class BashExecTool(AgentTool):
                 stdout_max_chars=stdout_max_chars,
                 stderr_max_chars=stderr_max_chars,
             )
-        if any(token in cmd for token in self._BLOCKED_META):
+        if self._contains_blocked_shell_operator(cmd):
             return self._blocked_result(
                 command=cmd,
                 argv=[],
@@ -474,6 +474,28 @@ class BashExecTool(AgentTool):
         if command == "ls":
             return self._fallback_ls(argv, cwd)
         return False, None, "", ""
+
+    def _contains_blocked_shell_operator(self, cmd: str) -> bool:
+        in_single = False
+        in_double = False
+        escaped = False
+
+        for ch in str(cmd):
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\" and not in_single:
+                escaped = True
+                continue
+            if ch == "'" and not in_double:
+                in_single = not in_single
+                continue
+            if ch == '"' and not in_single:
+                in_double = not in_double
+                continue
+            if not in_single and not in_double and ch in self._BLOCKED_META:
+                return True
+        return False
 
     def _fallback_ls(self, argv: Sequence[str], cwd: str) -> Tuple[bool, int, str, str]:
         show_hidden = False

@@ -49,7 +49,11 @@ def build_system_prompt(
         "A fresh current timestamp is injected at runtime; use it for time-sensitive tasks instead of checking file metadata."
     )
     lines.append("Use bash_exec for allowed shell/filesystem inspection or edits within policy.")
+    lines.append(
+        "bash_exec runs one program without a shell; do not use pipes, redirection, &&, ||, heredocs, or shell builtins."
+    )
     lines.append("Use file_read for attachments and structured files before falling back to shell file reads.")
+    lines.append("Prefer file_read for downloaded local documents and text-like files when its suffix is supported.")
     lines.append("Use file_write for creating files, writing text, and replacing words in text files.")
     lines.append(
         "Use task_scheduler when the user asks to run work later or on a recurring cadence "
@@ -83,6 +87,11 @@ def build_system_prompt(
     lines.append("")
     lines.append("Failure Recovery:")
     lines.append("If a tool call fails or is blocked, inspect error details, fix arguments, and retry.")
+    lines.append(
+        "Treat command_not_allowed, blocked_shell_operator, command_not_available_on_host, approval_required_or_denied, "
+        "and path_outside_* as hard constraints, not transient errors."
+    )
+    lines.append("After a hard bash_exec block, switch tools instead of retrying shell syntax variants.")
     lines.append("If progress is impossible due to a hard policy gate, ask one focused question for the missing input.")
     lines.append("")
     lines.append("Completion Criteria:")
