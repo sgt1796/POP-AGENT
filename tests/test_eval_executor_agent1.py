@@ -244,7 +244,11 @@ def test_executor_stages_required_files_and_augments_prompt(monkeypatch, tmp_pat
     result = asyncio.run(_run())
     assert result.status == "ok"
     assert prompts
+    assert "Evaluation execution guidance:" in prompts[0]
+    assert "Generic web discovery budget for this sample" in prompts[0]
     assert "Required attachment files are preloaded in the workspace at:" in prompts[0]
+    assert "Local files are primary evidence for this task." in prompts[0]
+    assert "Use file_read first for scientific text files such as .pdb, .cif, and .mmcif." in prompts[0]
     assert "report.txt" in prompts[0]
 
     attachments = result.usage.get("attachments")
@@ -253,6 +257,47 @@ def test_executor_stages_required_files_and_augments_prompt(monkeypatch, tmp_pat
     local_path = attachments[0].get("local_path", "")
     assert isinstance(local_path, str) and local_path
     assert Path(local_path).exists()
+
+
+def test_executor_adds_eval_guidance_without_attachments(monkeypatch, tmp_path: Path):
+    prompts = []
+
+    def _fake_create_runtime_session(*, log_level=None, enable_event_logger=True, overrides=None, **kwargs):
+        del log_level, enable_event_logger, overrides, kwargs
+        return _FakeSession(agent=_FakeAgent())
+
+    async def _fake_run_user_turn(session, prompt, on_warning=None):
+        del session, on_warning
+        prompts.append(str(prompt))
+        return "pred"
+
+    async def _fake_shutdown_runtime_session(session):
+        del session
+        return None
+
+    monkeypatch.setattr(agent_runtime, "create_runtime_session", _fake_create_runtime_session)
+    monkeypatch.setattr(agent_runtime, "run_user_turn", _fake_run_user_turn)
+    monkeypatch.setattr(agent_runtime, "shutdown_runtime_session", _fake_shutdown_runtime_session)
+
+    executor = Agent1RuntimeExecutor()
+
+    async def _run():
+        sample = BenchmarkSample(sample_id="no_file", prompt="Search carefully.", ground_truth="pred")
+        return await executor.run_sample(
+            sample,
+            timeout_s=5,
+            sample_index=0,
+            run_id="run",
+            run_dir=str(tmp_path),
+            executor_options={},
+        )
+
+    result = asyncio.run(_run())
+    assert result.status == "ok"
+    assert prompts
+    assert "Evaluation execution guidance:" in prompts[0]
+    assert "Generic web discovery budget for this sample" in prompts[0]
+    assert "Required attachment files are preloaded in the workspace at:" not in prompts[0]
 
 
 def test_executor_timeout_error_is_human_readable(monkeypatch, tmp_path):

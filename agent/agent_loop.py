@@ -904,6 +904,16 @@ async def _stream_assistant_response(
         return _finalize_error(exc)
 
 
+def _tool_result_indicates_error(result: AgentToolResult) -> bool:
+    details = result.details if isinstance(result.details, dict) else {}
+    if details.get("ok") is False:
+        return True
+    if bool(details.get("blocked")):
+        return True
+    error_value = details.get("error")
+    return isinstance(error_value, str) and bool(error_value.strip())
+
+
 async def _execute_tool_calls(
     tools: Optional[Sequence[AgentTool]],
     tool_calls: List[ToolCallContent],
@@ -993,6 +1003,7 @@ async def _execute_tool_calls(
             exec_result = tool.execute  # type: ignore
             # Call asynchronously and pass on_update
             result = await exec_result(tool_call.id, validated_args, signal, on_update)  # type: ignore
+            is_error = _tool_result_indicates_error(result)
         except Exception as exc:
             # Convert error into a tool result
             is_error = True

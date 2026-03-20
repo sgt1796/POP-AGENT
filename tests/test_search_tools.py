@@ -66,6 +66,50 @@ def test_perplexity_search_returns_error_when_sdk_missing(monkeypatch):
     assert result.details["error"] == "missing_perplexity_sdk"
 
 
+def test_perplexity_search_applies_default_limits_and_concise_rendering(monkeypatch):
+    class _FakeSearchApi:
+        def __init__(self) -> None:
+            self.calls: list[Dict[str, Any]] = []
+
+        def create(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            long_snippet = "A" * 400
+            return SimpleNamespace(
+                results=[
+                    {"title": f"Result {idx}", "url": f"https://example.com/{idx}", "snippet": long_snippet, "date": "2026-03-20", "updated_at": "2026-03-21"}
+                    for idx in range(1, 5)
+                ]
+            )
+
+    class _FakePerplexity:
+        last_instance: "_FakePerplexity | None" = None
+
+        def __init__(self) -> None:
+            self.search = _FakeSearchApi()
+            _FakePerplexity.last_instance = self
+
+    fake_module = types.ModuleType("perplexity")
+    fake_module.Perplexity = _FakePerplexity
+    monkeypatch.setitem(sys.modules, "perplexity", fake_module)
+
+    result = _run(PerplexitySearchTool(), {"query": "compact query"})
+
+    instance = _FakePerplexity.last_instance
+    assert instance is not None
+    call = instance.search.calls[0]
+    assert call["max_results"] == 3
+    assert call["max_tokens_per_page"] == 1024
+
+    assert result.details["ok"] is True
+    assert result.details["count"] == 4
+    assert len(result.details["results"]) == 4
+    assert "1. Result 1" in result.content[0].text
+    assert "3. Result 3" in result.content[0].text
+    assert "4. Result 4" not in result.content[0].text
+    assert "Updated:" not in result.content[0].text
+    assert ("A" * 320) not in result.content[0].text
+
+
 def test_perplexity_search_success_with_mocked_sdk(monkeypatch):
     class _FakeSearchApi:
         def __init__(self) -> None:
@@ -132,6 +176,20 @@ def test_perplexity_search_success_with_mocked_sdk(monkeypatch):
     assert call["search_recency_filter"] == "week"
     assert call["from_date"] == "2026-02-01"
     assert call["to_date"] == "2026-02-25"
+
+
+def test_jina_web_snapshot_truncates_content_and_reports_metadata(monkeypatch):
+    from agent.tools.search import jina_web_snapshot as jina_mod
+
+    monkeypatch.setattr(jina_mod.websnapshot, "get_text_snapshot", lambda web_url, **kwargs: "X" * 20_000)
+    result = _run(JinaWebSnapshotTool(), {"web_url": "https://example.com/large"})
+
+    assert result.details["ok"] is True
+    assert result.details["url"] == "https://example.com/large"
+    assert result.details["char_count"] == 20_000
+    assert result.details["truncated"] is True
+    assert result.details["max_chars"] == 12_000
+    assert len(result.content[0].text) == 12_000
 
 
 def test_perplexity_web_snapshot_stub_response():

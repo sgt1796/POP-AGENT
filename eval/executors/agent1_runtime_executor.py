@@ -70,7 +70,7 @@ class Agent1RuntimeExecutor(AgentExecutor):
             run_id=run_id,
             warnings=warnings,
         )
-        prompt = self._inject_attachment_context(sample.prompt, staged_files)
+        prompt = self._augment_eval_prompt(sample.prompt, staged_files)
 
         try:
             if timeout_s and float(timeout_s) > 0:
@@ -211,19 +211,40 @@ class Agent1RuntimeExecutor(AgentExecutor):
 
         return staged
 
-    def _inject_attachment_context(self, prompt: str, staged_files: List[Dict[str, str]]) -> str:
-        if not staged_files:
-            return prompt
+    def _augment_eval_prompt(self, prompt: str, staged_files: List[Dict[str, str]]) -> str:
         lines = [
             str(prompt or "").rstrip(),
             "",
-            "Required attachment files are preloaded in the workspace at:",
+            "Evaluation execution guidance:",
+            "- Prefer exact local files and precise structured tools before generic web discovery.",
+            "- For scholarly or document tasks, prefer openalex_works and exact local files before perplexity_search or web snapshots.",
+            (
+                "- Generic web discovery budget for this sample: at most 4 total calls across "
+                "perplexity_search, jina_web_snapshot, and perplexity_web_snapshot unless a new call "
+                "adds a concrete new constraint such as a domain filter or a distinct source family."
+            ),
+            "- Once that budget is spent, give the best supported final answer instead of reformulating the same search.",
         ]
-        for item in staged_files:
-            workspace_path = str(item.get("workspace_path", "") or item.get("local_path", "")).strip()
-            if workspace_path:
-                lines.append(f"- {workspace_path}")
-        lines.append("Use these exact paths when opening attached files.")
+        if staged_files:
+            lines.extend(
+                [
+                    "",
+                    "Required attachment files are preloaded in the workspace at:",
+                ]
+            )
+            for item in staged_files:
+                workspace_path = str(item.get("workspace_path", "") or item.get("local_path", "")).strip()
+                if workspace_path:
+                    lines.append(f"- {workspace_path}")
+            lines.extend(
+                [
+                    "Local files are primary evidence for this task.",
+                    "Open these exact local paths first with bounded local reads.",
+                    "Use file_read first for scientific text files such as .pdb, .cif, and .mmcif.",
+                    "Do not fetch remote copies or snapshots of these files unless the local path fails or is incomplete.",
+                    "Use these exact paths when opening attached files.",
+                ]
+            )
         return "\n".join(lines).strip()
 
     def _copy_required_file(self, source: str, destination: str) -> None:

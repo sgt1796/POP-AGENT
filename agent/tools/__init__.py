@@ -1,6 +1,7 @@
 from .agent1_tools import MemorySearchTool
 from .agentmail_tool import AgentMailSendTool
 from .bash_exec_tool import BashExecConfig, BashExecTool
+from .calculator_tool import CalculatorTool
 from .download_url_to_file import DownloadUrlToFileTool
 from .example_tools import FastTool, SlowTool
 from .file_read_tool import FileReadTool, read
@@ -19,6 +20,7 @@ __all__ = [
     "PerplexityWebSnapshotTool",
     "BashExecTool",
     "BashExecConfig",
+    "CalculatorTool",
     "DownloadUrlToFileTool",
     "FileReadTool",
     "FileWriteTool",

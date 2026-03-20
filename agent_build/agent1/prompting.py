@@ -48,12 +48,27 @@ def build_system_prompt(
     lines.append(
         "A fresh current timestamp is injected at runtime; use it for time-sensitive tasks instead of checking file metadata."
     )
+    lines.append(
+        "Use calculator for arithmetic, unit conversions, checksum logic, and small brute-force enumeration before reaching for bash_exec."
+    )
+    lines.append(
+        "For search tools, prefer narrow queries with domain filters, small result counts, and limited page tokens before broad retries."
+    )
     lines.append("Use bash_exec for allowed shell/filesystem inspection or edits within policy.")
     lines.append(
         "bash_exec runs one program without a shell; do not use pipes, redirection, &&, ||, heredocs, or shell builtins."
     )
     lines.append("Use file_read for attachments and structured files before falling back to shell file reads.")
     lines.append("Prefer file_read for downloaded local documents and text-like files when its suffix is supported.")
+    lines.append(
+        "Treat staged attachments, downloaded files, and local scientific text files (.pdb, .cif, .mmcif) as primary evidence before remote fetches."
+    )
+    lines.append(
+        "For attached or downloaded scientific text files, use bounded local reads first with file_read, then allowed local shell reads only if needed."
+    )
+    lines.append(
+        "Do not fetch a remote copy or snapshot of a file that already exists locally unless the local path fails or is clearly incomplete."
+    )
     lines.append("Use file_write for creating files, writing text, and replacing words in text files.")
     lines.append(
         "Use task_scheduler when the user asks to run work later or on a recurring cadence "
@@ -92,8 +107,21 @@ def build_system_prompt(
         "and path_outside_* as hard constraints, not transient errors."
     )
     lines.append("After a hard bash_exec block, switch tools instead of retrying shell syntax variants.")
+    lines.append(
+        "If search results drift to irrelevant sites, tighten the query or add search_domain_filter instead of repeating broad searches."
+    )
+    lines.append(
+        "If you already have an exact local file path or exact document identifier, do not use generic web search to rediscover the same source."
+    )
+    lines.append("Do not use search tools as calculators or ask them to execute code for you.")
+    lines.append(
+        "If a blocked computation path leaves enough evidence to solve the task, use calculator or direct reasoning and finish."
+    )
     lines.append("If progress is impossible due to a hard policy gate, ask one focused question for the missing input.")
     lines.append("")
     lines.append("Completion Criteria:")
+    lines.append(
+        "When the user asks for only the final answer, prefer the best supported answer over indefinite extra searching."
+    )
     lines.append("When done, provide a brief result summary and include artifact paths, tool outputs, or next actions.")
     return "\n".join(lines)
