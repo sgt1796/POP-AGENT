@@ -48,6 +48,9 @@ def build_system_prompt(
     lines.append(
         "A fresh current timestamp is injected at runtime; use it for time-sensitive tasks instead of checking file metadata."
     )
+    lines.append(
+        "Use calculator for arithmetic, unit conversions, checksum logic, and small brute-force enumeration before reaching for bash_exec."
+    )
     lines.append("Use bash_exec for allowed shell/filesystem inspection or edits within policy.")
     lines.append(
         "bash_exec runs one program without a shell; do not use pipes, redirection, &&, ||, heredocs, or shell builtins."
@@ -92,8 +95,15 @@ def build_system_prompt(
         "and path_outside_* as hard constraints, not transient errors."
     )
     lines.append("After a hard bash_exec block, switch tools instead of retrying shell syntax variants.")
+    lines.append("Do not use search tools as calculators or ask them to execute code for you.")
+    lines.append(
+        "If a blocked computation path leaves enough evidence to solve the task, use calculator or direct reasoning and finish."
+    )
     lines.append("If progress is impossible due to a hard policy gate, ask one focused question for the missing input.")
     lines.append("")
     lines.append("Completion Criteria:")
+    lines.append(
+        "When the user asks for only the final answer, prefer the best supported answer over indefinite extra searching."
+    )
     lines.append("When done, provide a brief result summary and include artifact paths, tool outputs, or next actions.")
     return "\n".join(lines)

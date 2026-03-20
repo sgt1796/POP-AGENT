@@ -16,6 +16,7 @@ from agent.tools import (
     AgentMailSendTool,
     BashExecConfig,
     BashExecTool,
+    CalculatorTool,
     DownloadUrlToFileTool,
     FileReadTool,
     FileWriteTool,
@@ -300,6 +301,7 @@ async def _read_input(prompt: str) -> str:
 def build_runtime_tools(
     *,
     memory_search_tool: MemorySearchTool,
+    calculator_tool: AgentTool,
     bash_exec_tool: BashExecTool,
     download_url_to_file_tool: AgentTool,
     gmail_fetch_tool: GmailFetchTool,
@@ -320,6 +322,7 @@ def build_runtime_tools(
     ]
     if task_scheduler_tool is not None:
         tools.append(task_scheduler_tool)
+    tools.append(calculator_tool)
     tools.append(bash_exec_tool)
     if file_read_tool is not None:
         tools.append(file_read_tool)
@@ -687,6 +690,7 @@ def create_runtime_session(
 
     ## Tools
     memory_search_tool = MemorySearchTool(retriever=retriever)
+    calculator_tool = CalculatorTool()
     task_scheduler_tool = TaskSchedulerTool(
         agent=agent,
         run_due_tasks_now_fn=run_scheduled_tasks_now_fn,
@@ -778,6 +782,7 @@ def create_runtime_session(
     )
     tools = build_runtime_tools(
         memory_search_tool=memory_search_tool,
+        calculator_tool=calculator_tool,
         task_scheduler_tool=task_scheduler_tool,
         bash_exec_tool=bash_exec_tool,
         download_url_to_file_tool=download_url_to_file_tool,

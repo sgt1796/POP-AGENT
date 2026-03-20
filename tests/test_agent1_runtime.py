@@ -21,6 +21,7 @@ def _dummy_tool(name: str):
 def test_build_runtime_tools_excludes_demo_tools_by_default():
     tools = build_runtime_tools(
         memory_search_tool=_dummy_tool("memory_search"),  # type: ignore[arg-type]
+        calculator_tool=_dummy_tool("calculator"),  # type: ignore[arg-type]
         bash_exec_tool=_dummy_tool("bash_exec"),  # type: ignore[arg-type]
         download_url_to_file_tool=_dummy_tool("download_url_to_file"),  # type: ignore[arg-type]
         file_read_tool=_dummy_tool("file_read"),  # type: ignore[arg-type]
@@ -39,6 +40,7 @@ def test_build_runtime_tools_excludes_demo_tools_by_default():
         "download_url_to_file",
         "perplexity_web_snapshot",
         "memory_search",
+        "calculator",
         "bash_exec",
         "file_read",
         "file_write",
@@ -51,6 +53,7 @@ def test_build_runtime_tools_excludes_demo_tools_by_default():
 def test_build_runtime_tools_includes_demo_tools_when_enabled():
     tools = build_runtime_tools(
         memory_search_tool=_dummy_tool("memory_search"),  # type: ignore[arg-type]
+        calculator_tool=_dummy_tool("calculator"),  # type: ignore[arg-type]
         bash_exec_tool=_dummy_tool("bash_exec"),  # type: ignore[arg-type]
         download_url_to_file_tool=_dummy_tool("download_url_to_file"),  # type: ignore[arg-type]
         file_read_tool=_dummy_tool("file_read"),  # type: ignore[arg-type]
@@ -69,6 +72,7 @@ def test_build_runtime_tools_includes_demo_tools_when_enabled():
         "download_url_to_file",
         "perplexity_web_snapshot",
         "memory_search",
+        "calculator",
         "bash_exec",
         "file_read",
         "file_write",
@@ -83,6 +87,7 @@ def test_build_runtime_tools_includes_demo_tools_when_enabled():
 def test_build_runtime_tools_includes_scheduler_when_provided():
     tools = build_runtime_tools(
         memory_search_tool=_dummy_tool("memory_search"),  # type: ignore[arg-type]
+        calculator_tool=_dummy_tool("calculator"),  # type: ignore[arg-type]
         task_scheduler_tool=_dummy_tool("task_scheduler"),  # type: ignore[arg-type]
         bash_exec_tool=_dummy_tool("bash_exec"),  # type: ignore[arg-type]
         download_url_to_file_tool=_dummy_tool("download_url_to_file"),  # type: ignore[arg-type]
@@ -103,6 +108,7 @@ def test_build_runtime_tools_includes_scheduler_when_provided():
         "perplexity_web_snapshot",
         "memory_search",
         "task_scheduler",
+        "calculator",
         "bash_exec",
         "file_read",
         "file_write",
@@ -208,6 +214,7 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     monkeypatch.setattr(runtime, "ContextCompressor", lambda *a, **k: SimpleNamespace(maybe_compress=lambda *args, **kwargs: False))
 
     monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
+    monkeypatch.setattr(runtime, "CalculatorTool", lambda: SimpleNamespace(name="calculator"))
     monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root, **kwargs: SimpleNamespace(name="file_read"))
     monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root, **kwargs: SimpleNamespace(name="file_write"))
     monkeypatch.setattr(
@@ -246,7 +253,7 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     assert session.active_session_id == "session-test"
     assert session.auto_session_id == "session-test"
     assert session.auto_title_enabled is True
-    assert [tool.name for tool in session.agent._tools][:13] == [
+    assert [tool.name for tool in session.agent._tools][:14] == [
         "jina_web_snapshot",
         "perplexity_search",
         "openalex_works",
@@ -254,6 +261,7 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
         "perplexity_web_snapshot",
         "memory_search",
         "task_scheduler",
+        "calculator",
         "bash_exec",
         "file_read",
         "file_write",
@@ -285,6 +293,7 @@ def test_create_runtime_session_defaults_tool_allowed_roots_from_bash_roots(monk
 
     monkeypatch.setattr(runtime, "Agent", _FakeAgent)
     monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
+    monkeypatch.setattr(runtime, "CalculatorTool", lambda: SimpleNamespace(name="calculator"))
     monkeypatch.setattr(runtime, "FileReadTool", _recording_tool("file_read"))
     monkeypatch.setattr(runtime, "FileWriteTool", _recording_tool("file_write"))
     monkeypatch.setattr(runtime, "DownloadUrlToFileTool", _recording_tool("download_url_to_file"))

@@ -1,7 +1,7 @@
 benchmark: gaia
 split: validation
 limit: 3
-#seed: 0  # Set explicitly for reproducible shuffle. Leave commented out for non-deterministic order.
+seed: 111  # Set explicitly for reproducible shuffle. Leave commented out for non-deterministic order.
 timeout_s: 180.0
 output_root: eval/runs
 run_id: null
