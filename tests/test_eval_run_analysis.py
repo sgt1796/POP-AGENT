@@ -319,3 +319,55 @@ def test_persist_run_analysis_rewrites_summary_and_samples(tmp_path: Path):
     assert persisted_samples[0]["result"]["failure_analysis"]["primary_cause"] == "wrong_answer"
     assert (run_dir / "summary.md").exists()
     assert analysis["cohorts"]["incorrect"]["count"] == 1
+
+
+def test_analyze_run_artifacts_failure_prompt_omits_normal_stop_reason(monkeypatch: pytest.MonkeyPatch):
+    prompts: list[str] = []
+
+    class _FakePromptFunction:
+        def __init__(self, sys_prompt: str = "", prompt: str = "", client: str | None = None):
+            del sys_prompt, prompt, client
+
+        def execute(self, prompt_text: str, **_kwargs):
+            prompts.append(prompt_text)
+            return json.dumps({"summary": "The agent read the file but used the wrong value."})
+
+    monkeypatch.setattr(run_analysis, "PromptFunction", _FakePromptFunction)
+
+    sample = _sample(
+        "wrong-stop",
+        status="ok",
+        correct=False,
+        prediction="2.06",
+        ground_truth="1.456",
+    )
+    events_by_sample = {
+        "wrong-stop": _events(
+            "wrong-stop",
+            [
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "2.06"}],
+                        "stopReason": "stop",
+                    },
+                }
+            ],
+        )
+    }
+
+    _updated_summary, updated_samples, _analysis = run_analysis.analyze_run_artifacts(
+        {"metrics": {}},
+        [sample],
+        {},
+        events_by_sample,
+        summarize_failure_causes=True,
+    )
+
+    assert prompts
+    assert "Ground truth:" in prompts[0]
+    assert "assistant: text=2.06" in prompts[0]
+    assert "stop_reason=stop" not in prompts[0]
+    failure_analysis = updated_samples[0]["result"]["failure_analysis"]
+    assert failure_analysis["ai_summary"] == "The agent read the file but used the wrong value."

@@ -406,8 +406,11 @@ def _build_failure_prompt(sample: Dict[str, Any], analysis: Dict[str, Any], even
     ]
     result = sample.get("result") if isinstance(sample.get("result"), dict) else {}
     prediction = str(result.get("prediction") or "").strip()
+    ground_truth = str(sample.get("ground_truth") or "").strip()
     if prediction:
         lines.extend(["Prediction:", _truncate(prediction, 500)])
+    if ground_truth:
+        lines.extend(["Ground truth:", _truncate(ground_truth, 500)])
     error_text = str(result.get("error") or "").strip()
     if error_text:
         lines.extend(["Runtime error:", _truncate(error_text, 320)])
@@ -456,7 +459,13 @@ def _failure_trace_lines(events: Sequence[Dict[str, Any]]) -> List[str]:
                 stop_reason = str(message.get("stopReason") or "").strip()
                 error_text = str(message.get("errorMessage") or "").strip()
                 text = _assistant_text_preview(message)
-                detail_bits = [bit for bit in [text, stop_reason, error_text] if bit]
+                detail_bits: List[str] = []
+                if text:
+                    detail_bits.append(f"text={text}")
+                if stop_reason and stop_reason != "stop":
+                    detail_bits.append(f"stop_reason={stop_reason}")
+                if error_text:
+                    detail_bits.append(f"error={error_text}")
                 if detail_bits:
                     rendered = "assistant: " + " | ".join(detail_bits)
         if not rendered:
@@ -624,6 +633,8 @@ def _collect_assistant_errors(events: Sequence[Dict[str, Any]]) -> List[Tuple[st
             continue
         stop_reason = str(message.get("stopReason") or "").strip()
         error_text = str(message.get("errorMessage") or "").strip()
+        if stop_reason == "stop" and not error_text:
+            continue
         if not stop_reason and not error_text:
             continue
         item = (stop_reason, error_text)

@@ -454,3 +454,26 @@ def test_generate_html_report_rejects_zip_input_when_summarizing(tmp_path: Path)
 
     with pytest.raises(ValueError, match="--summarize-agent-steps"):
         generate_html_report(str(zip_path), str(tmp_path / "zip_report.html"), summarize_agent_steps=True)
+
+
+def test_generate_html_report_accepts_numbered_text_steps_from_promptfunction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    class _FakePromptFunction:
+        def __init__(self, sys_prompt: str = "", prompt: str = "", client: str | None = None):
+            del sys_prompt, prompt, client
+
+        def execute(self, *_args, **_kwargs):
+            return "1. Search the web\n2. Open the relevant page\n3. Answer the question"
+
+    monkeypatch.setattr(agent_step_summary, "PromptFunction", _FakePromptFunction)
+
+    run_dir = _create_run_dir(tmp_path, include_optional=True, persisted_summary=False)
+    output_path = tmp_path / "report.html"
+    generate_html_report(str(run_dir), str(output_path), summarize_agent_steps=True)
+
+    samples = [
+        json.loads(line)
+        for line in (run_dir / "samples.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    persisted = samples[0]["result"]["agent_execution_summary"]
+    assert persisted["steps"] == ["Search the web", "Open the relevant page", "Answer the question"]

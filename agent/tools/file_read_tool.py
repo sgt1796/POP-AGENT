@@ -53,6 +53,11 @@ _TEXT_SUFFIXES = {
     ".cif",
     ".mmcif",
 }
+_STRUCTURE_TEXT_SUFFIXES = {
+    ".pdb",
+    ".cif",
+    ".mmcif",
+}
 _IMAGE_SUFFIXES = {
     ".png",
     ".jpg",
@@ -75,6 +80,28 @@ class FileReadError(RuntimeError):
         super().__init__(str(message))
         self.code = str(code or "parse_error")
         self.message = str(message or "unknown file read error")
+
+
+def _success_payload(
+    *,
+    path: str,
+    workspace_path: str,
+    suffix: str,
+    kind: str,
+    content: Any,
+    metadata: Dict[str, Any],
+    truncated: bool,
+) -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "path": path,
+        "workspace_path": workspace_path,
+        "suffix": suffix,
+        "kind": kind,
+        "metadata": metadata,
+        "truncated": truncated,
+        "content": content,
+    }
 
 
 def _resolve_workspace_path(path_value: str, workspace_root: str, allowed_roots: Sequence[str]) -> str:
@@ -114,6 +141,95 @@ def _detect_image_kind(path: str, suffix: str) -> bool:
         return True
     mime_type, _ = mimetypes.guess_type(path)
     return str(mime_type or "").strip().lower().startswith("image/")
+
+
+def _coerce_optional_positive_int(value: Any, field_name: str) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except Exception as exc:
+        raise FileReadError("parse_error", f"{field_name} must be an integer") from exc
+    if parsed <= 0:
+        raise FileReadError("parse_error", f"{field_name} must be > 0")
+    return parsed
+
+
+def _slice_text_lines(
+    lines: Sequence[str],
+    *,
+    line_start: Optional[int],
+    line_count: Optional[int],
+) -> tuple[str, Dict[str, Any]]:
+    total_lines = len(lines)
+    start = int(line_start or 1)
+    start_index = min(max(start - 1, 0), total_lines)
+    if line_count is None:
+        end_index = total_lines
+    else:
+        end_index = min(total_lines, start_index + int(line_count))
+
+    selected = "\n".join(lines[start_index:end_index])
+    has_selection = start_index < end_index
+    return selected, {
+        "line_count": total_lines,
+        "requested_line_start": start,
+        "requested_line_count": int(line_count) if line_count is not None else None,
+        "returned_line_start": start_index + 1 if has_selection else 0,
+        "returned_line_end": end_index if has_selection else 0,
+    }
+
+
+def _build_structure_text_metadata(lines: Sequence[str], suffix: str) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {"line_count": len(lines)}
+    if suffix == ".pdb":
+        atom_preview: List[str] = []
+        first_atom_line: Optional[int] = None
+        first_hetatm_line: Optional[int] = None
+        first_model_line: Optional[int] = None
+        for index, line in enumerate(lines, start=1):
+            if first_model_line is None and line.startswith("MODEL"):
+                first_model_line = index
+            if line.startswith("ATOM"):
+                if first_atom_line is None:
+                    first_atom_line = index
+                if len(atom_preview) < 3:
+                    atom_preview.append(line.rstrip())
+            elif first_hetatm_line is None and line.startswith("HETATM"):
+                first_hetatm_line = index
+            if first_atom_line is not None and len(atom_preview) >= 3 and first_hetatm_line is not None:
+                break
+        if first_atom_line is not None:
+            metadata["first_atom_line"] = first_atom_line
+        if atom_preview:
+            metadata["atom_preview"] = atom_preview
+        if first_hetatm_line is not None:
+            metadata["first_hetatm_line"] = first_hetatm_line
+        if first_model_line is not None:
+            metadata["first_model_line"] = first_model_line
+        return metadata
+
+    atom_site_preview: List[str] = []
+    first_atom_site_line: Optional[int] = None
+    first_loop_line: Optional[int] = None
+    for index, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if first_loop_line is None and stripped == "loop_":
+            first_loop_line = index
+        if stripped.startswith("_atom_site."):
+            if first_atom_site_line is None:
+                first_atom_site_line = index
+            if len(atom_site_preview) < 3:
+                atom_site_preview.append(stripped)
+        if first_atom_site_line is not None and len(atom_site_preview) >= 3 and first_loop_line is not None:
+            break
+    if first_loop_line is not None:
+        metadata["first_loop_line"] = first_loop_line
+    if first_atom_site_line is not None:
+        metadata["first_atom_site_line"] = first_atom_site_line
+    if atom_site_preview:
+        metadata["atom_site_preview"] = atom_site_preview
+    return metadata
 
 
 def _safe_xlsx_value(value: Any) -> Any:
@@ -258,6 +374,8 @@ def read(
     max_chars: int = 200_000,
     max_bytes: int = 10_000_000,
     xlsx_format: str = "json",
+    line_start: Optional[int] = None,
+    line_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     root, roots = normalize_allowed_roots(workspace_root, allowed_roots)
     try:
@@ -274,6 +392,9 @@ def read(
     if max_bytes_value <= 0:
         raise FileReadError("parse_error", "max_bytes must be > 0")
 
+    line_start_value = _coerce_optional_positive_int(line_start, "line_start")
+    line_count_value = _coerce_optional_positive_int(line_count, "line_count")
+
     absolute = _resolve_workspace_path(path, root, roots)
     size = os.path.getsize(absolute)
     if size > max_bytes_value:
@@ -285,17 +406,31 @@ def read(
     if suffix in _TEXT_SUFFIXES:
         text = _read_utf8_text(absolute)
         original_chars = len(text)
-        truncated = original_chars > max_chars_value
-        return {
-            "ok": True,
-            "path": absolute,
-            "workspace_path": workspace_path,
-            "suffix": suffix,
-            "kind": "text",
-            "content": text[:max_chars_value] if truncated else text,
-            "metadata": {"encoding": "utf-8", "char_count": original_chars, "byte_size": size},
-            "truncated": truncated,
-        }
+        metadata: Dict[str, Any] = {"encoding": "utf-8", "char_count": original_chars, "byte_size": size}
+        selected_text = text
+        if line_start_value is not None or line_count_value is not None or suffix in _STRUCTURE_TEXT_SUFFIXES:
+            lines = text.splitlines()
+            if suffix in _STRUCTURE_TEXT_SUFFIXES:
+                metadata.update(_build_structure_text_metadata(lines, suffix))
+            elif "line_count" not in metadata:
+                metadata["line_count"] = len(lines)
+            if line_start_value is not None or line_count_value is not None:
+                selected_text, line_metadata = _slice_text_lines(
+                    lines,
+                    line_start=line_start_value,
+                    line_count=line_count_value,
+                )
+                metadata.update(line_metadata)
+        truncated = len(selected_text) > max_chars_value
+        return _success_payload(
+            path=absolute,
+            workspace_path=workspace_path,
+            suffix=suffix,
+            kind="text",
+            content=selected_text[:max_chars_value] if truncated else selected_text,
+            metadata=metadata,
+            truncated=truncated,
+        )
 
     if suffix == ".json":
         text = _read_utf8_text(absolute)
@@ -303,16 +438,15 @@ def read(
             parsed = json.loads(text)
         except Exception as exc:
             raise FileReadError("parse_error", f"invalid json: {exc}") from exc
-        return {
-            "ok": True,
-            "path": absolute,
-            "workspace_path": workspace_path,
-            "suffix": suffix,
-            "kind": "json",
-            "content": parsed,
-            "metadata": {"encoding": "utf-8", "byte_size": size, "value_type": type(parsed).__name__},
-            "truncated": False,
-        }
+        return _success_payload(
+            path=absolute,
+            workspace_path=workspace_path,
+            suffix=suffix,
+            kind="json",
+            content=parsed,
+            metadata={"encoding": "utf-8", "byte_size": size, "value_type": type(parsed).__name__},
+            truncated=False,
+        )
 
     if suffix == ".csv":
         text = _read_utf8_text(absolute)
@@ -322,16 +456,15 @@ def read(
             rows = [dict(row) for row in reader]
         except Exception as exc:
             raise FileReadError("parse_error", f"invalid csv: {exc}") from exc
-        return {
-            "ok": True,
-            "path": absolute,
-            "workspace_path": workspace_path,
-            "suffix": suffix,
-            "kind": "csv",
-            "content": rows,
-            "metadata": {"encoding": "utf-8", "headers": headers, "row_count": len(rows), "byte_size": size},
-            "truncated": False,
-        }
+        return _success_payload(
+            path=absolute,
+            workspace_path=workspace_path,
+            suffix=suffix,
+            kind="csv",
+            content=rows,
+            metadata={"encoding": "utf-8", "headers": headers, "row_count": len(rows), "byte_size": size},
+            truncated=False,
+        )
 
     if suffix == ".pdf":
         if PdfReader is None:
@@ -355,21 +488,20 @@ def read(
         text = "\n\n".join(parts)
         original_chars = len(text)
         truncated = original_chars > max_chars_value
-        return {
-            "ok": True,
-            "path": absolute,
-            "workspace_path": workspace_path,
-            "suffix": suffix,
-            "kind": "pdf",
-            "content": text[:max_chars_value] if truncated else text,
-            "metadata": {
+        return _success_payload(
+            path=absolute,
+            workspace_path=workspace_path,
+            suffix=suffix,
+            kind="pdf",
+            content=text[:max_chars_value] if truncated else text,
+            metadata={
                 "page_count": len(pages),
                 "non_empty_pages": non_empty_pages,
                 "extracted_char_count": original_chars,
                 "byte_size": size,
             },
-            "truncated": truncated,
-        }
+            truncated=truncated,
+        )
 
     if suffix == ".xlsx":
         normalized_xlsx_format = str(xlsx_format or "json").strip().lower()
@@ -377,16 +509,15 @@ def read(
             raise FileReadError("parse_error", "xlsx_format must be one of: json, csv")
         converter = _xlsx_to_json_payload if normalized_xlsx_format == "json" else _xlsx_to_csv_payload
         payload = converter(absolute, byte_size=size)
-        return {
-            "ok": True,
-            "path": absolute,
-            "workspace_path": workspace_path,
-            "suffix": suffix,
-            "kind": "xlsx",
-            "content": payload["content"],
-            "metadata": payload["metadata"],
-            "truncated": False,
-        }
+        return _success_payload(
+            path=absolute,
+            workspace_path=workspace_path,
+            suffix=suffix,
+            kind="xlsx",
+            content=payload["content"],
+            metadata=payload["metadata"],
+            truncated=False,
+        )
 
     if _detect_image_kind(absolute, suffix):
         try:
@@ -396,20 +527,19 @@ def read(
             raise FileReadError("parse_error", f"unable to read image: {exc}") from exc
         mime_type, _ = mimetypes.guess_type(absolute)
         encoded = base64.b64encode(payload).decode("ascii")
-        return {
-            "ok": True,
-            "path": absolute,
-            "workspace_path": workspace_path,
-            "suffix": suffix,
-            "kind": "image",
-            "content": encoded,
-            "metadata": {
+        return _success_payload(
+            path=absolute,
+            workspace_path=workspace_path,
+            suffix=suffix,
+            kind="image",
+            content=encoded,
+            metadata={
                 "mime_type": str(mime_type or "application/octet-stream"),
                 "byte_size": len(payload),
                 "base64_chars": len(encoded),
             },
-            "truncated": False,
-        }
+            truncated=False,
+        )
 
     raise FileReadError("unsupported_suffix", f"unsupported file suffix: {suffix or '(none)'}")
 
@@ -418,7 +548,8 @@ class FileReadTool(AgentTool):
     name = "file_read"
     description = (
         "Read and parse files by suffix inside the workspace or allowed roots. "
-        "Supports common text/code/config files, structure text files like pdb/cif, plus json, csv, xlsx, pdf, and image-to-base64."
+        "Supports common text/code/config files, structure text files like pdb/cif, plus json, csv, xlsx, pdf, and image-to-base64. "
+        "For large text files, can return bounded line windows and structure hints."
     )
     parameters = {
         "type": "object",
@@ -428,6 +559,14 @@ class FileReadTool(AgentTool):
                 "description": "File path relative to the workspace root or an absolute path inside allowed roots.",
             },
             "max_chars": {"type": "integer", "description": "Optional max returned chars for text/pdf content."},
+            "line_start": {
+                "type": "integer",
+                "description": "Optional 1-based start line for supported text-like files.",
+            },
+            "line_count": {
+                "type": "integer",
+                "description": "Optional number of lines to return for supported text-like files.",
+            },
             "xlsx_format": {
                 "type": "string",
                 "enum": ["json", "csv"],
@@ -472,6 +611,8 @@ class FileReadTool(AgentTool):
             return self._error(path_value, "path_not_found", "path is required")
 
         max_chars = params.get("max_chars", 200_000)
+        line_start = params.get("line_start")
+        line_count = params.get("line_count")
         xlsx_format = str(params.get("xlsx_format", "json") or "json")
         try:
             payload = read(
@@ -480,6 +621,8 @@ class FileReadTool(AgentTool):
                 allowed_roots=self.allowed_roots,
                 max_chars=int(max_chars),
                 xlsx_format=xlsx_format,
+                line_start=line_start,
+                line_count=line_count,
             )
         except FileReadError as exc:
             return self._error(path_value, exc.code, exc.message)

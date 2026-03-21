@@ -16,6 +16,7 @@ _MAX_TRACE_LINES = 180
 _MAX_TRACE_CHARS = 16_000
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 _NUMBERED_STEP_RE = re.compile(r"^\s*\d+[\.\):-]\s*")
+_BULLETED_STEP_RE = re.compile(r"^\s*(?:[-*•]+)\s*")
 _SAMPLE_PROMPT_PREFIX = (
     "You summarize agent execution traces into concise high-level steps for evaluation reports.\n"
     "Return strict JSON only in the form {\"steps\": [\"...\"]}.\n"
@@ -378,7 +379,8 @@ def _message_preview(message: Dict[str, Any]) -> str:
 
 
 def _parse_steps_output(raw_output: Any) -> List[str]:
-    parsed: Any
+    parsed: Any = None
+    cleaned_text = ""
     if isinstance(raw_output, dict):
         parsed = raw_output
     elif isinstance(raw_output, list):
@@ -387,8 +389,11 @@ def _parse_steps_output(raw_output: Any) -> List[str]:
         text = str(raw_output or "").strip()
         if not text:
             raise ValueError("PromptFunction returned an empty response.")
-        cleaned = _JSON_FENCE_RE.sub("", text).strip()
-        parsed = _parse_json_like_payload(cleaned)
+        cleaned_text = _JSON_FENCE_RE.sub("", text).strip()
+        try:
+            parsed = _parse_json_like_payload(cleaned_text)
+        except Exception:
+            parsed = None
 
     if isinstance(parsed, dict):
         steps = parsed.get("steps")
@@ -396,9 +401,43 @@ def _parse_steps_output(raw_output: Any) -> List[str]:
         steps = parsed
 
     normalized = _normalize_steps(steps)
-    if not normalized:
-        raise ValueError("PromptFunction returned no usable steps.")
-    return normalized
+    if normalized:
+        return normalized
+
+    fallback_steps = _extract_steps_from_text(cleaned_text)
+    if fallback_steps:
+        return fallback_steps
+    raise ValueError("PromptFunction returned no usable steps.")
+
+
+def _extract_steps_from_text(text: str) -> List[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+
+    candidates: List[str] = []
+    for line in raw.splitlines():
+        stripped = str(line or "").strip()
+        if not stripped:
+            continue
+        normalized = _NUMBERED_STEP_RE.sub("", stripped)
+        normalized = _BULLETED_STEP_RE.sub("", normalized).strip()
+        if (
+            normalized
+            and (
+                normalized != stripped
+                or _NUMBERED_STEP_RE.match(stripped) is not None
+                or _BULLETED_STEP_RE.match(stripped) is not None
+            )
+        ):
+            candidates.append(normalized)
+
+    if not candidates and raw.count("\n") >= 1:
+        multi_line = [str(line or "").strip() for line in raw.splitlines() if str(line or "").strip()]
+        if 1 < len(multi_line) <= 8:
+            candidates = multi_line
+
+    return _normalize_steps(candidates)
 
 
 def _parse_json_like_payload(text: str) -> Any:

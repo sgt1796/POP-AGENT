@@ -256,3 +256,40 @@ def test_file_read_tool_error_envelope(tmp_path: Path):
         "path": "missing.txt",
     }
     assert result.content[0].text == "file_read error: file not found: missing.txt"
+
+
+def test_read_text_line_window(tmp_path: Path):
+    (tmp_path / "notes.txt").write_text("line1\nline2\nline3\nline4\n", encoding="utf-8")
+
+    result = read("notes.txt", workspace_root=str(tmp_path), line_start=2, line_count=2)
+
+    assert result["ok"] is True
+    assert result["content"] == "line2\nline3"
+    assert result["metadata"]["line_count"] == 4
+    assert result["metadata"]["requested_line_start"] == 2
+    assert result["metadata"]["requested_line_count"] == 2
+    assert result["metadata"]["returned_line_start"] == 2
+    assert result["metadata"]["returned_line_end"] == 3
+
+
+def test_read_pdb_includes_atom_hints_and_serializes_metadata_first(tmp_path: Path):
+    pdb_text = """HEADER demo
+REMARK x
+ATOM      1  N   GLY A   1      11.104  13.207   9.199
+ATOM      2  CA  GLY A   1      12.560  13.400   9.800
+ATOM      3  C   GLY A   1      13.000  12.100  10.300
+"""
+    (tmp_path / "structure.pdb").write_text(pdb_text, encoding="utf-8")
+
+    result = read("structure.pdb", workspace_root=str(tmp_path), max_chars=32)
+
+    assert result["ok"] is True
+    assert result["truncated"] is True
+    assert result["metadata"]["first_atom_line"] == 3
+    assert result["metadata"]["atom_preview"][:2] == [
+        "ATOM      1  N   GLY A   1      11.104  13.207   9.199",
+        "ATOM      2  CA  GLY A   1      12.560  13.400   9.800",
+    ]
+
+    rendered = json.dumps(result, ensure_ascii=False)
+    assert rendered.index('"metadata"') < rendered.index('"content"')
