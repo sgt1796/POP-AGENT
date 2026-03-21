@@ -148,6 +148,81 @@ def test_select_turn_skills_matches_structural_cues_and_caps_results():
     ]
 
 
+def test_select_turn_skills_ignores_eval_meta_guidance_tool_hints():
+    skills = [
+        SkillSpec(
+            name="local-document-evidence",
+            description="doc workflow",
+            kind="workflow",
+            priority=100,
+            tools=("file_read",),
+            triggers=("document",),
+            scope="turn",
+            body="Read local files first.",
+        ),
+        SkillSpec(
+            name="paper-pdf-retrieval",
+            description="paper workflow",
+            kind="workflow",
+            priority=95,
+            tools=("openalex_works",),
+            triggers=("paper", "doi"),
+            scope="turn",
+            body="Use OpenAlex first.",
+        ),
+    ]
+
+    prompt = (
+        "In the Scikit-Learn July 2017 changelog, what other predictor base command received a bug fix?\n\n"
+        "Evaluation execution guidance:\n"
+        "- For scholarly or document tasks, prefer openalex_works and exact local files before perplexity_search or web snapshots.\n"
+        "- Do not answer from search-result snippets alone if you can open the cited page or a local artifact and verify the exact field.\n"
+    )
+
+    selected = select_turn_skills(prompt, ["file_read", "openalex_works"], skills)
+
+    assert selected == []
+
+
+def test_select_turn_skills_keeps_attachment_section_after_stripping_eval_guidance():
+    skills = [
+        SkillSpec(
+            name="local-document-evidence",
+            description="doc workflow",
+            kind="workflow",
+            priority=100,
+            tools=("file_read",),
+            triggers=("document",),
+            scope="turn",
+            body="Read local files first.",
+        ),
+        SkillSpec(
+            name="web-verification",
+            description="web workflow",
+            kind="workflow",
+            priority=90,
+            tools=("jina_web_snapshot",),
+            triggers=("verify",),
+            scope="turn",
+            body="Verify from sources.",
+        ),
+    ]
+
+    prompt = (
+        "Calculate the distance between the first two atoms in the attached structure.\n\n"
+        "Evaluation execution guidance:\n"
+        "- Prefer exact local files and precise structured tools before generic web discovery.\n"
+        "- For scholarly or document tasks, prefer openalex_works and exact local files before perplexity_search or web snapshots.\n\n"
+        "Required attachment files are preloaded in the workspace at:\n"
+        "- eval/runs/sample/_attachments/5wb7.pdb\n"
+        "Local files are primary evidence for this task.\n"
+    )
+
+    selected = select_turn_skills(prompt, ["file_read", "jina_web_snapshot"], skills)
+
+    assert [skill.name for skill in selected] == ["local-document-evidence"]
+
+
 def test_render_skill_text_formats_named_blocks():
     text = render_skill_text(
         [

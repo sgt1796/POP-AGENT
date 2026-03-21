@@ -8,12 +8,14 @@ from typing import Iterable, List, Sequence
 
 _VALID_KINDS = {"tool_rules", "workflow"}
 _VALID_SCOPES = {"system", "turn"}
-_LOCAL_DOC_SUFFIXES = (".pdf", ".csv", ".xlsx")
+_LOCAL_DOC_SUFFIXES = (".pdf", ".csv", ".xlsx", ".pdb", ".cif", ".mmcif")
 _DOMAIN_LIKE_RE = re.compile(r"\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b")
 _LOCAL_PATH_RE = re.compile(r"(?i)(?:\b(?:[A-Z]:[\\/]|\.{1,2}[\\/]|~[\\/])\S+)")
 _ATTACHMENT_RE = re.compile(r"\b(?:attachment|attached|upload|uploaded|workspace|local file|spreadsheet|document)\b")
 _RESEARCH_RE = re.compile(r"\b(?:paper|doi|openalex|preprint|journal|abstract|citation|arxiv)\b")
 _SCHEDULE_RE = re.compile(r"\b(?:schedule|later|tomorrow|every|cron|recurring|remind)\b")
+_EVAL_GUIDANCE_HEADER = "Evaluation execution guidance:"
+_EVAL_ATTACHMENT_HEADER = "Required attachment files are preloaded in the workspace at:"
 
 
 @dataclass(frozen=True)
@@ -179,7 +181,7 @@ def _contains_any(text: str, items: Sequence[str]) -> bool:
 
 def _matches_domain_like_text(text: str) -> bool:
     for match in _DOMAIN_LIKE_RE.findall(text):
-        if match.endswith((".pdf", ".csv", ".xlsx", ".json", ".txt", ".md", ".py", ".yaml", ".yml")):
+        if match.endswith((".pdf", ".csv", ".xlsx", ".json", ".txt", ".md", ".py", ".yaml", ".yml", ".pdb", ".cif", ".mmcif")):
             continue
         return True
     return False
@@ -205,6 +207,19 @@ def _matches_structural_cues(skill: SkillSpec, message: str) -> bool:
     if skill.name == "scheduled-reporting":
         return _SCHEDULE_RE.search(lowered) is not None or "email me" in lowered
     return False
+
+
+def _strip_eval_meta_guidance(message: str) -> str:
+    text = str(message or "").strip()
+    if not text or _EVAL_GUIDANCE_HEADER not in text:
+        return text
+
+    before, after = text.split(_EVAL_GUIDANCE_HEADER, 1)
+    retained_sections = [before.strip()]
+    if _EVAL_ATTACHMENT_HEADER in after:
+        _, attachment_section = after.split(_EVAL_ATTACHMENT_HEADER, 1)
+        retained_sections.append(f"{_EVAL_ATTACHMENT_HEADER}{attachment_section}".strip())
+    return "\n\n".join(section for section in retained_sections if section).strip()
 
 
 def load_skills(skill_root: str) -> list[SkillSpec]:
@@ -238,7 +253,8 @@ def select_system_skills(enabled_tool_names: Sequence[str], skills: Sequence[Ski
 
 
 def select_turn_skills(user_message: str, enabled_tool_names: Sequence[str], skills: Sequence[SkillSpec]) -> list[SkillSpec]:
-    lowered = str(user_message or "").strip().lower()
+    selection_text = _strip_eval_meta_guidance(user_message)
+    lowered = selection_text.lower()
     if not lowered:
         return []
 
@@ -248,7 +264,7 @@ def select_turn_skills(user_message: str, enabled_tool_names: Sequence[str], ski
             continue
         if not _skill_is_enabled(skill, enabled_tool_names):
             continue
-        if _contains_any(lowered, skill.triggers) or _matches_structural_cues(skill, user_message):
+        if _contains_any(lowered, skill.triggers) or _matches_structural_cues(skill, selection_text):
             selected.append(skill)
     return _sorted_skills(selected)[:2]
 

@@ -79,7 +79,15 @@ def build_system_prompt(
     lines.append("Failure Recovery:")
     lines.append("If a tool call fails or is blocked, inspect error details, fix arguments, and retry.")
     lines.append(
+        "When a failed tool result already contains exact fallback URLs, landing pages, or candidate artifacts, "
+        "use those concrete leads before reformulating the task as a generic search."
+    )
+    lines.append(
         "After a late tool error, either make one concrete fallback attempt or finish from the strongest explicit evidence already in hand."
+    )
+    lines.append(
+        "For document retrieval, if a PDF fetch resolves to HTML or a verification/interstitial page, inspect the "
+        "source landing page or DOI page before broad web search."
     )
     lines.append(
         "Treat command_not_allowed, blocked_shell_operator, command_not_available_on_host, approval_required_or_denied, "

@@ -37,6 +37,8 @@ def test_prompt_includes_core_sections_allowlists_and_tool_rules():
     assert "[calculator-rules]" in prompt
     assert "Missing Capability Flow:" in prompt
     assert "Failure Recovery:" in prompt
+    assert "use those concrete leads before reformulating the task as a generic search" in prompt
+    assert "if a PDF fetch resolves to HTML or a verification/interstitial page" in prompt
     assert "Completion Criteria:" in prompt
 
 

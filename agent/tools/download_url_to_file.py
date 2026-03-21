@@ -17,6 +17,7 @@ _TRUE_WORDS = {"1", "true", "yes", "y", "on"}
 _FALSE_WORDS = {"0", "false", "no", "n", "off"}
 _HTML_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _HTML_HREF_RE = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_INTERSTITIAL_TERMS = ("verify", "verification", "captcha", "robot", "sign in", "login", "access denied")
 
 
 class _DownloadToolError(RuntimeError):
@@ -156,6 +157,36 @@ def _content_type_mismatch_details(
     return details
 
 
+def _content_type_mismatch_recovery_hint(
+    *,
+    content_type: str,
+    mismatch_details: Dict[str, Any],
+) -> str:
+    if content_type != "text/html":
+        return ""
+
+    html_title = _to_text(mismatch_details.get("html_title")).lower()
+    content_preview = _to_text(mismatch_details.get("content_preview")).lower()
+    candidate_links = mismatch_details.get("pdf_link_candidates") or []
+    looks_interstitial = any(term in html_title or term in content_preview for term in _INTERSTITIAL_TERMS)
+
+    if candidate_links:
+        if looks_interstitial:
+            return (
+                "looks like a verification/interstitial page; inspect the final URL or source landing page, "
+                "then retry one of the exact PDF links before broad search"
+            )
+        return (
+            "treat this as a landing page; inspect the final URL and retry one of the exact PDF links before broad search"
+        )
+
+    if looks_interstitial:
+        return (
+            "looks like a verification/interstitial page; inspect the final URL or source landing page before broad search"
+        )
+    return "treat this as a landing page; inspect the final URL or source landing page before broad search"
+
+
 class DownloadUrlToFileTool(AgentTool):
     name = "download_url_to_file"
     description = (
@@ -258,16 +289,29 @@ class DownloadUrlToFileTool(AgentTool):
                         content_type=content_type,
                         final_url=final_url,
                     )
+                    recovery_hint = _content_type_mismatch_recovery_hint(
+                        content_type=content_type,
+                        mismatch_details=mismatch_details,
+                    )
+                    if recovery_hint:
+                        mismatch_details["recovery_hint"] = recovery_hint
                     message = (
                         "expected content type "
                         f"'{expected_content_type}' but received '{content_type}'"
                     )
                     html_title = str(mismatch_details.get("html_title") or "").strip()
+                    content_preview = str(mismatch_details.get("content_preview") or "").strip()
                     candidate_links = mismatch_details.get("pdf_link_candidates") or []
                     if html_title:
                         message += f"; landing page title: {html_title}"
+                    if final_url:
+                        message += f"; final_url: {final_url}"
                     if candidate_links:
                         message += f"; pdf_link_candidates: {', '.join(str(item) for item in candidate_links[:3])}"
+                    if content_preview:
+                        message += f"; content_preview: {content_preview[:160]}"
+                    if recovery_hint:
+                        message += f"; recovery_hint: {recovery_hint}"
                     raise _DownloadToolError(
                         "unexpected_content_type",
                         message,
