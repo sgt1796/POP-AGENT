@@ -18,6 +18,7 @@ from .runtime import (
     switch_session,
 )
 from .scheduled_runner import start_daemon
+from .skill_registry import render_skill_text, select_system_skills
 from .tui_runtime import (
     AsyncDecisionQueue,
     format_activity_event,
@@ -739,13 +740,18 @@ def run_tui() -> int:
         def _rebuild_system_prompt(self) -> None:
             if self._session is None:
                 return
-            workspace_root = os.path.realpath(os.getcwd())
+            workspace_root = self._session.workspace_root or os.path.realpath(os.getcwd())
+            tool_rule_text = render_skill_text(
+                select_system_skills(sorted(self._session.enabled_tool_names), self._session.skills)
+            )
             self._session.agent.set_system_prompt(
                 build_system_prompt(
                     bash_read_csv=sorted_csv(BASH_READ_COMMANDS),
                     bash_write_csv=sorted_csv(BASH_WRITE_COMMANDS),
                     bash_git_csv=sorted_csv(BASH_GIT_READ_SUBCOMMANDS),
                     bash_prompt_approval=self._session.bash_prompt_approval,
+                    enabled_tool_names=sorted(self._session.enabled_tool_names),
+                    tool_rule_text=tool_rule_text,
                     execution_profile=self._session.execution_profile,
                     workspace_root=workspace_root,
                 )

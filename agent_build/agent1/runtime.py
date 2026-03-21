@@ -54,6 +54,7 @@ from agent.memory import (
 )
 from .message_utils import extract_latest_assistant_text, extract_texts
 from .prompting import build_system_prompt, resolve_execution_profile
+from .skill_registry import SkillSpec, load_skills, render_skill_text, select_system_skills, select_turn_skills
 from .usage_reporting import format_turn_usage_line, usage_delta
 
 
@@ -71,6 +72,9 @@ class RuntimeSession:
     unsubscribe_log: Callable[[], None]
     unsubscribe_memory: Callable[[], None]
     unsubscribe_approval: Callable[[], None]
+    enabled_tool_names: Set[str] = field(default_factory=set)
+    skills: List[SkillSpec] = field(default_factory=list)
+    workspace_root: str = ""
     debug_log: Optional[Callable[[str], None]] = None
     unsubscribe_debug_file_log: Callable[[], None] = lambda: None
     close_debug_log_file: Optional[Callable[[], None]] = None
@@ -228,6 +232,42 @@ def _filter_runtime_tools(
     if exclude_names:
         filtered = [tool for tool in filtered if getattr(tool, "name", "") not in exclude_names]
     return filtered
+
+
+def _skills_root() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
+
+
+def _enabled_tool_name_set(tools: Sequence[AgentTool]) -> Set[str]:
+    return {
+        str(getattr(tool, "name", "") or "").strip().lower()
+        for tool in tools
+        if str(getattr(tool, "name", "") or "").strip()
+    }
+
+
+def _build_runtime_system_prompt(
+    *,
+    enabled_tool_names: Sequence[str],
+    loaded_skills: Sequence[SkillSpec],
+    bash_read_csv: str,
+    bash_write_csv: str,
+    bash_git_csv: str,
+    bash_prompt_approval: bool,
+    execution_profile: str,
+    workspace_root: str,
+) -> str:
+    tool_rule_text = render_skill_text(select_system_skills(enabled_tool_names, loaded_skills))
+    return build_system_prompt(
+        bash_read_csv=bash_read_csv,
+        bash_write_csv=bash_write_csv,
+        bash_git_csv=bash_git_csv,
+        bash_prompt_approval=bash_prompt_approval,
+        enabled_tool_names=sorted(enabled_tool_names),
+        tool_rule_text=tool_rule_text,
+        execution_profile=execution_profile,
+        workspace_root=workspace_root,
+    )
 
 
 def _generate_session_id() -> str:
@@ -650,6 +690,7 @@ def create_runtime_session(
 ) -> RuntimeSession:
     if overrides is None:
         overrides = RuntimeOverrides()
+    loaded_skills = load_skills(_skills_root())
 
     agent = Agent({"stream_fn": stream})
     agent.set_model({"provider": "gemini", "id": "gemini-3-flash-preview", "api": None})
@@ -770,16 +811,6 @@ def create_runtime_session(
         )
     )
 
-    agent.set_system_prompt(
-        build_system_prompt(
-            bash_read_csv=bash_read_csv,
-            bash_write_csv=bash_write_csv,
-            bash_git_csv=bash_git_csv,
-            bash_prompt_approval=bash_prompt_approval,
-            execution_profile=execution_profile,
-            workspace_root=workspace_root,
-        )
-    )
     tools = build_runtime_tools(
         memory_search_tool=memory_search_tool,
         calculator_tool=calculator_tool,
@@ -797,6 +828,19 @@ def create_runtime_session(
         tools,
         include_tools=overrides.include_tools,
         exclude_tools=overrides.exclude_tools,
+    )
+    enabled_tool_names = _enabled_tool_name_set(tools)
+    agent.set_system_prompt(
+        _build_runtime_system_prompt(
+            enabled_tool_names=sorted(enabled_tool_names),
+            loaded_skills=loaded_skills,
+            bash_read_csv=bash_read_csv,
+            bash_write_csv=bash_write_csv,
+            bash_git_csv=bash_git_csv,
+            bash_prompt_approval=bash_prompt_approval,
+            execution_profile=execution_profile,
+            workspace_root=workspace_root,
+        )
     )
     agent.set_tools(tools)
     try:
@@ -868,6 +912,9 @@ def create_runtime_session(
         unsubscribe_log=unsubscribe_log,
         unsubscribe_memory=unsubscribe_memory,
         unsubscribe_approval=unsubscribe_approval,
+        enabled_tool_names=enabled_tool_names,
+        skills=list(loaded_skills),
+        workspace_root=workspace_root,
         debug_log=effective_debug_log,
         unsubscribe_debug_file_log=unsubscribe_debug_file_log,
         close_debug_log_file=close_debug_log_file,
@@ -1010,7 +1057,11 @@ async def run_user_turn(
         session.active_session_id,
         long_term=getattr(session.retriever, "long_term", None),
     )
-    augmented_prompt = build_augmented_prompt(user_message, memory_text)
+    matched_turn_skills = select_turn_skills(user_message, sorted(session.enabled_tool_names), session.skills)
+    skill_text = render_skill_text(matched_turn_skills)
+    if matched_turn_skills and session.debug_log is not None:
+        session.debug_log("[skills] matched " + ", ".join(skill.name for skill in matched_turn_skills))
+    augmented_prompt = build_augmented_prompt(user_message, memory_text, skill_text=skill_text)
     await session.agent.prompt(augmented_prompt)
 
     reply = extract_latest_assistant_text(session.agent)
