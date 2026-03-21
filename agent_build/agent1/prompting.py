@@ -57,12 +57,18 @@ def build_system_prompt(
     lines.append(
         "If search results are dominated by spam, irrelevant domains, or obvious content drift, stop broadening and pivot to an exact source URL, exact identifier, or local artifact."
     )
+    lines.append(
+        "Do not answer from search-result snippets alone when you can open the cited page or local document and verify the exact field there."
+    )
     lines.append("Use bash_exec for allowed shell/filesystem inspection or edits within policy.")
     lines.append(
         "bash_exec runs one program without a shell; do not use pipes, redirection, &&, ||, heredocs, or shell builtins."
     )
     lines.append("Use file_read for attachments and structured files before falling back to shell file reads.")
     lines.append("Prefer file_read for downloaded local documents and text-like files when its suffix is supported.")
+    lines.append(
+        "For downloaded PDFs, use file_read on the PDF itself and inspect bounded nearby text windows before trying shell commands."
+    )
     lines.append(
         "Treat staged attachments, downloaded files, and local scientific text files (.pdb, .cif, .mmcif) as primary evidence before remote fetches."
     )
@@ -86,6 +92,9 @@ def build_system_prompt(
     )
     lines.append(
         "If download_url_to_file returns HTML instead of a requested PDF, treat it as a landing page and use the returned final_url/title/pdf_link_candidates to recover the real document."
+    )
+    lines.append(
+        "Once a relevant local document is available, stop broad source rediscovery and extract the answer from that local artifact."
     )
     lines.append(
         "Use agentmail_send when the user asks to email the configured owner a report, summary, or attachment."
@@ -122,12 +131,30 @@ def build_system_prompt(
     lines.append(
         "If you already have an exact local file path or exact document identifier, do not use generic web search to rediscover the same source."
     )
+    lines.append(
+        "Do not use bash_exec text-search commands directly on binary PDFs; use file_read and inspect the nearby extracted passage instead."
+    )
+    lines.append(
+        "For calculator, call allowed functions directly such as sin, cos, radians, sqrt, max, min, sum, len, and enumerate; do not use import, __import__, lambda, or attribute access like math.sin."
+    )
+    lines.append(
+        "When calculator needs a long table or list, pass it through bindings and keep expression syntax compact."
+    )
     lines.append("Do not use search tools as calculators or ask them to execute code for you.")
     lines.append(
         "Calculator accepts one expression, not multiline Python statements or imports; use bindings plus comprehensions when the calculation needs structured inputs."
     )
     lines.append(
         "If a blocked computation path leaves enough evidence to solve the task, use calculator or direct reasoning and finish."
+    )
+    lines.append(
+        "When a local document contains the target phrase, read the surrounding passage and answer from the explicit attribution there, not from unrelated names elsewhere in the document."
+    )
+    lines.append(
+        "Before finalizing, check that the answer matches the requested target type and field: person vs place vs class name, exact item number in a list, requested units, and whether counting is inclusive or exclusive."
+    )
+    lines.append(
+        "For comparison/count questions, prefer extracting explicit lists and using calculator with set/count logic instead of relying on category totals or rough mental math."
     )
     lines.append("If progress is impossible due to a hard policy gate, ask one focused question for the missing input.")
     lines.append("")

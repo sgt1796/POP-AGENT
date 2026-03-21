@@ -14,6 +14,16 @@ _BASE_WORKS_URL = "https://api.openalex.org/works"
 _ACTIONS = {"search", "fetch_openalex_record"}
 _TRUE_WORDS = {"1", "true", "yes", "y", "on"}
 _FALSE_WORDS = {"0", "false", "no", "n", "off"}
+_SELECT_FIELD_ALIASES = {
+    "abstract": ("abstract_inverted_index",),
+    "authors": ("authorships",),
+    "best_oa_landing_url": ("best_oa_location",),
+    "best_oa_pdf_url": ("best_oa_location",),
+    "default_relevance_score": ("relevance_score",),
+    "is_oa": ("open_access",),
+    "oa_url": ("open_access",),
+    "source": ("primary_location",),
+}
 
 
 def _to_text(value: Any) -> str:
@@ -76,6 +86,20 @@ def _to_select(value: Any) -> List[str]:
         if field:
             out.append(field)
     return out
+
+
+def _expand_select_fields(select: List[str]) -> List[str]:
+    expanded: List[str] = []
+    seen: set[str] = set()
+    for field in select:
+        mapped_fields = _SELECT_FIELD_ALIASES.get(field, (field,))
+        for mapped in mapped_fields:
+            normalized = _to_text(mapped)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            expanded.append(normalized)
+    return expanded
 
 
 def _extract_openalex_id(work_id: str) -> str:
@@ -166,6 +190,10 @@ def _normalize_record(item: Dict[str, Any], include_abstract: bool) -> Dict[str,
     if not source_name:
         source_name = _to_text(_get_nested(item, "host_venue", "display_name"))
 
+    relevance_score = item.get("default_relevance_score")
+    if relevance_score is None:
+        relevance_score = item.get("relevance_score")
+
     normalized = {
         "id": _to_text(item.get("id")),
         "title": _to_text(item.get("title")),
@@ -179,7 +207,7 @@ def _normalize_record(item: Dict[str, Any], include_abstract: bool) -> Dict[str,
         "oa_url": open_access_oa_url,
         "best_oa_landing_url": best_oa_landing_url,
         "best_oa_pdf_url": best_oa_pdf_url,
-        "default_relevance_score": item.get("default_relevance_score"),
+        "default_relevance_score": relevance_score,
     }
     if include_abstract:
         normalized["abstract"] = _reconstruct_abstract(item.get("abstract_inverted_index"))
@@ -354,7 +382,8 @@ class OpenAlexWorksTool(AgentTool):
         if per_page > 200:
             raise ValueError("per_page must be <= 200")
 
-        select = _to_select(params.get("select"))
+        requested_select = _to_select(params.get("select"))
+        select = _expand_select_fields(requested_select)
         sort = _to_text(params.get("sort"))
         cursor = _to_text(params.get("cursor"))
         mailto = self._resolve_mailto(params)
@@ -379,7 +408,8 @@ class OpenAlexWorksTool(AgentTool):
             summary_filters["cursor"] = cursor
         if select:
             request_params["select"] = ",".join(select)
-            summary_filters["select"] = list(select)
+            summary_filters["select"] = list(requested_select)
+            summary_filters["api_select"] = list(select)
         if mailto:
             request_params["mailto"] = mailto
             summary_filters["mailto"] = mailto
@@ -395,7 +425,8 @@ class OpenAlexWorksTool(AgentTool):
         if not work_id:
             raise ValueError("fetch_openalex_record requires work_id")
 
-        select = _to_select(params.get("select"))
+        requested_select = _to_select(params.get("select"))
+        select = _expand_select_fields(requested_select)
         mailto = self._resolve_mailto(params)
         timeout_s = self._resolve_timeout(params)
         include_abstract = _optional_bool(params.get("include_abstract"), "include_abstract") is True
@@ -427,7 +458,8 @@ class OpenAlexWorksTool(AgentTool):
             "resolved_work_id": resolved,
             "timeout_s": timeout_s,
             "include_abstract": include_abstract,
-            "select": list(select),
+            "select": list(requested_select),
+            "api_select": list(select),
             "mailto": mailto,
             "doi_lookup_filter": request_params.get("filter"),
         }

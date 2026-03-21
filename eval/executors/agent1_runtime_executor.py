@@ -218,12 +218,16 @@ class Agent1RuntimeExecutor(AgentExecutor):
             "Evaluation execution guidance:",
             "- Prefer exact local files and precise structured tools before generic web discovery.",
             "- For scholarly or document tasks, prefer openalex_works and exact local files before perplexity_search or web snapshots.",
+            "- Do not answer from search-result snippets alone if you can open the cited page or a local artifact and verify the exact field.",
+            "- If a page is relevant but dense, extract the target field from the exact nearby passage instead of relying on a broad summary of the page.",
             (
                 "- Generic web discovery budget for this sample: at most 4 total calls across "
                 "perplexity_search, jina_web_snapshot, and perplexity_web_snapshot unless a new call "
                 "adds a concrete new constraint such as a domain filter or a distinct source family."
             ),
             "- Once that budget is spent, give the best supported final answer instead of reformulating the same search.",
+            "- For calculator, use a single expression with direct function calls and bindings; do not use import, lambda, __import__, or attribute access like math.sin.",
+            "- Before answering, verify the requested output field and counting convention: exact entity, requested unit, item index, and inclusive vs exclusive counts.",
         ]
         if staged_files:
             lines.extend(

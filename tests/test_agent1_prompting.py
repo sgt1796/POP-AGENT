@@ -24,8 +24,10 @@ def test_prompt_includes_execution_first_sections_and_allowlists():
     assert "Use calculator for arithmetic, unit conversions, checksum logic" in prompt
     assert "prefer narrow queries with domain filters" in prompt
     assert "If search results are dominated by spam" in prompt
+    assert "Do not answer from search-result snippets alone" in prompt
     assert "bash_exec runs one program without a shell" in prompt
     assert "Prefer file_read for downloaded local documents and text-like files" in prompt
+    assert "For downloaded PDFs, use file_read on the PDF itself" in prompt
     assert "local scientific text files (.pdb, .cif, .mmcif) as primary evidence" in prompt
     assert "use bounded local reads first with file_read" in prompt
     assert "Do not fetch a remote copy or snapshot of a file that already exists locally" in prompt
@@ -37,6 +39,7 @@ def test_prompt_includes_execution_first_sections_and_allowlists():
     assert "Use task_scheduler when the user asks to run work later or on a recurring cadence" in prompt
     assert "task_scheduler run_now marks the task as due now" in prompt
     assert "If download_url_to_file returns HTML instead of a requested PDF" in prompt
+    assert "Once a relevant local document is available, stop broad source rediscovery" in prompt
     assert "Use agentmail_send when the user asks to email the configured owner" in prompt
     assert "Failure Recovery:" in prompt
     assert "Do not guess from weak associations after source retrieval fails" in prompt
@@ -44,8 +47,14 @@ def test_prompt_includes_execution_first_sections_and_allowlists():
     assert "After a hard bash_exec block, switch tools instead of retrying shell syntax variants." in prompt
     assert "If search results drift to irrelevant sites" in prompt
     assert "do not use generic web search to rediscover the same source" in prompt
+    assert "Do not use bash_exec text-search commands directly on binary PDFs" in prompt
+    assert "do not use import, __import__, lambda, or attribute access like math.sin" in prompt
+    assert "pass it through bindings and keep expression syntax compact" in prompt
     assert "Do not use search tools as calculators or ask them to execute code for you." in prompt
     assert "Calculator accepts one expression, not multiline Python statements or imports" in prompt
+    assert "When a local document contains the target phrase, read the surrounding passage" in prompt
+    assert "Before finalizing, check that the answer matches the requested target type and field" in prompt
+    assert "prefer extracting explicit lists and using calculator with set/count logic" in prompt
     assert "Completion Criteria:" in prompt
     assert "When the user asks for only the final answer" in prompt
 

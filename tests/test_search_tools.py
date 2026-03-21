@@ -378,6 +378,62 @@ def test_openalex_works_fetch_openalex_id_success(monkeypatch):
     assert call["query"]["select"] == ["id,title,doi"]
 
 
+def test_openalex_works_fetch_translates_friendly_select_aliases(monkeypatch):
+    from agent.tools.search import openalex_works as openalex_mod
+
+    calls = []
+
+    def _fake_urlopen(req, timeout=0):
+        del timeout
+        parsed = urllib_parse.urlparse(req.full_url)
+        query = urllib_parse.parse_qs(parsed.query)
+        calls.append({"path": parsed.path, "query": query})
+        return _FakeUrlResponse(
+            {
+                "meta": {"count": 1},
+                "results": [
+                    {
+                        "id": "https://openalex.org/W111",
+                        "title": "Alias Mapping Result",
+                        "doi": "https://doi.org/10.1000/alias",
+                        "open_access": {
+                            "is_oa": True,
+                            "oa_url": "https://example.com/oa",
+                        },
+                        "best_oa_location": {
+                            "landing_page_url": "https://example.com/landing",
+                            "pdf_url": "https://example.com/paper.pdf",
+                        },
+                        "primary_location": {
+                            "source": {"display_name": "Alias Source"},
+                        },
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(openalex_mod.urllib_request, "urlopen", _fake_urlopen)
+    result = _run(
+        OpenAlexWorksTool(),
+        {
+            "action": "fetch_openalex_record",
+            "work_id": "10.1000/alias",
+            "select": ["id", "title", "best_oa_pdf_url", "oa_url", "source"],
+        },
+    )
+
+    assert result.details["ok"] is True
+    assert result.details["select"] == ["id", "title", "best_oa_pdf_url", "oa_url", "source"]
+    assert result.details["api_select"] == ["id", "title", "best_oa_location", "open_access", "primary_location"]
+    assert result.details["record"]["best_oa_pdf_url"] == "https://example.com/paper.pdf"
+    assert result.details["record"]["oa_url"] == "https://example.com/oa"
+    assert result.details["record"]["source"] == "Alias Source"
+
+    call = calls[0]
+    assert call["path"] == "/works"
+    assert call["query"]["select"] == ["id,title,best_oa_location,open_access,primary_location"]
+
+
 def test_openalex_works_fetch_doi_lookup_success(monkeypatch):
     from agent.tools.search import openalex_works as openalex_mod
 
