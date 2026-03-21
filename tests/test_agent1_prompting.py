@@ -39,10 +39,14 @@ def test_prompt_includes_core_sections_allowlists_and_tool_rules():
     assert "Failure Recovery:" in prompt
     assert "use those concrete leads before reformulating the task as a generic search" in prompt
     assert "if a PDF fetch resolves to HTML or a verification/interstitial page" in prompt
+    assert "If broad search results turn noisy or drift off-domain" in prompt
     assert "final_url, pdf_link_candidates, or content_preview" in prompt
     assert "rewrite the expression with direct allowed calls or bindings" in prompt
     assert "Completion Criteria:" in prompt
     assert "eligible candidates from evidence before computing" in prompt
+    assert "verify each hop explicitly" in prompt
+    assert "satisfies every stated filter, boundary, membership rule" in prompt
+    assert "compact evidence table of eligible entities" in prompt
     assert "spend one targeted verification step" in prompt
     assert "no echoed template, labels, or extra units" in prompt
     assert "placeholder, copied template, or generic filler token" in prompt

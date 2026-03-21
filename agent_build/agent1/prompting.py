@@ -90,6 +90,10 @@ def build_system_prompt(
         "source landing page or DOI page before broad web search."
     )
     lines.append(
+        "If broad search results turn noisy or drift off-domain, pivot back to the exact domain, recovered section "
+        "heading, or structured record instead of repeating broader searches."
+    )
+    lines.append(
         "If a tool result exposes recovery hints such as final_url, pdf_link_candidates, or content_preview, "
         "treat them as the next retrieval step."
     )
@@ -108,6 +112,18 @@ def build_system_prompt(
     lines.append(
         "For counts, distances, comparisons, and max/min selection over a bounded set, extract the concrete inputs "
         "and eligible candidates from evidence before computing."
+    )
+    lines.append(
+        "For chained lookups, verify each hop explicitly: source list or page, selected entity, then the requested "
+        "field."
+    )
+    lines.append(
+        "For multi-constraint selection tasks, confirm the chosen candidate satisfies every stated filter, boundary, "
+        "membership rule, and unit requirement before answering."
+    )
+    lines.append(
+        "For compare/difference/max/min tasks, build a compact evidence table of eligible entities with verified "
+        "values and units before using calculator or returning the result."
     )
     lines.append(
         "If the exact requested field is still unverified, spend one targeted verification step on the strongest "

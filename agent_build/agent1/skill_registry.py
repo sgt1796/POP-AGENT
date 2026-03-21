@@ -14,6 +14,10 @@ _LOCAL_PATH_RE = re.compile(r"(?i)(?:\b(?:[A-Z]:[\\/]|\.{1,2}[\\/]|~[\\/])\S+)")
 _ATTACHMENT_RE = re.compile(r"\b(?:attachment|attached|upload|uploaded|workspace|local file|spreadsheet|document)\b")
 _RESEARCH_RE = re.compile(r"\b(?:paper|doi|openalex|preprint|journal|abstract|citation|arxiv)\b")
 _SCHEDULE_RE = re.compile(r"\b(?:schedule|later|tomorrow|every|cron|recurring|remind)\b")
+_STRUCTURED_VERIFICATION_RE = re.compile(
+    r"\b(?:compare|comparison|difference|how many|count|maximum|minimum|heaviest|lightest|"
+    r"furthest|farthest|nearest|closest|shared|possible)\b"
+)
 _EVAL_GUIDANCE_HEADER = "Evaluation execution guidance:"
 _EVAL_ATTACHMENT_HEADER = "Required attachment files are preloaded in the workspace at:"
 
@@ -204,6 +208,8 @@ def _matches_structural_cues(skill: SkillSpec, message: str) -> bool:
         )
     if skill.name == "paper-pdf-retrieval":
         return _RESEARCH_RE.search(lowered) is not None or (".pdf" in lowered and _RESEARCH_RE.search(lowered) is not None)
+    if skill.name == "structured-answer-verification":
+        return _STRUCTURED_VERIFICATION_RE.search(lowered) is not None
     if skill.name == "scheduled-reporting":
         return _SCHEDULE_RE.search(lowered) is not None or "email me" in lowered
     return False

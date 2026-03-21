@@ -25,6 +25,7 @@ def test_load_skills_parses_repo_skill_files():
         "local-document-evidence",
         "web-verification",
         "paper-pdf-retrieval",
+        "structured-answer-verification",
         "scheduled-reporting",
     }
 
@@ -221,6 +222,39 @@ def test_select_turn_skills_keeps_attachment_section_after_stripping_eval_guidan
     selected = select_turn_skills(prompt, ["file_read", "jina_web_snapshot"], skills)
 
     assert [skill.name for skill in selected] == ["local-document-evidence"]
+
+
+def test_select_turn_skills_matches_structured_answer_verification_cues():
+    skills = [
+        SkillSpec(
+            name="structured-answer-verification",
+            description="comparison workflow",
+            kind="workflow",
+            priority=92,
+            tools=("calculator", "jina_web_snapshot"),
+            triggers=("compare", "difference"),
+            scope="turn",
+            body="Verify the eligible set before computing.",
+        ),
+        SkillSpec(
+            name="web-verification",
+            description="web workflow",
+            kind="workflow",
+            priority=90,
+            tools=("jina_web_snapshot",),
+            triggers=("verify",),
+            scope="turn",
+            body="Verify from sources.",
+        ),
+    ]
+
+    selected = select_turn_skills(
+        "Which ASEAN capital city pair is furthest apart, and what is the difference in distance compared with the nearest pair?",
+        ["calculator", "jina_web_snapshot"],
+        skills,
+    )
+
+    assert [skill.name for skill in selected] == ["structured-answer-verification"]
 
 
 def test_render_skill_text_formats_named_blocks():
