@@ -98,6 +98,18 @@ class RuntimeOverrides:
     memory_top_k: Optional[int] = None
 
 
+_STRICT_FINAL_ANSWER_MARKERS = (
+    "return only the final answer",
+    "output format requirements:",
+    "remember: output exactly one line containing only the final answer",
+)
+_STRICT_ANSWER_TEXT_OR_NUMBER_MARKER = "include only the answer text or number."
+_STRICT_FORMAT_LABEL_RE = re.compile(r"^\s*(?:final\s+answer|answer)\s*[:\-]\s*", re.IGNORECASE)
+_STRICT_NUMERIC_WITH_UNIT_RE = re.compile(
+    r"^\s*([+-]?(?:\d+(?:,\d{3})*|\d*\.\d+))\s*(?:[%°]|[A-Za-zµμÅ]+(?:[A-Za-z0-9/%°µμÅ\-/^]*)?)\s*$"
+)
+
+
 class _NoopRetriever:
     def __init__(self, default_session_id: str = "default") -> None:
         self.default_session_id = str(default_session_id or "default").strip() or "default"
@@ -232,6 +244,41 @@ def _filter_runtime_tools(
     if exclude_names:
         filtered = [tool for tool in filtered if getattr(tool, "name", "") not in exclude_names]
     return filtered
+
+
+def _looks_like_strict_final_answer_request(user_message: str) -> bool:
+    text = str(user_message or "").strip().lower()
+    if not text:
+        return False
+    return any(marker in text for marker in _STRICT_FINAL_ANSWER_MARKERS)
+
+
+def _strip_numeric_units_from_strict_answer(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return normalized
+
+    parts = [part.strip() for part in normalized.split(",")]
+    if len(parts) > 1:
+        matches = [_STRICT_NUMERIC_WITH_UNIT_RE.fullmatch(part) for part in parts]
+        if all(match is not None for match in matches):
+            return ", ".join(str(match.group(1)) for match in matches if match is not None)
+
+    match = _STRICT_NUMERIC_WITH_UNIT_RE.fullmatch(normalized)
+    if match is not None:
+        return str(match.group(1))
+    return normalized
+
+
+def _normalize_strict_final_answer(user_message: str, reply: str) -> str:
+    normalized = str(reply or "").strip()
+    if not normalized or not _looks_like_strict_final_answer_request(user_message):
+        return normalized
+
+    normalized = _STRICT_FORMAT_LABEL_RE.sub("", normalized).strip()
+    if _STRICT_ANSWER_TEXT_OR_NUMBER_MARKER in str(user_message or "").lower():
+        normalized = _strip_numeric_units_from_strict_answer(normalized)
+    return normalized.strip()
 
 
 def _skills_root() -> str:
@@ -1067,6 +1114,7 @@ async def run_user_turn(
     reply = extract_latest_assistant_text(session.agent)
     if not reply:
         reply = "(no assistant text returned)"
+    reply = _normalize_strict_final_answer(user_message, reply)
     if (
         session.auto_title_enabled
         and session.auto_session_id is not None

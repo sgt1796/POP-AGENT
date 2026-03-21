@@ -13,8 +13,10 @@ def test_augment_eval_prompt_includes_verification_and_calculator_guidance():
     assert "use a single expression with direct function calls and bindings" in prompt
     assert "do not use import, lambda, __import__, or attribute access like math.sin" in prompt
     assert "rewrite the expression with direct allowed calls or bindings" in prompt
-    assert "extract the concrete inputs first and compute from those explicit values" in prompt
+    assert "eligible candidates first and compute from those explicit values" in prompt
     assert "verify the requested output field and counting convention" in prompt
+    assert "do not echo the format template, labels, or extra units" in prompt
+    assert "placeholder, copied template, or generic filler token" in prompt
     assert "spend one targeted verification call on the strongest candidate source" in prompt
 
 

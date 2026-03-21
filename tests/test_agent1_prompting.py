@@ -42,8 +42,10 @@ def test_prompt_includes_core_sections_allowlists_and_tool_rules():
     assert "final_url, pdf_link_candidates, or content_preview" in prompt
     assert "rewrite the expression with direct allowed calls or bindings" in prompt
     assert "Completion Criteria:" in prompt
-    assert "extract the concrete inputs from evidence" in prompt
+    assert "eligible candidates from evidence before computing" in prompt
     assert "spend one targeted verification step" in prompt
+    assert "no echoed template, labels, or extra units" in prompt
+    assert "placeholder, copied template, or generic filler token" in prompt
 
 
 def test_prompt_excludes_workflow_playbooks_and_stays_under_budget():

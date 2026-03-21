@@ -106,15 +106,21 @@ def build_system_prompt(
     lines.append("")
     lines.append("Completion Criteria:")
     lines.append(
-        "For counts, distances, and comparisons, extract the concrete inputs from evidence and compute from those "
-        "explicit values instead of mental arithmetic."
+        "For counts, distances, comparisons, and max/min selection over a bounded set, extract the concrete inputs "
+        "and eligible candidates from evidence before computing."
     )
     lines.append(
         "If the exact requested field is still unverified, spend one targeted verification step on the strongest "
         "candidate source before answering."
     )
     lines.append(
-        "When the user asks for only the final answer, prefer the best supported answer over indefinite extra searching."
+        "When the user asks for only the final answer, prefer the best supported answer over indefinite extra "
+        "searching, but return only the filled answer field with no echoed template, labels, or extra units unless "
+        "explicitly requested."
+    )
+    lines.append(
+        "If the candidate answer is still a placeholder, copied template, or generic filler token, treat it as "
+        "unverified and spend the targeted verification step instead."
     )
     lines.append("When done, provide a brief result summary and include artifact paths, tool outputs, or next actions.")
     return "\n".join(lines)

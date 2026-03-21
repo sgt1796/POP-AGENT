@@ -157,6 +157,22 @@ class _FakeAgent:
         )
 
 
+class _ReplyAgent(_FakeAgent):
+    def __init__(self, reply: str):
+        super().__init__()
+        self._reply = reply
+
+    async def prompt(self, text):
+        self.prompts.append(text)
+        self.state.messages.append(
+            SimpleNamespace(
+                role="assistant",
+                content=[TextContent(type="text", text=self._reply)],
+                error_message=None,
+            )
+        )
+
+
 class _FakeWorker:
     def __init__(self, *_, **__):
         self.started = False
@@ -813,6 +829,67 @@ def test_run_user_turn_injects_matching_workflow_skill_text():
     assert "Task-specific guidance:" in agent.prompts[0]
     assert "[local-document-evidence]" in agent.prompts[0]
     assert "Read the local artifact before remote fetches." in agent.prompts[0]
+
+
+def test_run_user_turn_normalizes_numeric_units_for_strict_final_answer_requests():
+    agent = _ReplyAgent("1.456 Å")
+    retriever = _FakeRetriever()
+    worker = _FakeWorker()
+
+    session = RuntimeSession(
+        agent=agent,
+        retriever=retriever,
+        ingestion_worker=worker,
+        active_session_id="default",
+        context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
+        top_k=3,
+        bash_prompt_approval=True,
+        execution_profile="balanced",
+        include_demo_tools=False,
+        unsubscribe_log=lambda: None,
+        unsubscribe_memory=lambda: None,
+        unsubscribe_approval=lambda: None,
+    )
+
+    reply = asyncio.run(
+        run_user_turn(
+            session,
+            (
+                "Return only the final answer to the task.\n"
+                "Output format requirements:\n"
+                "- Exactly one line.\n"
+                "- Include only the answer text or number.\n"
+                "Remember: output exactly one line containing only the final answer."
+            ),
+        )
+    )
+
+    assert reply == "1.456"
+
+
+def test_run_user_turn_keeps_units_for_non_strict_requests():
+    agent = _ReplyAgent("1.456 Å")
+    retriever = _FakeRetriever()
+    worker = _FakeWorker()
+
+    session = RuntimeSession(
+        agent=agent,
+        retriever=retriever,
+        ingestion_worker=worker,
+        active_session_id="default",
+        context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
+        top_k=3,
+        bash_prompt_approval=True,
+        execution_profile="balanced",
+        include_demo_tools=False,
+        unsubscribe_log=lambda: None,
+        unsubscribe_memory=lambda: None,
+        unsubscribe_approval=lambda: None,
+    )
+
+    reply = asyncio.run(run_user_turn(session, "What is the distance in angstroms?"))
+
+    assert reply == "1.456 Å"
 
 
 class _FakeMemory:

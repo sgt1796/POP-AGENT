@@ -229,8 +229,10 @@ class Agent1RuntimeExecutor(AgentExecutor):
             "- Once that budget is spent, give the best supported final answer instead of reformulating the same search.",
             "- For calculator, use a single expression with direct function calls and bindings; do not use import, lambda, __import__, or attribute access like math.sin.",
             "- If calculator returns an unsupported syntax/function error, rewrite the expression with direct allowed calls or bindings and retry once before answering.",
-            "- For counts, distances, and comparisons, extract the concrete inputs first and compute from those explicit values rather than mental arithmetic or a guessed count.",
+            "- For counts, distances, comparisons, and max/min selection over a bounded set, extract the concrete inputs and eligible candidates first and compute from those explicit values rather than mental arithmetic or a guessed set.",
             "- Before answering, verify the requested output field and counting convention: exact entity, requested unit, item index, and inclusive vs exclusive counts.",
+            "- When the prompt asks for answer text or number only, output only the filled answer field; do not echo the format template, labels, or extra units unless explicitly requested.",
+            "- If the candidate answer is still a placeholder, copied template, or generic filler token, treat the field as unverified and use the strongest targeted verification call before answering.",
             "- If the exact requested field is still unverified, spend one targeted verification call on the strongest candidate source before answering.",
         ]
         if staged_files:
