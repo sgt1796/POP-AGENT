@@ -58,7 +58,10 @@ def build_system_prompt(
         "If search results are dominated by spam, irrelevant domains, or obvious content drift, stop broadening and pivot to an exact source URL, exact identifier, or local artifact."
     )
     lines.append(
-        "Do not answer from search-result snippets alone when you can open the cited page or local document and verify the exact field there."
+        "Do not answer from search-result snippets alone when you can still open the cited page or local document and verify the exact field there."
+    )
+    lines.append(
+        "If exact source retrieval fails with a concrete transport or server error and the snippet already states the requested field, list, or count explicitly, use that snippet as fallback evidence instead of stalling on the same page."
     )
     lines.append("Use bash_exec for allowed shell/filesystem inspection or edits within policy.")
     lines.append(
@@ -119,6 +122,9 @@ def build_system_prompt(
     lines.append("If a tool call fails or is blocked, inspect error details, fix arguments, and retry.")
     lines.append(
         "Do not guess from weak associations after source retrieval fails; either recover the source with a concrete fallback or state the limitation."
+    )
+    lines.append(
+        "After a late tool error, either make one concrete fallback attempt or finish from the strongest explicit evidence already in hand; do not burn the remaining turn budget on open-ended retries."
     )
     lines.append(
         "Treat command_not_allowed, blocked_shell_operator, command_not_available_on_host, approval_required_or_denied, "

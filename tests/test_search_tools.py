@@ -187,13 +187,14 @@ class _FakeRequestsResponse:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            raise requests.HTTPError(f"status={self.status_code}")
+            raise requests.HTTPError(f"status={self.status_code}", response=self)
 
 
 def test_jina_web_snapshot_truncates_content_and_reports_metadata(monkeypatch):
-    def _fake_get(url: str, headers: Dict[str, str]):
+    def _fake_get(url: str, headers: Dict[str, str], timeout: float):
         assert url == "https://r.jina.ai/https://example.com/large"
         assert isinstance(headers, dict)
+        assert timeout == 20.0
         return _FakeRequestsResponse(text="X" * 20_000)
 
     monkeypatch.setattr("agent.tools.search.jina_web_snapshot.requests.get", _fake_get)
@@ -210,9 +211,10 @@ def test_jina_web_snapshot_truncates_content_and_reports_metadata(monkeypatch):
 def test_jina_web_snapshot_stringifies_timeout_header(monkeypatch):
     captured = {}
 
-    def _fake_get(url: str, headers: Dict[str, str]):
+    def _fake_get(url: str, headers: Dict[str, str], timeout: float):
         captured["url"] = url
         captured["headers"] = dict(headers)
+        captured["timeout"] = timeout
         return _FakeRequestsResponse(text="ok")
 
     monkeypatch.setattr("agent.tools.search.jina_web_snapshot.requests.get", _fake_get)
@@ -221,6 +223,35 @@ def test_jina_web_snapshot_stringifies_timeout_header(monkeypatch):
     assert result.details["ok"] is True
     assert captured["url"] == "https://r.jina.ai/https://example.com/page"
     assert captured["headers"]["X-Timeout"] == "20"
+    assert captured["timeout"] == 20.0
+
+
+def test_jina_web_snapshot_retries_without_selectors_on_retryable_server_error(monkeypatch):
+    calls: list[dict[str, Any]] = []
+
+    def _fake_get(url: str, headers: Dict[str, str], timeout: float):
+        calls.append({"url": url, "headers": dict(headers), "timeout": timeout})
+        if len(calls) == 1:
+            return _FakeRequestsResponse(text="", status_code=524)
+        return _FakeRequestsResponse(text="recovered snapshot")
+
+    monkeypatch.setattr("agent.tools.search.jina_web_snapshot.requests.get", _fake_get)
+    result = _run(
+        JinaWebSnapshotTool(),
+        {
+            "web_url": "https://example.com/page",
+            "target_selector": ["#mw-content-text"],
+            "wait_for_selector": [".content"],
+        },
+    )
+
+    assert result.details["ok"] is True
+    assert result.details["retried_without_selectors"] is True
+    assert result.details["retry_reason"] == "http_524"
+    assert len(calls) == 2
+    assert calls[0]["headers"]["X-Target-Selector"] == "#mw-content-text"
+    assert "X-Target-Selector" not in calls[1]["headers"]
+    assert "X-Wait-For-Selector" not in calls[1]["headers"]
 
 
 def test_perplexity_web_snapshot_stub_response():

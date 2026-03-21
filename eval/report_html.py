@@ -44,7 +44,7 @@ BASE_STYLE = """
     .chart { border:1px solid rgba(31,41,55,.08); border-radius:20px; padding:18px; background:rgba(255,255,255,.72); } .chart-copy { color:var(--muted); font-size:.92rem; line-height:1.5; margin:6px 0 14px; } .chart-frame { height:300px; } .chart-empty { display:none; color:var(--muted); font-size:.92rem; margin-top:12px; }
     .table-shell { overflow:auto; background:rgba(255,255,255,.80); } table { width:100%; min-width:720px; border-collapse:collapse; } thead th { position:sticky; top:0; z-index:1; background:#f5efe7; color:var(--muted); font-size:.78rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; text-align:left; padding:14px 16px; border-bottom:1px solid var(--line); } tbody td { padding:14px 16px; border-top:1px solid rgba(31,41,55,.07); vertical-align:top; } tbody tr:hover { background:rgba(28,124,125,.05); }
     .error-row { background:rgba(198,91,57,.08); } .correct-row { background:rgba(45,140,104,.06); } .incorrect-row { background:rgba(196,136,36,.08); } .pill,.level { display:inline-flex; align-items:center; justify-content:center; min-height:30px; padding:0 12px; border-radius:999px; font-size:.82rem; font-weight:700; white-space:nowrap; } .level { background:rgba(28,124,125,.12); color:var(--teal); } .level--soft { background:rgba(31,41,55,.06); color:var(--ink); } .pill--success { background:rgba(45,140,104,.14); color:var(--mint); } .pill--warning { background:rgba(196,136,36,.14); color:#9a670d; } .pill--danger { background:rgba(198,91,57,.14); color:var(--coral); } .pill--info { background:rgba(53,110,169,.14); color:var(--blue); } .pill--neutral { background:rgba(31,41,55,.08); color:var(--slate); }
-    .accuracy-cell { min-width:180px; } .accuracy-cell strong { display:inline-block; margin-top:8px; } .meter { width:100%; height:10px; border-radius:999px; background:rgba(31,41,55,.08); overflow:hidden; } .meter span { display:block; height:100%; background:linear-gradient(90deg, var(--teal), #34a0a4); }
+    .accuracy-cell { min-width:180px; } .accuracy-cell strong { display:inline-block; margin-top:8px; } .meter { width:100%; height:10px; border-radius:999px; background:rgba(31,41,55,.08); overflow:hidden; } .meter span { display:block; height:100%; background:linear-gradient(90deg, var(--teal), #34a0a4); } .corr-cell { text-align:center; transition:background-color .18s ease, color .18s ease; } .corr-cell--diag { box-shadow:inset 0 0 0 1px rgba(45,140,104,.12); }
     .mono { font-family:var(--mono); font-size:.9rem; } .sample-id,.model-cell { word-break:break-word; } .sample-link { font-weight:700; } .subtle,.empty { color:var(--muted); } .error-text { display:inline-block; max-width:360px; line-height:1.5; }
     .kv-table { width:100%; border-collapse:collapse; } .kv-table th,.kv-table td { padding:12px 14px; text-align:left; vertical-align:top; border-top:1px solid rgba(31,41,55,.07); } .kv-table tbody tr:first-child th,.kv-table tbody tr:first-child td { border-top:none; } .kv-table th { width:220px; color:var(--muted); font-size:.82rem; text-transform:uppercase; letter-spacing:.06em; }
     pre { margin:0; padding:16px; border-radius:18px; border:1px solid rgba(31,41,55,.08); background:rgba(31,41,55,.04); overflow:auto; white-space:pre-wrap; word-break:break-word; line-height:1.55; font-family:var(--mono); font-size:.88rem; }
@@ -848,12 +848,39 @@ def _correlation_matrix_table(run_analysis: Dict[str, Any]) -> str:
         cells = [f"<td><strong>{_escape(x_name.replace('_', ' ').title())}</strong></td>"]
         for y_name in factor_names:
             if x_name == y_name:
-                cells.append('<td class="mono">1.0000</td>')
+                cells.append(
+                    '<td class="mono corr-cell corr-cell--diag" '
+                    f'style="{_correlation_cell_style(1.0, diagonal=True)}" '
+                    'title="Self-correlation">1.0000</td>'
+                )
                 continue
             r_value = lookup.get((x_name, y_name))
-            cells.append(f'<td class="mono">{_escape(_fmt_float(r_value, digits=4)) if r_value is not None else "n/a"}</td>')
+            title = "Correlation unavailable" if r_value is None else f"r={_fmt_float(r_value, digits=4)}"
+            cells.append(
+                '<td class="mono corr-cell" '
+                f'style="{_correlation_cell_style(r_value)}" '
+                f'title="{_escape(title)}">'
+                + (_escape(_fmt_float(r_value, digits=4)) if r_value is not None else "n/a")
+                + "</td>"
+            )
         rows.append("<tr>" + "".join(cells) + "</tr>")
     return '<div class="table-shell"><table><thead>' + header + "</thead><tbody>" + "".join(rows) + "</tbody></table></div>"
+
+
+def _correlation_cell_style(r_value: Any, *, diagonal: bool = False) -> str:
+    if diagonal:
+        return "background:hsla(120, 56%, 74%, 0.30); color:#173b2d; font-weight:700;"
+    if r_value is None:
+        return "background:rgba(31,41,55,.04); color:#5b6675;"
+    try:
+        clamped = max(-1.0, min(1.0, float(r_value)))
+    except Exception:
+        return "background:rgba(31,41,55,.04); color:#5b6675;"
+    hue = ((clamped + 1.0) / 2.0) * 120.0
+    alpha = 0.10 + (abs(clamped) * 0.24)
+    text_color = "#1f2937" if abs(clamped) < 0.58 else ("#173b2d" if clamped > 0 else "#5b2215")
+    font_weight = "700" if abs(clamped) >= 0.75 else "600"
+    return f"background:hsla({hue:.1f}, 62%, 74%, {alpha:.3f}); color:{text_color}; font-weight:{font_weight};"
 
 
 def _cohort_table(run_analysis: Dict[str, Any]) -> str:

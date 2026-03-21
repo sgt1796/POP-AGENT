@@ -241,6 +241,8 @@ def test_generate_html_report_builds_bundle(tmp_path: Path):
     assert "Score Reason" in summary_html
     assert "Provider / Model" in summary_html
     assert "Correlation Overview" in summary_html
+    assert "corr-cell corr-cell--diag" in summary_html
+    assert "background:hsla(" in summary_html
     assert "Outcome Cohorts" in summary_html
     assert "Failure Causes" in summary_html
     assert "Level Breakdown" in summary_html

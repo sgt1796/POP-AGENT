@@ -25,6 +25,7 @@ def test_prompt_includes_execution_first_sections_and_allowlists():
     assert "prefer narrow queries with domain filters" in prompt
     assert "If search results are dominated by spam" in prompt
     assert "Do not answer from search-result snippets alone" in prompt
+    assert "If exact source retrieval fails with a concrete transport or server error" in prompt
     assert "bash_exec runs one program without a shell" in prompt
     assert "Prefer file_read for downloaded local documents and text-like files" in prompt
     assert "For downloaded PDFs, use file_read on the PDF itself" in prompt
@@ -43,6 +44,7 @@ def test_prompt_includes_execution_first_sections_and_allowlists():
     assert "Use agentmail_send when the user asks to email the configured owner" in prompt
     assert "Failure Recovery:" in prompt
     assert "Do not guess from weak associations after source retrieval fails" in prompt
+    assert "After a late tool error, either make one concrete fallback attempt or finish" in prompt
     assert "Treat command_not_allowed, blocked_shell_operator, command_not_available_on_host" in prompt
     assert "After a hard bash_exec block, switch tools instead of retrying shell syntax variants." in prompt
     assert "If search results drift to irrelevant sites" in prompt

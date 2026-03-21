@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from os import getenv
+import re
 from typing import Any, Dict, Optional
 
 import requests
 
 from ...agent_types import AgentTool, AgentToolResult, TextContent
+
+
+_DEFAULT_HTTP_TIMEOUT_S = 20.0
+_RETRYABLE_STATUS_CODES = {500, 502, 503, 504, 520, 521, 522, 523, 524}
 
 
 def _to_bool(value: Any, default: bool) -> bool:
@@ -28,6 +33,12 @@ def _to_int(value: Any, default: int) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _resolve_http_timeout_s(value: int) -> float:
+    if value and value > 0:
+        return max(1.0, float(value))
+    return _DEFAULT_HTTP_TIMEOUT_S
 
 
 def _build_snapshot_headers(
@@ -69,10 +80,40 @@ def _build_snapshot_headers(
     return {key: value for key, value in headers.items() if value is not None}
 
 
-def _fetch_snapshot_text(web_url: str, *, headers: Dict[str, str]) -> str:
-    response = requests.get(f"https://r.jina.ai/{web_url}", headers=headers)
+def _fetch_snapshot_text(web_url: str, *, headers: Dict[str, str], http_timeout_s: float) -> str:
+    response = requests.get(
+        f"https://r.jina.ai/{web_url}",
+        headers=headers,
+        timeout=http_timeout_s,
+    )
     response.raise_for_status()
     return response.text
+
+
+def _extract_status_code(exc: Exception) -> Optional[int]:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    try:
+        if status_code is not None:
+            return int(status_code)
+    except Exception:
+        pass
+    match = re.search(r"\b([45]\d{2})\b", str(exc))
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _should_retry_without_selectors(
+    status_code: Optional[int],
+    *,
+    target_selector: Any,
+    wait_for_selector: Any,
+    exclude_selector: Any,
+) -> bool:
+    if status_code not in _RETRYABLE_STATUS_CODES:
+        return False
+    return bool(target_selector or wait_for_selector or exclude_selector)
 
 
 class JinaWebSnapshotTool(AgentTool):
@@ -144,6 +185,9 @@ class JinaWebSnapshotTool(AgentTool):
             "cookie": params.get("cookie"),
         }
         max_chars = max(1, _to_int(params.get("max_chars"), 12_000))
+        http_timeout_s = _resolve_http_timeout_s(int(kwargs["timeout"]))
+        retried_without_selectors = False
+        retry_reason: Optional[str] = None
         try:
             headers = _build_snapshot_headers(
                 use_api_key=bool(kwargs["use_api_key"]),
@@ -159,11 +203,56 @@ class JinaWebSnapshotTool(AgentTool):
                 image_caption=bool(kwargs["image_caption"]),
                 cookie=kwargs["cookie"],
             )
-            snapshot = _fetch_snapshot_text(web_url, headers=headers)
+            snapshot = _fetch_snapshot_text(web_url, headers=headers, http_timeout_s=http_timeout_s)
+        except requests.HTTPError as exc:
+            status_code = _extract_status_code(exc)
+            if not _should_retry_without_selectors(
+                status_code,
+                target_selector=kwargs["target_selector"],
+                wait_for_selector=kwargs["wait_for_selector"],
+                exclude_selector=kwargs["exclude_selector"],
+            ):
+                return self._error(
+                    f"jina_web_snapshot error: {exc}",
+                    {
+                        "error": str(exc),
+                        "url": web_url,
+                        "http_timeout_s": http_timeout_s,
+                    },
+                )
+            retried_without_selectors = True
+            retry_reason = f"http_{status_code}" if status_code is not None else "http_error"
+            try:
+                fallback_headers = _build_snapshot_headers(
+                    use_api_key=bool(kwargs["use_api_key"]),
+                    return_format=str(kwargs["return_format"]),
+                    timeout=int(kwargs["timeout"]),
+                    target_selector=None,
+                    wait_for_selector=None,
+                    exclude_selector=None,
+                    remove_image=bool(kwargs["remove_image"]),
+                    links_at_end=bool(kwargs["links_at_end"]),
+                    images_at_end=bool(kwargs["images_at_end"]),
+                    json_response=bool(kwargs["json_response"]),
+                    image_caption=bool(kwargs["image_caption"]),
+                    cookie=kwargs["cookie"],
+                )
+                snapshot = _fetch_snapshot_text(web_url, headers=fallback_headers, http_timeout_s=http_timeout_s)
+            except Exception as retry_exc:
+                return self._error(
+                    f"jina_web_snapshot error: {retry_exc}",
+                    {
+                        "error": str(retry_exc),
+                        "url": web_url,
+                        "http_timeout_s": http_timeout_s,
+                        "retried_without_selectors": True,
+                        "retry_reason": retry_reason,
+                    },
+                )
         except Exception as exc:
             return self._error(
                 f"jina_web_snapshot error: {exc}",
-                {"error": str(exc), "url": web_url},
+                {"error": str(exc), "url": web_url, "http_timeout_s": http_timeout_s},
             )
         snapshot_text = str(snapshot)
         char_count = len(snapshot_text)
@@ -177,6 +266,9 @@ class JinaWebSnapshotTool(AgentTool):
                 "char_count": char_count,
                 "truncated": truncated,
                 "max_chars": max_chars,
+                "http_timeout_s": http_timeout_s,
+                "retried_without_selectors": retried_without_selectors,
+                "retry_reason": retry_reason,
             },
         )
 
