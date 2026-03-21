@@ -220,6 +220,7 @@ class Agent1RuntimeExecutor(AgentExecutor):
             "- For scholarly or document tasks, prefer openalex_works and exact local files before perplexity_search or web snapshots.",
             "- Do not answer from search-result snippets alone if you can open the cited page or a local artifact and verify the exact field.",
             "- If a page is relevant but dense, extract the target field from the exact nearby passage instead of relying on a broad summary of the page.",
+            "- If a tool returns concrete recovery hints such as final_url, pdf_link_candidates, or content_preview, use those exact leads before broad search.",
             (
                 "- Generic web discovery budget for this sample: at most 4 total calls across "
                 "perplexity_search, jina_web_snapshot, and perplexity_web_snapshot unless a new call "
@@ -227,7 +228,10 @@ class Agent1RuntimeExecutor(AgentExecutor):
             ),
             "- Once that budget is spent, give the best supported final answer instead of reformulating the same search.",
             "- For calculator, use a single expression with direct function calls and bindings; do not use import, lambda, __import__, or attribute access like math.sin.",
+            "- If calculator returns an unsupported syntax/function error, rewrite the expression with direct allowed calls or bindings and retry once before answering.",
+            "- For counts, distances, and comparisons, extract the concrete inputs first and compute from those explicit values rather than mental arithmetic or a guessed count.",
             "- Before answering, verify the requested output field and counting convention: exact entity, requested unit, item index, and inclusive vs exclusive counts.",
+            "- If the exact requested field is still unverified, spend one targeted verification call on the strongest candidate source before answering.",
         ]
         if staged_files:
             lines.extend(

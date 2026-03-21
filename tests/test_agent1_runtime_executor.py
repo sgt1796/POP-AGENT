@@ -9,9 +9,13 @@ def test_augment_eval_prompt_includes_verification_and_calculator_guidance():
     assert "Evaluation execution guidance:" in prompt
     assert "Do not answer from search-result snippets alone" in prompt
     assert "extract the target field from the exact nearby passage" in prompt
+    assert "final_url, pdf_link_candidates, or content_preview" in prompt
     assert "use a single expression with direct function calls and bindings" in prompt
     assert "do not use import, lambda, __import__, or attribute access like math.sin" in prompt
+    assert "rewrite the expression with direct allowed calls or bindings" in prompt
+    assert "extract the concrete inputs first and compute from those explicit values" in prompt
     assert "verify the requested output field and counting convention" in prompt
+    assert "spend one targeted verification call on the strongest candidate source" in prompt
 
 
 def test_augment_eval_prompt_keeps_attachment_local_first_guidance():

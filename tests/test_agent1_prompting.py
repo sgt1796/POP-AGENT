@@ -39,7 +39,11 @@ def test_prompt_includes_core_sections_allowlists_and_tool_rules():
     assert "Failure Recovery:" in prompt
     assert "use those concrete leads before reformulating the task as a generic search" in prompt
     assert "if a PDF fetch resolves to HTML or a verification/interstitial page" in prompt
+    assert "final_url, pdf_link_candidates, or content_preview" in prompt
+    assert "rewrite the expression with direct allowed calls or bindings" in prompt
     assert "Completion Criteria:" in prompt
+    assert "extract the concrete inputs from evidence" in prompt
+    assert "spend one targeted verification step" in prompt
 
 
 def test_prompt_excludes_workflow_playbooks_and_stays_under_budget():
@@ -47,7 +51,6 @@ def test_prompt_excludes_workflow_playbooks_and_stays_under_budget():
 
     assert len(prompt) < SYSTEM_PROMPT_CHAR_BUDGET
     assert "best_oa_pdf_url" not in prompt
-    assert "pdf_link_candidates" not in prompt
     assert "search-result snippets alone" not in prompt
     assert "task_scheduler run_now marks the task as due now" not in prompt
     assert "local scientific text files (.pdb, .cif, .mmcif) as primary evidence" not in prompt

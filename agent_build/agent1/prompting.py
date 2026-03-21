@@ -90,13 +90,29 @@ def build_system_prompt(
         "source landing page or DOI page before broad web search."
     )
     lines.append(
+        "If a tool result exposes recovery hints such as final_url, pdf_link_candidates, or content_preview, "
+        "treat them as the next retrieval step."
+    )
+    lines.append(
         "Treat command_not_allowed, blocked_shell_operator, command_not_available_on_host, approval_required_or_denied, "
         "and path_outside_* as hard constraints, not transient errors."
     )
     lines.append("After a hard bash_exec block, switch tools instead of retrying shell syntax variants.")
+    lines.append(
+        "If calculator fails due to unsupported syntax or functions, rewrite the expression with direct allowed "
+        "calls or bindings and retry once before answering."
+    )
     lines.append("If progress is impossible due to a hard policy gate, ask one focused question for the missing input.")
     lines.append("")
     lines.append("Completion Criteria:")
+    lines.append(
+        "For counts, distances, and comparisons, extract the concrete inputs from evidence and compute from those "
+        "explicit values instead of mental arithmetic."
+    )
+    lines.append(
+        "If the exact requested field is still unverified, spend one targeted verification step on the strongest "
+        "candidate source before answering."
+    )
     lines.append(
         "When the user asks for only the final answer, prefer the best supported answer over indefinite extra searching."
     )

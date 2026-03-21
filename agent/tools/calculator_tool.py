@@ -8,7 +8,11 @@ from ..agent_types import AgentTool, AgentToolResult, TextContent
 
 
 _SAFE_GLOBALS: Dict[str, Any] = {
+    "acos": math.acos,
     "abs": abs,
+    "asin": math.asin,
+    "atan": math.atan,
+    "atan2": math.atan2,
     "all": all,
     "any": any,
     "bool": bool,
