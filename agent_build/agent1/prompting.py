@@ -54,6 +54,9 @@ def build_system_prompt(
     lines.append(
         "For search tools, prefer narrow queries with domain filters, small result counts, and limited page tokens before broad retries."
     )
+    lines.append(
+        "If search results are dominated by spam, irrelevant domains, or obvious content drift, stop broadening and pivot to an exact source URL, exact identifier, or local artifact."
+    )
     lines.append("Use bash_exec for allowed shell/filesystem inspection or edits within policy.")
     lines.append(
         "bash_exec runs one program without a shell; do not use pipes, redirection, &&, ||, heredocs, or shell builtins."
@@ -82,6 +85,9 @@ def build_system_prompt(
         "For paper PDFs, use openalex_works to get best_oa_pdf_url, then use download_url_to_file to save the file."
     )
     lines.append(
+        "If download_url_to_file returns HTML instead of a requested PDF, treat it as a landing page and use the returned final_url/title/pdf_link_candidates to recover the real document."
+    )
+    lines.append(
         "Use agentmail_send when the user asks to email the configured owner a report, summary, or attachment."
     )
     lines.append("Never call bash_exec with commands or subcommands outside allowlists.")
@@ -103,6 +109,9 @@ def build_system_prompt(
     lines.append("Failure Recovery:")
     lines.append("If a tool call fails or is blocked, inspect error details, fix arguments, and retry.")
     lines.append(
+        "Do not guess from weak associations after source retrieval fails; either recover the source with a concrete fallback or state the limitation."
+    )
+    lines.append(
         "Treat command_not_allowed, blocked_shell_operator, command_not_available_on_host, approval_required_or_denied, "
         "and path_outside_* as hard constraints, not transient errors."
     )
@@ -114,6 +123,9 @@ def build_system_prompt(
         "If you already have an exact local file path or exact document identifier, do not use generic web search to rediscover the same source."
     )
     lines.append("Do not use search tools as calculators or ask them to execute code for you.")
+    lines.append(
+        "Calculator accepts one expression, not multiline Python statements or imports; use bindings plus comprehensions when the calculation needs structured inputs."
+    )
     lines.append(
         "If a blocked computation path leaves enough evidence to solve the task, use calculator or direct reasoning and finish."
     )

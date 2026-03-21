@@ -209,19 +209,23 @@ class _SafeExpressionValidator(ast.NodeVisitor):
 class CalculatorTool(AgentTool):
     name = "calculator"
     description = (
-        "Evaluate a restricted Python-style expression for arithmetic, unit conversions, "
-        "small brute-force searches, and checksum logic."
+        "Evaluate a restricted single Python-style expression for arithmetic, unit conversions, "
+        "small brute-force searches, and checksum logic. Use bindings for long lists/dicts; "
+        "statements, assignments, and imports are not supported."
     )
     parameters = {
         "type": "object",
         "properties": {
             "expression": {
                 "type": "string",
-                "description": "Restricted Python expression to evaluate.",
+                "description": "Restricted single Python expression to evaluate.",
             },
             "bindings": {
                 "type": "object",
-                "description": "Optional literal bindings referenced by the expression.",
+                "description": (
+                    "Optional literal bindings referenced by the expression. Prefer this for longer "
+                    "lists/dicts instead of embedding multiline Python."
+                ),
             },
         },
         "required": ["expression"],

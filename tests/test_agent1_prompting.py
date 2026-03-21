@@ -23,6 +23,7 @@ def test_prompt_includes_execution_first_sections_and_allowlists():
     assert "A fresh current timestamp is injected at runtime" in prompt
     assert "Use calculator for arithmetic, unit conversions, checksum logic" in prompt
     assert "prefer narrow queries with domain filters" in prompt
+    assert "If search results are dominated by spam" in prompt
     assert "bash_exec runs one program without a shell" in prompt
     assert "Prefer file_read for downloaded local documents and text-like files" in prompt
     assert "local scientific text files (.pdb, .cif, .mmcif) as primary evidence" in prompt
@@ -35,13 +36,16 @@ def test_prompt_includes_execution_first_sections_and_allowlists():
     assert "Use file_write for creating files, writing text, and replacing words in text files." in prompt
     assert "Use task_scheduler when the user asks to run work later or on a recurring cadence" in prompt
     assert "task_scheduler run_now marks the task as due now" in prompt
+    assert "If download_url_to_file returns HTML instead of a requested PDF" in prompt
     assert "Use agentmail_send when the user asks to email the configured owner" in prompt
     assert "Failure Recovery:" in prompt
+    assert "Do not guess from weak associations after source retrieval fails" in prompt
     assert "Treat command_not_allowed, blocked_shell_operator, command_not_available_on_host" in prompt
     assert "After a hard bash_exec block, switch tools instead of retrying shell syntax variants." in prompt
     assert "If search results drift to irrelevant sites" in prompt
     assert "do not use generic web search to rediscover the same source" in prompt
     assert "Do not use search tools as calculators or ask them to execute code for you." in prompt
+    assert "Calculator accepts one expression, not multiline Python statements or imports" in prompt
     assert "Completion Criteria:" in prompt
     assert "When the user asks for only the final answer" in prompt
 

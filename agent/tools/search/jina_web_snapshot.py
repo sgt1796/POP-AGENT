@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from os import getenv
 from typing import Any, Dict, Optional
 
-from POP.utils import web_snapshot as websnapshot
+import requests
 
 from ...agent_types import AgentTool, AgentToolResult, TextContent
 
@@ -27,6 +28,51 @@ def _to_int(value: Any, default: int) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _build_snapshot_headers(
+    *,
+    use_api_key: bool,
+    return_format: str,
+    timeout: int,
+    target_selector: Any,
+    wait_for_selector: Any,
+    exclude_selector: Any,
+    remove_image: bool,
+    links_at_end: bool,
+    images_at_end: bool,
+    json_response: bool,
+    image_caption: bool,
+    cookie: Any,
+) -> Dict[str, str]:
+    target_selector = target_selector or []
+    wait_for_selector = wait_for_selector or []
+    exclude_selector = exclude_selector or []
+    api_key = None
+    if use_api_key and getenv("JINAAI_API_KEY"):
+        api_key = "Bearer " + getenv("JINAAI_API_KEY", "")
+    headers: Dict[str, Optional[str]] = {
+        "Authorization": api_key,
+        "X-Return-Format": None if return_format == "default" else return_format,
+        # requests requires header values to be strings, not ints.
+        "X-Timeout": str(timeout) if timeout > 0 else None,
+        "X-Target-Selector": ",".join(target_selector) if target_selector else None,
+        "X-Wait-For-Selector": ",".join(wait_for_selector) if wait_for_selector else None,
+        "X-Remove-Selector": ",".join(exclude_selector) if exclude_selector else None,
+        "X-Retain-Images": "none" if remove_image else None,
+        "X-With-Links-Summary": "true" if links_at_end else None,
+        "X-With-Images-Summary": "true" if images_at_end else None,
+        "Accept": "application/json" if json_response else None,
+        "X-With-Generated-Alt": "true" if image_caption else None,
+        "X-Set-Cookie": str(cookie) if cookie else None,
+    }
+    return {key: value for key, value in headers.items() if value is not None}
+
+
+def _fetch_snapshot_text(web_url: str, *, headers: Dict[str, str]) -> str:
+    response = requests.get(f"https://r.jina.ai/{web_url}", headers=headers)
+    response.raise_for_status()
+    return response.text
 
 
 class JinaWebSnapshotTool(AgentTool):
@@ -99,7 +145,21 @@ class JinaWebSnapshotTool(AgentTool):
         }
         max_chars = max(1, _to_int(params.get("max_chars"), 12_000))
         try:
-            snapshot = websnapshot.get_text_snapshot(web_url=web_url, **kwargs)
+            headers = _build_snapshot_headers(
+                use_api_key=bool(kwargs["use_api_key"]),
+                return_format=str(kwargs["return_format"]),
+                timeout=int(kwargs["timeout"]),
+                target_selector=kwargs["target_selector"],
+                wait_for_selector=kwargs["wait_for_selector"],
+                exclude_selector=kwargs["exclude_selector"],
+                remove_image=bool(kwargs["remove_image"]),
+                links_at_end=bool(kwargs["links_at_end"]),
+                images_at_end=bool(kwargs["images_at_end"]),
+                json_response=bool(kwargs["json_response"]),
+                image_caption=bool(kwargs["image_caption"]),
+                cookie=kwargs["cookie"],
+            )
+            snapshot = _fetch_snapshot_text(web_url, headers=headers)
         except Exception as exc:
             return self._error(
                 f"jina_web_snapshot error: {exc}",

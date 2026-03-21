@@ -113,7 +113,16 @@ def test_download_url_to_file_tracks_redirect_final_url(tmp_path: Path, monkeypa
 def test_download_url_to_file_rejects_unexpected_content_type(tmp_path: Path, monkeypatch):
     def _fake_get(url, stream=False, timeout=None, allow_redirects=False):
         del url, stream, timeout, allow_redirects
-        return _FakeResponse(chunks=[b"<html>not pdf</html>"], content_type="text/html")
+        return _FakeResponse(
+            chunks=[
+                (
+                    b"<html><head><title>Project MUSE - A Dark Trace</title></head>"
+                    b"<body><a href=\"/pub/258/oa_monograph/book/24372/pdf\">Download PDF</a></body></html>"
+                )
+            ],
+            content_type="text/html",
+            url="https://muse.jhu.edu/pub/258/oa_monograph/book/24372/pdf",
+        )
 
     monkeypatch.setattr("agent.tools.download_url_to_file.requests.get", _fake_get)
 
@@ -130,6 +139,9 @@ def test_download_url_to_file_rejects_unexpected_content_type(tmp_path: Path, mo
     assert result.details["ok"] is False
     assert result.details["error"] == "unexpected_content_type"
     assert "expected content type" in result.content[0].text
+    assert result.details["html_title"] == "Project MUSE - A Dark Trace"
+    assert result.details["pdf_link_candidates"] == ["https://muse.jhu.edu/pub/258/oa_monograph/book/24372/pdf"]
+    assert "landing page title" in result.content[0].text
     assert not (tmp_path / "downloads" / "file.pdf").exists()
 
 

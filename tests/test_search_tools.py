@@ -11,6 +11,8 @@ from typing import Any, Dict
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 
+import requests
+
 from agent.tools import JinaWebSnapshotTool, OpenAlexWorksTool, PerplexitySearchTool, PerplexityWebSnapshotTool
 
 
@@ -178,10 +180,23 @@ def test_perplexity_search_success_with_mocked_sdk(monkeypatch):
     assert call["to_date"] == "2026-02-25"
 
 
-def test_jina_web_snapshot_truncates_content_and_reports_metadata(monkeypatch):
-    from agent.tools.search import jina_web_snapshot as jina_mod
+class _FakeRequestsResponse:
+    def __init__(self, text: str = "", status_code: int = 200) -> None:
+        self.text = text
+        self.status_code = int(status_code)
 
-    monkeypatch.setattr(jina_mod.websnapshot, "get_text_snapshot", lambda web_url, **kwargs: "X" * 20_000)
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"status={self.status_code}")
+
+
+def test_jina_web_snapshot_truncates_content_and_reports_metadata(monkeypatch):
+    def _fake_get(url: str, headers: Dict[str, str]):
+        assert url == "https://r.jina.ai/https://example.com/large"
+        assert isinstance(headers, dict)
+        return _FakeRequestsResponse(text="X" * 20_000)
+
+    monkeypatch.setattr("agent.tools.search.jina_web_snapshot.requests.get", _fake_get)
     result = _run(JinaWebSnapshotTool(), {"web_url": "https://example.com/large"})
 
     assert result.details["ok"] is True
@@ -190,6 +205,22 @@ def test_jina_web_snapshot_truncates_content_and_reports_metadata(monkeypatch):
     assert result.details["truncated"] is True
     assert result.details["max_chars"] == 12_000
     assert len(result.content[0].text) == 12_000
+
+
+def test_jina_web_snapshot_stringifies_timeout_header(monkeypatch):
+    captured = {}
+
+    def _fake_get(url: str, headers: Dict[str, str]):
+        captured["url"] = url
+        captured["headers"] = dict(headers)
+        return _FakeRequestsResponse(text="ok")
+
+    monkeypatch.setattr("agent.tools.search.jina_web_snapshot.requests.get", _fake_get)
+    result = _run(JinaWebSnapshotTool(), {"web_url": "https://example.com/page", "timeout": 20})
+
+    assert result.details["ok"] is True
+    assert captured["url"] == "https://r.jina.ai/https://example.com/page"
+    assert captured["headers"]["X-Timeout"] == "20"
 
 
 def test_perplexity_web_snapshot_stub_response():

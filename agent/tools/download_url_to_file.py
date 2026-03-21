@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import uuid
 from typing import Any, Dict, Optional, Sequence
 from urllib import parse as urllib_parse
@@ -14,6 +15,8 @@ from .path_roots import normalize_allowed_roots, path_in_roots
 
 _TRUE_WORDS = {"1", "true", "yes", "y", "on"}
 _FALSE_WORDS = {"0", "false", "no", "n", "off"}
+_HTML_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_HTML_HREF_RE = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 
 
 class _DownloadToolError(RuntimeError):
@@ -96,6 +99,61 @@ def _matches_expected_content_type(actual: str, expected: str) -> bool:
         if actual == item:
             return True
     return False
+
+
+def _extract_html_hints(html_text: str, base_url: str) -> Dict[str, Any]:
+    hints: Dict[str, Any] = {}
+    match = _HTML_TITLE_RE.search(html_text)
+    if match:
+        title = " ".join(match.group(1).split()).strip()
+        if title:
+            hints["html_title"] = title[:240]
+    candidates = []
+    seen = set()
+    for raw_href in _HTML_HREF_RE.findall(html_text):
+        href = urllib_parse.urljoin(base_url, raw_href.strip())
+        href_lower = href.lower()
+        if not href.startswith(("http://", "https://")):
+            continue
+        if not (
+            href_lower.endswith(".pdf")
+            or "/pdf" in href_lower
+            or ("download" in href_lower and "pdf" in href_lower)
+        ):
+            continue
+        if href in seen:
+            continue
+        seen.add(href)
+        candidates.append(href)
+        if len(candidates) >= 5:
+            break
+    if candidates:
+        hints["pdf_link_candidates"] = candidates
+    preview = " ".join(html_text.split()).strip()
+    if preview:
+        hints["content_preview"] = preview[:300]
+    return hints
+
+
+def _content_type_mismatch_details(
+    *,
+    response: requests.Response,
+    expected_content_type: str,
+    content_type: str,
+    final_url: str,
+) -> Dict[str, Any]:
+    details: Dict[str, Any] = {
+        "expected_content_type": expected_content_type,
+        "content_type": content_type,
+    }
+    if content_type == "text/html":
+        try:
+            preview_bytes = b"".join(response.iter_content(chunk_size=16 * 1024))
+            html_text = preview_bytes.decode(getattr(response, "encoding", None) or "utf-8", errors="replace")
+            details.update(_extract_html_hints(html_text, final_url))
+        except Exception:
+            pass
+    return details
 
 
 class DownloadUrlToFileTool(AgentTool):
@@ -194,16 +252,26 @@ class DownloadUrlToFileTool(AgentTool):
                 final_url = _to_text(getattr(response, "url", "")) or url
                 content_type = _normalize_content_type(str(response.headers.get("Content-Type", "")))
                 if expected_content_type and not _matches_expected_content_type(content_type, expected_content_type):
+                    mismatch_details = _content_type_mismatch_details(
+                        response=response,
+                        expected_content_type=expected_content_type,
+                        content_type=content_type,
+                        final_url=final_url,
+                    )
+                    message = (
+                        "expected content type "
+                        f"'{expected_content_type}' but received '{content_type}'"
+                    )
+                    html_title = str(mismatch_details.get("html_title") or "").strip()
+                    candidate_links = mismatch_details.get("pdf_link_candidates") or []
+                    if html_title:
+                        message += f"; landing page title: {html_title}"
+                    if candidate_links:
+                        message += f"; pdf_link_candidates: {', '.join(str(item) for item in candidate_links[:3])}"
                     raise _DownloadToolError(
                         "unexpected_content_type",
-                        (
-                            "expected content type "
-                            f"'{expected_content_type}' but received '{content_type}'"
-                        ),
-                        {
-                            "expected_content_type": expected_content_type,
-                            "content_type": content_type,
-                        },
+                        message,
+                        mismatch_details,
                     )
                 with open(temp_path, "wb") as handle:
                     for chunk in response.iter_content(chunk_size=64 * 1024):
