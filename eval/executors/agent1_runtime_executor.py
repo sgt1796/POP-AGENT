@@ -7,7 +7,108 @@ import time
 from dataclasses import asdict, is_dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.agent_types import AgentMessage, TextContent
 from eval.core.contracts import AgentExecutor, BenchmarkSample, ExecutionResult
+
+
+_GENERIC_WEB_DISCOVERY_TOOLS = {
+    "perplexity_search",
+    "jina_web_snapshot",
+    "perplexity_web_snapshot",
+}
+_HARD_BASH_BLOCK_REASONS = {
+    "command_not_allowed",
+    "blocked_shell_operator",
+    "command_not_available_on_host",
+    "approval_required_or_denied",
+}
+_CALCULATOR_IO_ERROR_SNIPPETS = (
+    "only direct function calls are allowed",
+    "function not allowed",
+)
+
+
+def _event_result_details(event: Dict[str, Any]) -> Dict[str, Any]:
+    raw = event.get("result")
+    if isinstance(raw, dict):
+        details = raw.get("details")
+        if isinstance(details, dict):
+            return details
+    details = getattr(raw, "details", None)
+    if isinstance(details, dict):
+        return details
+    return {}
+
+
+class _EvalSteeringGuard:
+    def __init__(self, agent: Any, *, generic_web_budget: int = 4) -> None:
+        self._agent = agent
+        self._generic_web_budget = max(1, int(generic_web_budget))
+        self._generic_web_calls = 0
+        self._sent_keys: set[str] = set()
+
+    def on_event(self, event: Dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+        if str(event.get("type") or "") != "tool_execution_end":
+            return
+
+        tool_name = str(event.get("toolName") or "").strip()
+        details = _event_result_details(event)
+
+        if tool_name in _GENERIC_WEB_DISCOVERY_TOOLS:
+            self._generic_web_calls += 1
+            if self._generic_web_calls >= self._generic_web_budget:
+                self._steer_once(
+                    "generic-web-budget",
+                    "Evaluation steering:\n"
+                    "- The generic web discovery budget is exhausted for this sample.\n"
+                    "- Stop reformulating broad searches or reopening the same source family.\n"
+                    "- Use the strongest exact source already found, spend at most one targeted verification step, then answer.",
+                )
+
+        if tool_name == "bash_exec":
+            block_reason = str(details.get("block_reason") or "").strip()
+            if block_reason.startswith("path_outside_") or block_reason in _HARD_BASH_BLOCK_REASONS:
+                self._steer_once(
+                    "bash-hard-block",
+                    "Evaluation steering:\n"
+                    "- bash_exec is hard-blocked in this environment.\n"
+                    "- Do not retry shell commands or syntax variants.\n"
+                    "- Switch to non-shell tools only, and if you already have a likely source, verify it directly and answer.",
+                )
+
+        if tool_name == "file_read" and str(details.get("error") or "").strip() == "parse_error":
+            self._steer_once(
+                "file-read-parse-error",
+                "Evaluation steering:\n"
+                "- The local artifact could not be parsed as requested.\n"
+                "- If it came from download_url_to_file, inspect final_url, pdf_link_candidates, or content_preview, or read the saved landing HTML instead of shelling out.\n"
+                "- Recover one exact document path, then resume bounded local reading.",
+            )
+
+        if tool_name == "calculator":
+            error_text = str(details.get("error") or "").strip().lower()
+            if any(snippet in error_text for snippet in _CALCULATOR_IO_ERROR_SNIPPETS):
+                self._steer_once(
+                    "calculator-io-misuse",
+                    "Evaluation steering:\n"
+                    "- Calculator is arithmetic-only here.\n"
+                    "- Do not use it to open files, inspect text, or emulate a scripting environment.\n"
+                    "- Extract the exact values with file_read or retrieval tools first, then compute with one direct expression.",
+                )
+
+    def _steer_once(self, key: str, text: str) -> None:
+        if key in self._sent_keys:
+            return
+        self._sent_keys.add(key)
+        self._agent.steer(
+            AgentMessage(
+                role="user",
+                content=[TextContent(type="text", text=text)],
+                timestamp=time.time(),
+            )
+        )
 
 
 class Agent1RuntimeExecutor(AgentExecutor):
@@ -51,11 +152,13 @@ class Agent1RuntimeExecutor(AgentExecutor):
             enable_event_logger=bool(enable_event_logger),
             overrides=overrides,
         )
+        steering_guard = _EvalSteeringGuard(session.agent)
 
         def _capture(event: Dict[str, Any]) -> None:
             events.append(self._to_jsonable(event))
 
         unsubscribe_trace = session.agent.subscribe(_capture)
+        unsubscribe_guard = session.agent.subscribe(steering_guard.on_event)
 
         before_usage = self._coerce_optional_dict(getattr(session.agent, "get_usage_summary", lambda: {})()) or {}
         last_usage = None
@@ -88,6 +191,7 @@ class Agent1RuntimeExecutor(AgentExecutor):
             error = self._format_error(exc, timeout_s=timeout_s)
         finally:
             unsubscribe_trace()
+            unsubscribe_guard()
             try:
                 await agent_runtime.shutdown_runtime_session(session)
             except Exception as shutdown_exc:
@@ -229,8 +333,11 @@ class Agent1RuntimeExecutor(AgentExecutor):
                 "adds a concrete new constraint such as a domain filter or a distinct source family."
             ),
             "- Once that budget is spent, give the best supported final answer instead of reformulating the same search.",
+            "- Treat bash_exec as local-shell inspection only. Do not use it for network fetches, Python one-liners, grep pipelines, or shell syntax variants.",
+            "- If bash_exec is blocked, that is a hard constraint for this sample; switch tools immediately instead of retrying shell alternatives.",
             "- For calculator, use a single expression with direct function calls and bindings; do not use import, lambda, __import__, or attribute access like math.sin.",
             "- If calculator returns an unsupported syntax/function error, rewrite the expression with direct allowed calls or bindings and retry once before answering.",
+            "- Do not use calculator to open files, inspect text, or simulate scripting; extract evidence first, then compute from the explicit values only.",
             "- For counts, distances, comparisons, and max/min selection over a bounded set, extract the concrete inputs and eligible candidates first and compute from those explicit values rather than mental arithmetic or a guessed set.",
             "- Before using calculator for a count or difference, write down the exact source-backed operands and make sure they follow the task's counting convention, such as unique winners, same-line stops, or season-specific measurements.",
             "- Before answering, verify the requested output field and counting convention: exact entity, requested unit, item index, and inclusive vs exclusive counts.",
