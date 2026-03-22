@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 from agent.agent_types import TextContent
+from agent_build.agent1.skill_registry import SkillSpec
 from agent_build.agent1 import runtime
 from agent_build.agent1.runtime import (
     RuntimeSession,
@@ -156,6 +157,22 @@ class _FakeAgent:
         )
 
 
+class _ReplyAgent(_FakeAgent):
+    def __init__(self, reply: str):
+        super().__init__()
+        self._reply = reply
+
+    async def prompt(self, text):
+        self.prompts.append(text)
+        self.state.messages.append(
+            SimpleNamespace(
+                role="assistant",
+                content=[TextContent(type="text", text=self._reply)],
+                error_message=None,
+            )
+        )
+
+
 class _FakeWorker:
     def __init__(self, *_, **__):
         self.started = False
@@ -269,6 +286,82 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
         "pdf_merge",
         "agentmail_send",
     ]
+    assert "bash_exec" in session.enabled_tool_names
+    assert session.skills
+
+
+def test_create_runtime_session_builds_prompt_from_filtered_tools(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(runtime, "Agent", _FakeAgent)
+    monkeypatch.setattr(runtime, "Embedder", lambda use_api: object())
+    monkeypatch.setattr(runtime, "ConversationMemory", lambda *a, **k: object())
+    monkeypatch.setattr(runtime, "DiskMemory", lambda *a, **k: object())
+    monkeypatch.setattr(runtime, "MemoryRetriever", _FakeRetriever)
+    monkeypatch.setattr(runtime, "EmbeddingIngestionWorker", _FakeWorker)
+    monkeypatch.setattr(runtime, "MemorySubscriber", lambda ingestion_worker: SimpleNamespace(on_event=lambda _e: None))
+    monkeypatch.setattr(runtime, "ContextCompressor", lambda *a, **k: SimpleNamespace(maybe_compress=lambda *args, **kwargs: False))
+    monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
+    monkeypatch.setattr(runtime, "CalculatorTool", lambda: SimpleNamespace(name="calculator"))
+    monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root, **kwargs: SimpleNamespace(name="file_read"))
+    monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root, **kwargs: SimpleNamespace(name="file_write"))
+    monkeypatch.setattr(
+        runtime,
+        "DownloadUrlToFileTool",
+        lambda workspace_root, **kwargs: SimpleNamespace(name="download_url_to_file"),
+    )
+    monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: SimpleNamespace(name="gmail_fetch"))
+    monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: SimpleNamespace(name="pdf_merge"))
+    monkeypatch.setattr(runtime, "AgentMailSendTool", lambda workspace_root, **kwargs: SimpleNamespace(name="agentmail_send"))
+    monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: SimpleNamespace(name="jina_web_snapshot"))
+    monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: SimpleNamespace(name="perplexity_search"))
+    monkeypatch.setattr(runtime, "OpenAlexWorksTool", lambda: SimpleNamespace(name="openalex_works"))
+    monkeypatch.setattr(runtime, "PerplexityWebSnapshotTool", lambda: SimpleNamespace(name="perplexity_web_snapshot"))
+    monkeypatch.setattr(runtime, "SlowTool", lambda: SimpleNamespace(name="slow"))
+    monkeypatch.setattr(runtime, "FastTool", lambda: SimpleNamespace(name="fast"))
+    monkeypatch.setattr(runtime, "BashExecConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+
+    class _FakeBashExecTool:
+        def __init__(self, config, approval_fn=None):
+            self.name = "bash_exec"
+            self.config = config
+            self.approval_fn = approval_fn
+            self.description = ""
+
+    monkeypatch.setattr(runtime, "BashExecTool", _FakeBashExecTool)
+    monkeypatch.setattr(
+        runtime,
+        "load_skills",
+        lambda _root: [
+            SkillSpec(
+                name="jina-rules",
+                description="web rules",
+                kind="tool_rules",
+                priority=1,
+                tools=("jina_web_snapshot",),
+                triggers=("verify",),
+                scope="system",
+                body="Use exact sources.",
+            )
+        ],
+    )
+    monkeypatch.setattr(runtime, "render_skill_text", lambda skills: "SYSTEM-RULES" if skills else "")
+
+    def _capture_prompt(**kwargs):
+        captured.update(kwargs)
+        return "prompt"
+
+    monkeypatch.setattr(runtime, "build_system_prompt", _capture_prompt)
+
+    session = runtime.create_runtime_session(
+        enable_event_logger=False,
+        overrides=runtime.RuntimeOverrides(enable_memory=False, include_tools=["jina_web_snapshot"]),
+    )
+
+    assert [tool.name for tool in session.agent._tools] == ["jina_web_snapshot"]
+    assert captured["enabled_tool_names"] == ["jina_web_snapshot"]
+    assert captured["tool_rule_text"] == "SYSTEM-RULES"
+    assert session.enabled_tool_names == {"jina_web_snapshot"}
 
 
 def test_create_runtime_session_defaults_tool_allowed_roots_from_bash_roots(monkeypatch, tmp_path):
@@ -696,6 +789,107 @@ def test_run_user_turn_uses_fallback_retrieval_when_available():
     assert worker.flushed == 1
     assert retriever.calls == [("show the previous server answer", 3, "both", "default")]
     assert "assistant: recalled from long-term memory" in agent.prompts[0]
+
+
+def test_run_user_turn_injects_matching_workflow_skill_text():
+    agent = _FakeAgent()
+    retriever = _FakeRetriever()
+    worker = _FakeWorker()
+    session = RuntimeSession(
+        agent=agent,
+        retriever=retriever,
+        ingestion_worker=worker,
+        active_session_id="default",
+        context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
+        top_k=3,
+        bash_prompt_approval=True,
+        execution_profile="balanced",
+        include_demo_tools=False,
+        unsubscribe_log=lambda: None,
+        unsubscribe_memory=lambda: None,
+        unsubscribe_approval=lambda: None,
+        enabled_tool_names={"file_read"},
+        skills=[
+            SkillSpec(
+                name="local-document-evidence",
+                description="doc workflow",
+                kind="workflow",
+                priority=100,
+                tools=("file_read",),
+                triggers=("document",),
+                scope="turn",
+                body="Read the local artifact before remote fetches.",
+            )
+        ],
+    )
+
+    reply = asyncio.run(run_user_turn(session, "Please verify the attached report.pdf"))
+
+    assert reply == "ok"
+    assert "Task-specific guidance:" in agent.prompts[0]
+    assert "[local-document-evidence]" in agent.prompts[0]
+    assert "Read the local artifact before remote fetches." in agent.prompts[0]
+
+
+def test_run_user_turn_normalizes_numeric_units_for_strict_final_answer_requests():
+    agent = _ReplyAgent("1.456 Å")
+    retriever = _FakeRetriever()
+    worker = _FakeWorker()
+
+    session = RuntimeSession(
+        agent=agent,
+        retriever=retriever,
+        ingestion_worker=worker,
+        active_session_id="default",
+        context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
+        top_k=3,
+        bash_prompt_approval=True,
+        execution_profile="balanced",
+        include_demo_tools=False,
+        unsubscribe_log=lambda: None,
+        unsubscribe_memory=lambda: None,
+        unsubscribe_approval=lambda: None,
+    )
+
+    reply = asyncio.run(
+        run_user_turn(
+            session,
+            (
+                "Return only the final answer to the task.\n"
+                "Output format requirements:\n"
+                "- Exactly one line.\n"
+                "- Include only the answer text or number.\n"
+                "Remember: output exactly one line containing only the final answer."
+            ),
+        )
+    )
+
+    assert reply == "1.456"
+
+
+def test_run_user_turn_keeps_units_for_non_strict_requests():
+    agent = _ReplyAgent("1.456 Å")
+    retriever = _FakeRetriever()
+    worker = _FakeWorker()
+
+    session = RuntimeSession(
+        agent=agent,
+        retriever=retriever,
+        ingestion_worker=worker,
+        active_session_id="default",
+        context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
+        top_k=3,
+        bash_prompt_approval=True,
+        execution_profile="balanced",
+        include_demo_tools=False,
+        unsubscribe_log=lambda: None,
+        unsubscribe_memory=lambda: None,
+        unsubscribe_approval=lambda: None,
+    )
+
+    reply = asyncio.run(run_user_turn(session, "What is the distance in angstroms?"))
+
+    assert reply == "1.456 Å"
 
 
 class _FakeMemory:

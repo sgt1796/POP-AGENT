@@ -38,3 +38,20 @@ def test_calculator_rejects_attribute_access():
 
     assert result.details["ok"] is False
     assert result.details["error"] == "unsupported syntax: Attribute"
+
+
+def test_calculator_supports_inverse_trig_calls():
+    result = _run(
+        {
+            "expression": "round(6371 * acos(sin(radians(a_lat)) * sin(radians(b_lat)) + cos(radians(a_lat)) * cos(radians(b_lat)) * cos(radians(b_lon - a_lon))), 3)",
+            "bindings": {
+                "a_lat": -6.1754,
+                "a_lon": 106.8272,
+                "b_lat": 19.7633,
+                "b_lon": 96.0785,
+            },
+        }
+    )
+
+    assert result.details["ok"] is True
+    assert result.details["result_type"] == "float"

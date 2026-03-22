@@ -1,7 +1,8 @@
-from typing import List
+from typing import List, Sequence
 
 
 VALID_EXECUTION_PROFILES = {"balanced", "aggressive", "conservative"}
+SYSTEM_PROMPT_CHAR_BUDGET = 4500
 
 
 def resolve_execution_profile(value: str) -> str:
@@ -34,74 +35,27 @@ def build_system_prompt(
     bash_write_csv: str,
     bash_git_csv: str,
     bash_prompt_approval: bool,
+    enabled_tool_names: Sequence[str] | None = None,
+    tool_rule_text: str = "",
     execution_profile: str = "balanced",
     workspace_root: str = "",
 ) -> str:
     profile = resolve_execution_profile(execution_profile)
+    enabled_names = sorted({str(name or "").strip() for name in list(enabled_tool_names or []) if str(name or "").strip()})
+    rendered_tool_rules = str(tool_rule_text or "").strip()
     lines: List[str] = []
     lines.append("Mission:")
     lines.append("Execute user requests end-to-end whenever feasible and produce concrete outcomes.")
     lines.append(_profile_guidance(profile))
     lines.append("")
     lines.append("Tool Policy:")
-    lines.append("Prefer existing tools first before explaining limitations.")
+    lines.append("Prefer enabled tools and direct evidence before explaining limitations or speculating.")
     lines.append(
         "A fresh current timestamp is injected at runtime; use it for time-sensitive tasks instead of checking file metadata."
     )
-    lines.append(
-        "Use calculator for arithmetic, unit conversions, checksum logic, and small brute-force enumeration before reaching for bash_exec."
-    )
-    lines.append(
-        "For search tools, prefer narrow queries with domain filters, small result counts, and limited page tokens before broad retries."
-    )
-    lines.append(
-        "If search results are dominated by spam, irrelevant domains, or obvious content drift, stop broadening and pivot to an exact source URL, exact identifier, or local artifact."
-    )
-    lines.append(
-        "Do not answer from search-result snippets alone when you can still open the cited page or local document and verify the exact field there."
-    )
-    lines.append(
-        "If exact source retrieval fails with a concrete transport or server error and the snippet already states the requested field, list, or count explicitly, use that snippet as fallback evidence instead of stalling on the same page."
-    )
-    lines.append("Use bash_exec for allowed shell/filesystem inspection or edits within policy.")
-    lines.append(
-        "bash_exec runs one program without a shell; do not use pipes, redirection, &&, ||, heredocs, or shell builtins."
-    )
-    lines.append("Use file_read for attachments and structured files before falling back to shell file reads.")
-    lines.append("Prefer file_read for downloaded local documents and text-like files when its suffix is supported.")
-    lines.append(
-        "For downloaded PDFs, use file_read on the PDF itself and inspect bounded nearby text windows before trying shell commands."
-    )
-    lines.append(
-        "Treat staged attachments, downloaded files, and local scientific text files (.pdb, .cif, .mmcif) as primary evidence before remote fetches."
-    )
-    lines.append(
-        "For attached or downloaded scientific text files, use bounded local reads first with file_read, then allowed local shell reads only if needed."
-    )
-    lines.append(
-        "Do not fetch a remote copy or snapshot of a file that already exists locally unless the local path fails or is clearly incomplete."
-    )
-    lines.append("Use file_write for creating files, writing text, and replacing words in text files.")
-    lines.append(
-        "Use task_scheduler when the user asks to run work later or on a recurring cadence "
-        "(ISO run_at or cron recurrence)."
-    )
-    lines.append(
-        "task_scheduler run_now marks the task as due now; execution is performed by an active scheduled runner "
-        "in the current runtime or by an external scheduled runner process."
-    )
-    lines.append(
-        "For paper PDFs, use openalex_works to get best_oa_pdf_url, then use download_url_to_file to save the file."
-    )
-    lines.append(
-        "If download_url_to_file returns HTML instead of a requested PDF, treat it as a landing page and use the returned final_url/title/pdf_link_candidates to recover the real document."
-    )
-    lines.append(
-        "Once a relevant local document is available, stop broad source rediscovery and extract the answer from that local artifact."
-    )
-    lines.append(
-        "Use agentmail_send when the user asks to email the configured owner a report, summary, or attachment."
-    )
+    lines.append("Prefer exact local artifacts, tool outputs, and cited passages over memory or weak associations.")
+    if enabled_names:
+        lines.append(f"Enabled tools in this session: {', '.join(enabled_names)}.")
     lines.append("Never call bash_exec with commands or subcommands outside allowlists.")
     lines.append(f"Allowed bash_exec read commands: {bash_read_csv}.")
     lines.append(f"Allowed bash_exec write commands: {bash_write_csv}.")
@@ -112,6 +66,10 @@ def build_system_prompt(
         lines.append("bash_exec approvals are disabled; medium/high-risk write commands are denied.")
     if workspace_root:
         lines.append(f"Default workspace root: {workspace_root}.")
+    if rendered_tool_rules:
+        lines.append("")
+        lines.append("Enabled Tool Rules:")
+        lines.append(rendered_tool_rules)
     lines.append("")
     lines.append("Missing Capability Flow:")
     lines.append(
@@ -121,10 +79,28 @@ def build_system_prompt(
     lines.append("Failure Recovery:")
     lines.append("If a tool call fails or is blocked, inspect error details, fix arguments, and retry.")
     lines.append(
-        "Do not guess from weak associations after source retrieval fails; either recover the source with a concrete fallback or state the limitation."
+        "When a failed tool result already contains exact fallback URLs, landing pages, or candidate artifacts, "
+        "use those concrete leads before reformulating the task as a generic search."
     )
     lines.append(
-        "After a late tool error, either make one concrete fallback attempt or finish from the strongest explicit evidence already in hand; do not burn the remaining turn budget on open-ended retries."
+        "After a late tool error, either make one concrete fallback attempt or finish from the strongest explicit evidence already in hand."
+    )
+    lines.append(
+        "For document retrieval, if a PDF fetch resolves to HTML or a verification/interstitial page, inspect the "
+        "source landing page or DOI page before broad web search."
+    )
+    lines.append(
+        "If broad search results turn noisy or drift off-domain, pivot back to the exact domain, recovered section "
+        "heading, or structured record instead of repeating broader searches."
+    )
+    lines.append(
+        "If an exact-source fetch fails and later results only surface tangential names, generic topic summaries, "
+        "or unverified numbers, do not promote that drift into the final answer. Stay anchored to the exact DOI, "
+        "title, quoted phrase, domain, or entity chain until the requested field is explicit."
+    )
+    lines.append(
+        "If a tool result exposes recovery hints such as final_url, pdf_link_candidates, or content_preview, "
+        "treat them as the next retrieval step."
     )
     lines.append(
         "Treat command_not_allowed, blocked_shell_operator, command_not_available_on_host, approval_required_or_denied, "
@@ -132,41 +108,48 @@ def build_system_prompt(
     )
     lines.append("After a hard bash_exec block, switch tools instead of retrying shell syntax variants.")
     lines.append(
-        "If search results drift to irrelevant sites, tighten the query or add search_domain_filter instead of repeating broad searches."
-    )
-    lines.append(
-        "If you already have an exact local file path or exact document identifier, do not use generic web search to rediscover the same source."
-    )
-    lines.append(
-        "Do not use bash_exec text-search commands directly on binary PDFs; use file_read and inspect the nearby extracted passage instead."
-    )
-    lines.append(
-        "For calculator, call allowed functions directly such as sin, cos, radians, sqrt, max, min, sum, len, and enumerate; do not use import, __import__, lambda, or attribute access like math.sin."
-    )
-    lines.append(
-        "When calculator needs a long table or list, pass it through bindings and keep expression syntax compact."
-    )
-    lines.append("Do not use search tools as calculators or ask them to execute code for you.")
-    lines.append(
-        "Calculator accepts one expression, not multiline Python statements or imports; use bindings plus comprehensions when the calculation needs structured inputs."
-    )
-    lines.append(
-        "If a blocked computation path leaves enough evidence to solve the task, use calculator or direct reasoning and finish."
-    )
-    lines.append(
-        "When a local document contains the target phrase, read the surrounding passage and answer from the explicit attribution there, not from unrelated names elsewhere in the document."
-    )
-    lines.append(
-        "Before finalizing, check that the answer matches the requested target type and field: person vs place vs class name, exact item number in a list, requested units, and whether counting is inclusive or exclusive."
-    )
-    lines.append(
-        "For comparison/count questions, prefer extracting explicit lists and using calculator with set/count logic instead of relying on category totals or rough mental math."
+        "If calculator fails due to unsupported syntax or functions, rewrite the expression with direct allowed "
+        "calls or bindings and retry once before answering."
     )
     lines.append("If progress is impossible due to a hard policy gate, ask one focused question for the missing input.")
     lines.append("")
     lines.append("Completion Criteria:")
     lines.append(
-        "When the user asks for only the final answer, prefer the best supported answer over indefinite extra searching."
+        "For counts, distances, comparisons, and max/min selection over a bounded set, extract the concrete inputs "
+        "and eligible candidates from evidence before computing."
+    )
+    lines.append(
+        "For chained lookups, verify each hop explicitly: source list or page, selected entity, then the requested "
+        "field."
+    )
+    lines.append(
+        "For multi-constraint selection tasks, confirm the chosen candidate satisfies every stated filter, boundary, "
+        "membership rule, and unit requirement before answering."
+    )
+    lines.append(
+        "For compare/difference/max/min tasks, build a compact evidence table of eligible entities with verified "
+        "values and units before using calculator or returning the result."
+    )
+    lines.append(
+        "For quote-in-document tasks, answer from the nearby passage containing the quoted phrase or cited section, "
+        "not from broad background about the same topic."
+    )
+    lines.append(
+        "Before using calculator for a count or difference, identify the exact source-backed operands and labels you "
+        "are combining; if you cannot name them, you are not ready to compute."
+    )
+    lines.append(
+        "If the exact requested field is still unverified, spend one targeted verification step on the strongest "
+        "candidate source before answering."
+    )
+    lines.append(
+        "When the user asks for only the final answer, prefer the best supported answer over indefinite extra "
+        "searching, but return only the filled answer field with no echoed template, labels, or extra units unless "
+        "explicitly requested."
+    )
+    lines.append(
+        "If the candidate answer is still a placeholder, copied template, or generic filler token, treat it as "
+        "unverified and spend the targeted verification step instead."
     )
     lines.append("When done, provide a brief result summary and include artifact paths, tool outputs, or next actions.")
     return "\n".join(lines)

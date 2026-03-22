@@ -1,4 +1,8 @@
-from agent_build.agent1.prompting import build_system_prompt, resolve_execution_profile
+from agent_build.agent1.prompting import (
+    SYSTEM_PROMPT_CHAR_BUDGET,
+    build_system_prompt,
+    resolve_execution_profile,
+)
 
 
 def _build_prompt(**overrides):
@@ -7,6 +11,8 @@ def _build_prompt(**overrides):
         "bash_write_csv": "touch",
         "bash_git_csv": "status",
         "bash_prompt_approval": True,
+        "enabled_tool_names": ["bash_exec", "calculator", "file_read"],
+        "tool_rule_text": "[calculator-rules]\nUse calculator for arithmetic first.",
         "execution_profile": "balanced",
         "workspace_root": "/tmp/workspace",
     }
@@ -14,56 +20,50 @@ def _build_prompt(**overrides):
     return build_system_prompt(**params)
 
 
-def test_prompt_includes_execution_first_sections_and_allowlists():
+def test_prompt_includes_core_sections_allowlists_and_tool_rules():
     prompt = _build_prompt()
 
     assert "Mission:" in prompt
     assert "Execute user requests end-to-end whenever feasible" in prompt
+    assert "Execution profile: balanced." in prompt
     assert "Tool Policy:" in prompt
+    assert "Prefer enabled tools and direct evidence before explaining limitations or speculating." in prompt
     assert "A fresh current timestamp is injected at runtime" in prompt
-    assert "Use calculator for arithmetic, unit conversions, checksum logic" in prompt
-    assert "prefer narrow queries with domain filters" in prompt
-    assert "If search results are dominated by spam" in prompt
-    assert "Do not answer from search-result snippets alone" in prompt
-    assert "If exact source retrieval fails with a concrete transport or server error" in prompt
-    assert "bash_exec runs one program without a shell" in prompt
-    assert "Prefer file_read for downloaded local documents and text-like files" in prompt
-    assert "For downloaded PDFs, use file_read on the PDF itself" in prompt
-    assert "local scientific text files (.pdb, .cif, .mmcif) as primary evidence" in prompt
-    assert "use bounded local reads first with file_read" in prompt
-    assert "Do not fetch a remote copy or snapshot of a file that already exists locally" in prompt
+    assert "Enabled tools in this session: bash_exec, calculator, file_read." in prompt
     assert "Allowed bash_exec read commands: cat, ls." in prompt
     assert "Allowed bash_exec write commands: touch." in prompt
     assert "Allowed bash_exec git subcommands: status." in prompt
-    assert "Never call bash_exec with commands or subcommands outside allowlists." in prompt
-    assert "Use file_write for creating files, writing text, and replacing words in text files." in prompt
-    assert "Use task_scheduler when the user asks to run work later or on a recurring cadence" in prompt
-    assert "task_scheduler run_now marks the task as due now" in prompt
-    assert "If download_url_to_file returns HTML instead of a requested PDF" in prompt
-    assert "Once a relevant local document is available, stop broad source rediscovery" in prompt
-    assert "Use agentmail_send when the user asks to email the configured owner" in prompt
-    assert "Failure Recovery:" in prompt
-    assert "Do not guess from weak associations after source retrieval fails" in prompt
-    assert "After a late tool error, either make one concrete fallback attempt or finish" in prompt
-    assert "Treat command_not_allowed, blocked_shell_operator, command_not_available_on_host" in prompt
-    assert "After a hard bash_exec block, switch tools instead of retrying shell syntax variants." in prompt
-    assert "If search results drift to irrelevant sites" in prompt
-    assert "do not use generic web search to rediscover the same source" in prompt
-    assert "Do not use bash_exec text-search commands directly on binary PDFs" in prompt
-    assert "do not use import, __import__, lambda, or attribute access like math.sin" in prompt
-    assert "pass it through bindings and keep expression syntax compact" in prompt
-    assert "Do not use search tools as calculators or ask them to execute code for you." in prompt
-    assert "Calculator accepts one expression, not multiline Python statements or imports" in prompt
-    assert "When a local document contains the target phrase, read the surrounding passage" in prompt
-    assert "Before finalizing, check that the answer matches the requested target type and field" in prompt
-    assert "prefer extracting explicit lists and using calculator with set/count logic" in prompt
-    assert "Completion Criteria:" in prompt
-    assert "When the user asks for only the final answer" in prompt
-
-def test_prompt_includes_missing_capability_fallback_guidance():
-    prompt = _build_prompt()
+    assert "Enabled Tool Rules:" in prompt
+    assert "[calculator-rules]" in prompt
     assert "Missing Capability Flow:" in prompt
-    assert "report the specific limitation and ask for one focused user input" in prompt
+    assert "Failure Recovery:" in prompt
+    assert "use those concrete leads before reformulating the task as a generic search" in prompt
+    assert "if a PDF fetch resolves to HTML or a verification/interstitial page" in prompt
+    assert "If broad search results turn noisy or drift off-domain" in prompt
+    assert "tangential names, generic topic summaries, or unverified numbers" in prompt
+    assert "final_url, pdf_link_candidates, or content_preview" in prompt
+    assert "rewrite the expression with direct allowed calls or bindings" in prompt
+    assert "Completion Criteria:" in prompt
+    assert "eligible candidates from evidence before computing" in prompt
+    assert "verify each hop explicitly" in prompt
+    assert "satisfies every stated filter, boundary, membership rule" in prompt
+    assert "compact evidence table of eligible entities" in prompt
+    assert "nearby passage containing the quoted phrase or cited section" in prompt
+    assert "identify the exact source-backed operands and labels" in prompt
+    assert "spend one targeted verification step" in prompt
+    assert "no echoed template, labels, or extra units" in prompt
+    assert "placeholder, copied template, or generic filler token" in prompt
+
+
+def test_prompt_excludes_workflow_playbooks_and_stays_under_budget():
+    prompt = _build_prompt(tool_rule_text="")
+
+    assert len(prompt) < SYSTEM_PROMPT_CHAR_BUDGET
+    assert "best_oa_pdf_url" not in prompt
+    assert "search-result snippets alone" not in prompt
+    assert "task_scheduler run_now marks the task as due now" not in prompt
+    assert "local scientific text files (.pdb, .cif, .mmcif) as primary evidence" not in prompt
+    assert "set/count logic" not in prompt
 
 
 def test_prompt_fallbacks_to_balanced_profile_and_denied_write_hint():
