@@ -24,6 +24,11 @@ except Exception:  # pragma: no cover - exercised through runtime error path
 
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 _GMAIL_API_ROOT = "https://gmail.googleapis.com/gmail/v1/users/me"
+_GMAIL_INVALID_GRANT_HINT = (
+    "If refresh fails with invalid_grant about 7 days after token creation, "
+    "the Google OAuth app is often still in Testing mode. Delete token.json "
+    "and rerun gmail_auth.py to sign in again."
+)
 
 
 def _sanitize_filename(name: str) -> str:
@@ -115,7 +120,8 @@ class GmailFetchTool(AgentTool):
     name = "gmail_fetch"
     description = (
         "Fetch Gmail messages by sender/query and optionally download attachments "
-        "(workspace-only attachment output path)."
+        "(workspace-only attachment output path). Requires a valid Gmail OAuth "
+        f"token file. {_GMAIL_INVALID_GRANT_HINT}"
     )
     parameters = {
         "type": "object",
@@ -154,6 +160,17 @@ class GmailFetchTool(AgentTool):
     def _ok(text: str, details: Dict[str, Any]) -> AgentToolResult:
         return AgentToolResult(content=[TextContent(type="text", text=text)], details={"ok": True, **details})
 
+    @staticmethod
+    def _refresh_error_hint(exc: Exception) -> str:
+        message = str(exc).lower()
+        if "invalid_grant" not in message:
+            return ""
+        return (
+            " Google returned invalid_grant while refreshing the Gmail token. "
+            "This usually means the refresh token expired or was revoked. "
+            f"{_GMAIL_INVALID_GRANT_HINT}"
+        )
+
     def _load_credentials(self, token_path: str) -> Any:
         if Credentials is None or GoogleAuthRequest is None:
             raise RuntimeError("gmail_fetch requires google-auth. Add google-auth to project dependencies.")
@@ -173,7 +190,9 @@ class GmailFetchTool(AgentTool):
                 try:
                     creds.refresh(GoogleAuthRequest())
                 except Exception as exc:
-                    raise RuntimeError(f"failed to refresh Gmail token: {exc}") from exc
+                    raise RuntimeError(
+                        f"failed to refresh Gmail token: {exc}{self._refresh_error_hint(exc)}"
+                    ) from exc
                 try:
                     with open(token_path, "w", encoding="utf-8") as handle:
                         handle.write(creds.to_json())

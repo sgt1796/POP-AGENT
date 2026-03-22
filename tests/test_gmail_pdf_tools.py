@@ -62,6 +62,46 @@ def test_gmail_fetch_returns_error_when_token_missing(tmp_path: Path):
     assert "token file not found" in result.content[0].text.lower()
 
 
+def test_gmail_fetch_description_mentions_invalid_grant_hint():
+    description = GmailFetchTool.description.lower()
+    assert "invalid_grant" in description
+    assert "testing mode" in description
+    assert "gmail_auth.py" in description
+
+
+def test_gmail_fetch_invalid_grant_error_includes_reauth_hint(tmp_path: Path, monkeypatch):
+    token_path = tmp_path / "token.json"
+    token_path.write_text("{}", encoding="utf-8")
+
+    class _FakeCreds:
+        valid = False
+        expired = True
+        refresh_token = "refresh-token"
+
+        def refresh(self, request):
+            del request
+            raise Exception("invalid_grant: Bad Request")
+
+    class _FakeCredentials:
+        @staticmethod
+        def from_authorized_user_file(path, scopes):
+            del path, scopes
+            return _FakeCreds()
+
+    monkeypatch.setattr("agent.tools.gmail_pdf_tools.Credentials", _FakeCredentials)
+    monkeypatch.setattr("agent.tools.gmail_pdf_tools.GoogleAuthRequest", lambda: object())
+
+    tool = GmailFetchTool(workspace_root=str(tmp_path))
+    result = _run(tool, {"token_path": str(token_path), "download_attachments": False})
+
+    text = result.content[0].text.lower()
+    assert result.details["ok"] is False
+    assert "invalid_grant" in text
+    assert "testing mode" in text
+    assert "delete token.json" in text
+    assert "gmail_auth.py" in text
+
+
 def test_gmail_fetch_composes_query_from_sender_and_query(tmp_path: Path, monkeypatch):
     token_path = tmp_path / "token.json"
     _write_token(token_path)
