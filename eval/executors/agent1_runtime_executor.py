@@ -220,7 +220,9 @@ class Agent1RuntimeExecutor(AgentExecutor):
             "- For scholarly or document tasks, prefer openalex_works and exact local files before perplexity_search or web snapshots.",
             "- Do not answer from search-result snippets alone if you can open the cited page or a local artifact and verify the exact field.",
             "- If a page is relevant but dense, extract the target field from the exact nearby passage instead of relying on a broad summary of the page.",
+            "- For quote-in-document tasks, recover the exact phrase in the exact title, chapter, page, or preview path and answer from the nearby passage only.",
             "- If a tool returns concrete recovery hints such as final_url, pdf_link_candidates, or content_preview, use those exact leads before broad search.",
+            "- If an exact-source fetch fails and later results only surface tangential names, generic summaries, or unverified numbers, do not turn that drift into the final answer; stay anchored to the DOI, title, quote, domain, or entity chain.",
             (
                 "- Generic web discovery budget for this sample: at most 4 total calls across "
                 "perplexity_search, jina_web_snapshot, and perplexity_web_snapshot unless a new call "
@@ -230,6 +232,7 @@ class Agent1RuntimeExecutor(AgentExecutor):
             "- For calculator, use a single expression with direct function calls and bindings; do not use import, lambda, __import__, or attribute access like math.sin.",
             "- If calculator returns an unsupported syntax/function error, rewrite the expression with direct allowed calls or bindings and retry once before answering.",
             "- For counts, distances, comparisons, and max/min selection over a bounded set, extract the concrete inputs and eligible candidates first and compute from those explicit values rather than mental arithmetic or a guessed set.",
+            "- Before using calculator for a count or difference, write down the exact source-backed operands and make sure they follow the task's counting convention, such as unique winners, same-line stops, or season-specific measurements.",
             "- Before answering, verify the requested output field and counting convention: exact entity, requested unit, item index, and inclusive vs exclusive counts.",
             "- When the prompt asks for answer text or number only, output only the filled answer field; do not echo the format template, labels, or extra units unless explicitly requested.",
             "- If the candidate answer is still a placeholder, copied template, or generic filler token, treat the field as unverified and use the strongest targeted verification call before answering.",

@@ -94,6 +94,11 @@ def build_system_prompt(
         "heading, or structured record instead of repeating broader searches."
     )
     lines.append(
+        "If an exact-source fetch fails and later results only surface tangential names, generic topic summaries, "
+        "or unverified numbers, do not promote that drift into the final answer. Stay anchored to the exact DOI, "
+        "title, quoted phrase, domain, or entity chain until the requested field is explicit."
+    )
+    lines.append(
         "If a tool result exposes recovery hints such as final_url, pdf_link_candidates, or content_preview, "
         "treat them as the next retrieval step."
     )
@@ -124,6 +129,14 @@ def build_system_prompt(
     lines.append(
         "For compare/difference/max/min tasks, build a compact evidence table of eligible entities with verified "
         "values and units before using calculator or returning the result."
+    )
+    lines.append(
+        "For quote-in-document tasks, answer from the nearby passage containing the quoted phrase or cited section, "
+        "not from broad background about the same topic."
+    )
+    lines.append(
+        "Before using calculator for a count or difference, identify the exact source-backed operands and labels you "
+        "are combining; if you cannot name them, you are not ready to compute."
     )
     lines.append(
         "If the exact requested field is still unverified, spend one targeted verification step on the strongest "
