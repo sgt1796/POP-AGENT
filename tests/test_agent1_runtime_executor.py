@@ -18,6 +18,7 @@ def test_augment_eval_prompt_includes_verification_and_calculator_guidance():
     assert "Do not answer from search-result snippets alone" in prompt
     assert "extract the target field from the exact nearby passage" in prompt
     assert "recover the exact phrase in the exact title, chapter, page, or preview path" in prompt
+    assert "use file_read with query and bounded context" in prompt
     assert "final_url, pdf_link_candidates, or content_preview" in prompt
     assert "tangential names, generic summaries, or unverified numbers" in prompt
     assert "use a single expression with direct function calls and bindings" in prompt
@@ -29,6 +30,7 @@ def test_augment_eval_prompt_includes_verification_and_calculator_guidance():
     assert "eligible candidates first and compute from those explicit values" in prompt
     assert "write down the exact source-backed operands" in prompt
     assert "verify the requested output field and counting convention" in prompt
+    assert "requested precision or rounding rule" in prompt
     assert "do not echo the format template, labels, or extra units" in prompt
     assert "placeholder, copied template, or generic filler token" in prompt
     assert "spend one targeted verification call on the strongest candidate source" in prompt

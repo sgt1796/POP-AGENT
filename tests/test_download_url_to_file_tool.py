@@ -149,6 +149,38 @@ def test_download_url_to_file_rejects_unexpected_content_type(tmp_path: Path, mo
     assert not (tmp_path / "downloads" / "file.pdf").exists()
 
 
+def test_download_url_to_file_infers_pdf_expectation_from_output_path(tmp_path: Path, monkeypatch):
+    def _fake_get(url, stream=False, timeout=None, allow_redirects=False):
+        del url, stream, timeout, allow_redirects
+        return _FakeResponse(
+            chunks=[
+                (
+                    b"<html><head><title>Project MUSE -- Verification required!</title></head>"
+                    b"<body>Please verify you are a human before continuing.</body></html>"
+                )
+            ],
+            content_type="text/html",
+            url="https://muse.jhu.edu/verify?url=%2Fpub%2F258%2Foa_monograph%2Fbook%2F24372%2Fpdf",
+        )
+
+    monkeypatch.setattr("agent.tools.download_url_to_file.requests.get", _fake_get)
+
+    tool = DownloadUrlToFileTool(workspace_root=str(tmp_path))
+    result = _run(
+        tool,
+        {
+            "url": "https://example.org/looks-like-a-pdf",
+            "output_path": "downloads/file.pdf",
+        },
+    )
+
+    assert result.details["ok"] is False
+    assert result.details["error"] == "unexpected_content_type"
+    assert result.details["expected_content_type"] == "application/pdf"
+    assert "expected content type 'application/pdf'" in result.content[0].text
+    assert not (tmp_path / "downloads" / "file.pdf").exists()
+
+
 def test_download_url_to_file_flags_verification_page_with_recovery_hint(tmp_path: Path, monkeypatch):
     def _fake_get(url, stream=False, timeout=None, allow_redirects=False):
         del url, stream, timeout, allow_redirects

@@ -272,6 +272,49 @@ def test_read_text_line_window(tmp_path: Path):
     assert result["metadata"]["returned_line_end"] == 3
 
 
+def test_read_text_query_returns_bounded_context(tmp_path: Path):
+    (tmp_path / "notes.txt").write_text(
+        "\n".join(
+            [
+                "chapter one",
+                "nothing here",
+                "the phrase endopsychic myths appears here",
+                "follow-up detail",
+                "separator",
+                "another mention of endopsychic myths later",
+                "closing line",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = read(
+        "notes.txt",
+        workspace_root=str(tmp_path),
+        query="endopsychic myths",
+        context_lines=1,
+        max_matches=2,
+    )
+
+    assert result["ok"] is True
+    assert result["metadata"]["query"] == "endopsychic myths"
+    assert result["metadata"]["query_match_count"] == 2
+    assert result["metadata"]["query_matched_line_numbers"] == [3, 6]
+    assert "--- match 1 lines 2-7 ---" in result["content"]
+    assert "3: the phrase endopsychic myths appears here" in result["content"]
+    assert "6: another mention of endopsychic myths later" in result["content"]
+
+
+def test_read_text_query_reports_no_match(tmp_path: Path):
+    (tmp_path / "notes.txt").write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+    result = read("notes.txt", workspace_root=str(tmp_path), query="delta")
+
+    assert result["ok"] is True
+    assert result["metadata"]["query_match_count"] == 0
+    assert result["content"] == "No matches found for query: delta"
+
+
 def test_read_pdb_includes_atom_hints_and_serializes_metadata_first(tmp_path: Path):
     pdb_text = """HEADER demo
 REMARK x

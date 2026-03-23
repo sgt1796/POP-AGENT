@@ -39,6 +39,7 @@ def test_prompt_includes_core_sections_allowlists_and_tool_rules():
     assert "Failure Recovery:" in prompt
     assert "use those concrete leads before reformulating the task as a generic search" in prompt
     assert "if a PDF fetch resolves to HTML or a verification/interstitial page" in prompt
+    assert "use file_read query/context on the exact phrase" in prompt
     assert "If broad search results turn noisy or drift off-domain" in prompt
     assert "tangential names, generic topic summaries, or unverified numbers" in prompt
     assert "final_url, pdf_link_candidates, or content_preview" in prompt
@@ -50,6 +51,7 @@ def test_prompt_includes_core_sections_allowlists_and_tool_rules():
     assert "compact evidence table of eligible entities" in prompt
     assert "nearby passage containing the quoted phrase or cited section" in prompt
     assert "identify the exact source-backed operands and labels" in prompt
+    assert "Honor the exact requested precision" in prompt
     assert "spend one targeted verification step" in prompt
     assert "no echoed template, labels, or extra units" in prompt
     assert "placeholder, copied template, or generic filler token" in prompt

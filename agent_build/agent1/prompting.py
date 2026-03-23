@@ -83,20 +83,24 @@ def build_system_prompt(
         "use those concrete leads before reformulating the task as a generic search."
     )
     lines.append(
-        "After a late tool error, either make one concrete fallback attempt or finish from the strongest explicit evidence already in hand."
+        "After a late tool error, make one concrete fallback attempt or finish from the strongest evidence already in hand."
     )
     lines.append(
         "For document retrieval, if a PDF fetch resolves to HTML or a verification/interstitial page, inspect the "
-        "source landing page or DOI page before broad web search."
+        "landing or DOI page before broad web search."
     )
     lines.append(
-        "If broad search results turn noisy or drift off-domain, pivot back to the exact domain, recovered section "
-        "heading, or structured record instead of repeating broader searches."
+        "If a relevant document is already local, use file_read query/context on the exact phrase or heading "
+        "instead of shell grep or sequential scans."
+    )
+    lines.append(
+        "If broad search results turn noisy or drift off-domain, pivot back to the exact domain, section heading, "
+        "or structured record instead of repeating broad searches."
     )
     lines.append(
         "If an exact-source fetch fails and later results only surface tangential names, generic topic summaries, "
         "or unverified numbers, do not promote that drift into the final answer. Stay anchored to the exact DOI, "
-        "title, quoted phrase, domain, or entity chain until the requested field is explicit."
+        "title, quoted phrase, domain, or entity chain."
     )
     lines.append(
         "If a tool result exposes recovery hints such as final_url, pdf_link_candidates, or content_preview, "
@@ -139,6 +143,10 @@ def build_system_prompt(
         "are combining; if you cannot name them, you are not ready to compute."
     )
     lines.append(
+        "Honor the exact requested precision, unit conversion, and rounding rule; do not round to fewer decimals "
+        "than required."
+    )
+    lines.append(
         "If the exact requested field is still unverified, spend one targeted verification step on the strongest "
         "candidate source before answering."
     )
@@ -151,5 +159,5 @@ def build_system_prompt(
         "If the candidate answer is still a placeholder, copied template, or generic filler token, treat it as "
         "unverified and spend the targeted verification step instead."
     )
-    lines.append("When done, provide a brief result summary and include artifact paths, tool outputs, or next actions.")
+    lines.append("When done, provide a brief result summary with artifact paths, tool outputs, or next actions.")
     return "\n".join(lines)

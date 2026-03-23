@@ -187,6 +187,13 @@ def _content_type_mismatch_recovery_hint(
     return "treat this as a landing page; inspect the final URL or source landing page before broad search"
 
 
+def _infer_expected_content_type(output_path: str) -> str:
+    suffix = os.path.splitext(str(output_path or "").strip())[1].lower()
+    if suffix == ".pdf":
+        return "application/pdf"
+    return ""
+
+
 class DownloadUrlToFileTool(AgentTool):
     name = "download_url_to_file"
     description = (
@@ -262,7 +269,7 @@ class DownloadUrlToFileTool(AgentTool):
         overwrite = _to_bool(params.get("overwrite"), False)
         expected_content_type = _normalize_content_type(_to_text(params.get("expected_content_type", "")))
         if not _to_text(params.get("expected_content_type", "")):
-            expected_content_type = ""
+            expected_content_type = _infer_expected_content_type(output_path)
 
         if os.path.exists(output_path) and not overwrite:
             return self._error(

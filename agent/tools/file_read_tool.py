@@ -155,6 +155,31 @@ def _coerce_optional_positive_int(value: Any, field_name: str) -> Optional[int]:
     return parsed
 
 
+def _coerce_optional_non_negative_int(value: Any, field_name: str) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except Exception as exc:
+        raise FileReadError("parse_error", f"{field_name} must be an integer") from exc
+    if parsed < 0:
+        raise FileReadError("parse_error", f"{field_name} must be >= 0")
+    return parsed
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value in (None, ""):
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    raise FileReadError("parse_error", "case_sensitive must be a boolean")
+
+
 def _slice_text_lines(
     lines: Sequence[str],
     *,
@@ -178,6 +203,53 @@ def _slice_text_lines(
         "returned_line_start": start_index + 1 if has_selection else 0,
         "returned_line_end": end_index if has_selection else 0,
     }
+
+
+def _search_text_lines(
+    lines: Sequence[str],
+    *,
+    query: str,
+    case_sensitive: bool,
+    context_lines: int,
+    max_matches: int,
+) -> tuple[str, Dict[str, Any]]:
+    total_lines = len(lines)
+    needle = str(query or "")
+    normalized_needle = needle if case_sensitive else needle.lower()
+    matched_indexes: List[int] = []
+    for index, line in enumerate(lines):
+        haystack = line if case_sensitive else line.lower()
+        if normalized_needle in haystack:
+            matched_indexes.append(index)
+
+    metadata: Dict[str, Any] = {
+        "line_count": total_lines,
+        "query": needle,
+        "query_case_sensitive": case_sensitive,
+        "query_context_lines": context_lines,
+        "query_max_matches": max_matches,
+        "query_match_count": len(matched_indexes),
+        "query_returned_match_count": min(len(matched_indexes), max_matches),
+        "query_matched_line_numbers": [index + 1 for index in matched_indexes[:max_matches]],
+    }
+    if not matched_indexes:
+        return f"No matches found for query: {needle}", metadata
+
+    windows: List[tuple[int, int]] = []
+    for index in matched_indexes[:max_matches]:
+        start = max(0, index - context_lines)
+        end = min(total_lines, index + context_lines + 1)
+        if windows and start <= windows[-1][1]:
+            previous_start, previous_end = windows[-1]
+            windows[-1] = (previous_start, max(previous_end, end))
+        else:
+            windows.append((start, end))
+
+    sections: List[str] = []
+    for match_number, (start, end) in enumerate(windows, start=1):
+        numbered_lines = "\n".join(f"{line_index + 1}: {lines[line_index]}" for line_index in range(start, end))
+        sections.append(f"--- match {match_number} lines {start + 1}-{end} ---\n{numbered_lines}")
+    return "\n\n".join(sections), metadata
 
 
 def _build_structure_text_metadata(lines: Sequence[str], suffix: str) -> Dict[str, Any]:
@@ -376,6 +448,10 @@ def read(
     xlsx_format: str = "json",
     line_start: Optional[int] = None,
     line_count: Optional[int] = None,
+    query: Optional[str] = None,
+    context_lines: Optional[int] = None,
+    max_matches: Optional[int] = None,
+    case_sensitive: bool = False,
 ) -> Dict[str, Any]:
     root, roots = normalize_allowed_roots(workspace_root, allowed_roots)
     try:
@@ -394,6 +470,14 @@ def read(
 
     line_start_value = _coerce_optional_positive_int(line_start, "line_start")
     line_count_value = _coerce_optional_positive_int(line_count, "line_count")
+    context_lines_value = _coerce_optional_non_negative_int(context_lines, "context_lines")
+    max_matches_value = _coerce_optional_positive_int(max_matches, "max_matches")
+    query_value = str(query or "").strip()
+    case_sensitive_value = _coerce_bool(case_sensitive, default=False)
+    if context_lines_value is None:
+        context_lines_value = 2
+    if max_matches_value is None:
+        max_matches_value = 5
 
     absolute = _resolve_workspace_path(path, root, roots)
     size = os.path.getsize(absolute)
@@ -414,13 +498,33 @@ def read(
                 metadata.update(_build_structure_text_metadata(lines, suffix))
             elif "line_count" not in metadata:
                 metadata["line_count"] = len(lines)
-            if line_start_value is not None or line_count_value is not None:
+            if query_value:
+                selected_text, query_metadata = _search_text_lines(
+                    lines,
+                    query=query_value,
+                    case_sensitive=case_sensitive_value,
+                    context_lines=context_lines_value,
+                    max_matches=max_matches_value,
+                )
+                metadata.update(query_metadata)
+            elif line_start_value is not None or line_count_value is not None:
                 selected_text, line_metadata = _slice_text_lines(
                     lines,
                     line_start=line_start_value,
                     line_count=line_count_value,
                 )
                 metadata.update(line_metadata)
+        elif query_value:
+            lines = text.splitlines()
+            metadata["line_count"] = len(lines)
+            selected_text, query_metadata = _search_text_lines(
+                lines,
+                query=query_value,
+                case_sensitive=case_sensitive_value,
+                context_lines=context_lines_value,
+                max_matches=max_matches_value,
+            )
+            metadata.update(query_metadata)
         truncated = len(selected_text) > max_chars_value
         return _success_payload(
             path=absolute,
@@ -487,19 +591,32 @@ def read(
 
         text = "\n\n".join(parts)
         original_chars = len(text)
-        truncated = original_chars > max_chars_value
+        selected_text = text
+        metadata = {
+            "page_count": len(pages),
+            "non_empty_pages": non_empty_pages,
+            "extracted_char_count": original_chars,
+            "byte_size": size,
+        }
+        if query_value:
+            lines = text.splitlines()
+            metadata["line_count"] = len(lines)
+            selected_text, query_metadata = _search_text_lines(
+                lines,
+                query=query_value,
+                case_sensitive=case_sensitive_value,
+                context_lines=context_lines_value,
+                max_matches=max_matches_value,
+            )
+            metadata.update(query_metadata)
+        truncated = len(selected_text) > max_chars_value
         return _success_payload(
             path=absolute,
             workspace_path=workspace_path,
             suffix=suffix,
             kind="pdf",
-            content=text[:max_chars_value] if truncated else text,
-            metadata={
-                "page_count": len(pages),
-                "non_empty_pages": non_empty_pages,
-                "extracted_char_count": original_chars,
-                "byte_size": size,
-            },
+            content=selected_text[:max_chars_value] if truncated else selected_text,
+            metadata=metadata,
             truncated=truncated,
         )
 
@@ -549,7 +666,7 @@ class FileReadTool(AgentTool):
     description = (
         "Read and parse files by suffix inside the workspace or allowed roots. "
         "Supports common text/code/config files, structure text files like pdb/cif, plus json, csv, xlsx, pdf, and image-to-base64. "
-        "For large text files, can return bounded line windows and structure hints."
+        "For large text files, can return bounded line windows, exact query matches with context, and structure hints."
     )
     parameters = {
         "type": "object",
@@ -566,6 +683,25 @@ class FileReadTool(AgentTool):
             "line_count": {
                 "type": "integer",
                 "description": "Optional number of lines to return for supported text-like files.",
+            },
+            "query": {
+                "type": "string",
+                "description": (
+                    "Optional literal text search for supported text-like and pdf files. "
+                    "Returns bounded matching contexts."
+                ),
+            },
+            "context_lines": {
+                "type": "integer",
+                "description": "Optional surrounding lines to include around each query match. Defaults to 2.",
+            },
+            "max_matches": {
+                "type": "integer",
+                "description": "Optional maximum number of query matches to return. Defaults to 5.",
+            },
+            "case_sensitive": {
+                "type": "boolean",
+                "description": "Optional case-sensitive query matching. Defaults to false.",
             },
             "xlsx_format": {
                 "type": "string",
@@ -613,6 +749,10 @@ class FileReadTool(AgentTool):
         max_chars = params.get("max_chars", 200_000)
         line_start = params.get("line_start")
         line_count = params.get("line_count")
+        query = params.get("query")
+        context_lines = params.get("context_lines")
+        max_matches = params.get("max_matches")
+        case_sensitive = params.get("case_sensitive", False)
         xlsx_format = str(params.get("xlsx_format", "json") or "json")
         try:
             payload = read(
@@ -623,6 +763,10 @@ class FileReadTool(AgentTool):
                 xlsx_format=xlsx_format,
                 line_start=line_start,
                 line_count=line_count,
+                query=query,
+                context_lines=context_lines,
+                max_matches=max_matches,
+                case_sensitive=case_sensitive,
             )
         except FileReadError as exc:
             return self._error(path_value, exc.code, exc.message)

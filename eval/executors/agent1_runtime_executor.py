@@ -64,7 +64,8 @@ class _EvalSteeringGuard:
                     "Evaluation steering:\n"
                     "- The generic web discovery budget is exhausted for this sample.\n"
                     "- Stop reformulating broad searches or reopening the same source family.\n"
-                    "- Use the strongest exact source already found, spend at most one targeted verification step, then answer.",
+                    "- If the likely answer is already in a downloaded or local document, use file_read with query and bounded context on the exact phrase or heading.\n"
+                    "- Otherwise use the strongest exact source already found, spend at most one targeted verification step, then answer.",
                 )
 
         if tool_name == "bash_exec":
@@ -75,7 +76,9 @@ class _EvalSteeringGuard:
                     "Evaluation steering:\n"
                     "- bash_exec is hard-blocked in this environment.\n"
                     "- Do not retry shell commands or syntax variants.\n"
-                    "- Switch to non-shell tools only, and if you already have a likely source, verify it directly and answer.",
+                    "- Switch to non-shell tools only.\n"
+                    "- If the target is already local, use file_read with query and context instead of shell grep.\n"
+                    "- If you already have a likely source, verify it directly and answer.",
                 )
 
         if tool_name == "file_read" and str(details.get("error") or "").strip() == "parse_error":
@@ -83,8 +86,18 @@ class _EvalSteeringGuard:
                 "file-read-parse-error",
                 "Evaluation steering:\n"
                 "- The local artifact could not be parsed as requested.\n"
-                "- If it came from download_url_to_file, inspect final_url, pdf_link_candidates, or content_preview, or read the saved landing HTML instead of shelling out.\n"
+                "- If it came from download_url_to_file, inspect final_url, pdf_link_candidates, or content_preview, then save the landing page as .html if needed.\n"
+                "- Once you have the landing page or local document, use file_read with query and bounded context on the exact phrase or chapter heading instead of shelling out.\n"
                 "- Recover one exact document path, then resume bounded local reading.",
+            )
+
+        if tool_name == "download_url_to_file" and str(details.get("error") or "").strip() == "unexpected_content_type":
+            self._steer_once(
+                "download-unexpected-content-type",
+                "Evaluation steering:\n"
+                "- The requested file resolved to a different content type than expected, often a landing or verification page.\n"
+                "- Use final_url, pdf_link_candidates, content_preview, or the source landing page as the next step.\n"
+                "- If you save the landing page locally, use file_read with query and bounded context on the exact phrase or chapter heading.",
             )
 
         if tool_name == "calculator":
@@ -325,6 +338,7 @@ class Agent1RuntimeExecutor(AgentExecutor):
             "- Do not answer from search-result snippets alone if you can open the cited page or a local artifact and verify the exact field.",
             "- If a page is relevant but dense, extract the target field from the exact nearby passage instead of relying on a broad summary of the page.",
             "- For quote-in-document tasks, recover the exact phrase in the exact title, chapter, page, or preview path and answer from the nearby passage only.",
+            "- For large local text, HTML, RST, or PDF documents, use file_read with query and bounded context instead of sequential scanning or shell grep.",
             "- If a tool returns concrete recovery hints such as final_url, pdf_link_candidates, or content_preview, use those exact leads before broad search.",
             "- If an exact-source fetch fails and later results only surface tangential names, generic summaries, or unverified numbers, do not turn that drift into the final answer; stay anchored to the DOI, title, quote, domain, or entity chain.",
             (
@@ -340,7 +354,7 @@ class Agent1RuntimeExecutor(AgentExecutor):
             "- Do not use calculator to open files, inspect text, or simulate scripting; extract evidence first, then compute from the explicit values only.",
             "- For counts, distances, comparisons, and max/min selection over a bounded set, extract the concrete inputs and eligible candidates first and compute from those explicit values rather than mental arithmetic or a guessed set.",
             "- Before using calculator for a count or difference, write down the exact source-backed operands and make sure they follow the task's counting convention, such as unique winners, same-line stops, or season-specific measurements.",
-            "- Before answering, verify the requested output field and counting convention: exact entity, requested unit, item index, and inclusive vs exclusive counts.",
+            "- Before answering, verify the requested output field and counting convention: exact entity, requested unit, item index, inclusive vs exclusive counts, and requested precision or rounding rule.",
             "- When the prompt asks for answer text or number only, output only the filled answer field; do not echo the format template, labels, or extra units unless explicitly requested.",
             "- If the candidate answer is still a placeholder, copied template, or generic filler token, treat the field as unverified and use the strongest targeted verification call before answering.",
             "- If the exact requested field is still unverified, spend one targeted verification call on the strongest candidate source before answering.",
