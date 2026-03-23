@@ -181,9 +181,18 @@ def test_perplexity_search_success_with_mocked_sdk(monkeypatch):
 
 
 class _FakeRequestsResponse:
-    def __init__(self, text: str = "", status_code: int = 200) -> None:
+    def __init__(
+        self,
+        text: str = "",
+        status_code: int = 200,
+        *,
+        headers: Dict[str, str] | None = None,
+        url: str = "",
+    ) -> None:
         self.text = text
         self.status_code = int(status_code)
+        self.headers = dict(headers or {})
+        self.url = url
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -252,6 +261,39 @@ def test_jina_web_snapshot_retries_without_selectors_on_retryable_server_error(m
     assert calls[0]["headers"]["X-Target-Selector"] == "#mw-content-text"
     assert "X-Target-Selector" not in calls[1]["headers"]
     assert "X-Wait-For-Selector" not in calls[1]["headers"]
+
+
+def test_jina_web_snapshot_falls_back_to_direct_http_when_jina_is_unavailable(monkeypatch):
+    calls: list[str] = []
+
+    def _fake_get(url: str, headers: Dict[str, str] | None = None, timeout: float = 0):
+        calls.append(url)
+        if url.startswith("https://r.jina.ai/"):
+            return _FakeRequestsResponse(text="", status_code=402, url=url)
+        assert url == "https://scikit-learn.org/0.19/whats_new.html"
+        assert timeout == 20.0
+        return _FakeRequestsResponse(
+            text="<html><head><title>Release history</title></head><body><h1>Version 0.19</h1><p>BaseLabelPropagation bug fix.</p></body></html>",
+            status_code=200,
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            url=url,
+        )
+
+    monkeypatch.setattr("agent.tools.search.jina_web_snapshot.requests.get", _fake_get)
+    result = _run(JinaWebSnapshotTool(), {"web_url": "https://scikit-learn.org/0.19/whats_new.html"})
+
+    assert result.details["ok"] is True
+    assert result.details["fallback_source"] == "direct_http"
+    assert result.details["jina_status_code"] == 402
+    assert result.details["direct_url"] == "https://scikit-learn.org/0.19/whats_new.html"
+    assert result.details["direct_content_type"] == "text/html"
+    assert "Version 0.19" in result.content[0].text
+    assert "BaseLabelPropagation bug fix." in result.content[0].text
+    assert "<html>" not in result.content[0].text
+    assert calls == [
+        "https://r.jina.ai/https://scikit-learn.org/0.19/whats_new.html",
+        "https://scikit-learn.org/0.19/whats_new.html",
+    ]
 
 
 def test_perplexity_web_snapshot_stub_response():

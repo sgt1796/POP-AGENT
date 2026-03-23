@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import time
 from dataclasses import asdict, is_dataclass
@@ -26,6 +27,7 @@ _CALCULATOR_IO_ERROR_SNIPPETS = (
     "only direct function calls are allowed",
     "function not allowed",
 )
+_HTTP_STATUS_RE = re.compile(r"\b([45]\d{2})\b")
 
 
 def _event_result_details(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -38,6 +40,24 @@ def _event_result_details(event: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(details, dict):
         return details
     return {}
+
+
+def _extract_http_status_code(details: Dict[str, Any]) -> Optional[int]:
+    for key in ("status_code", "jina_status_code"):
+        try:
+            value = details.get(key)
+            if value is not None:
+                return int(value)
+        except Exception:
+            pass
+    error_text = str(details.get("error") or "").strip()
+    match = _HTTP_STATUS_RE.search(error_text)
+    if match:
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+    return None
 
 
 class _EvalSteeringGuard:
@@ -86,18 +106,31 @@ class _EvalSteeringGuard:
                 "file-read-parse-error",
                 "Evaluation steering:\n"
                 "- The local artifact could not be parsed as requested.\n"
-                "- If it came from download_url_to_file, inspect final_url, pdf_link_candidates, or content_preview, then save the landing page as .html if needed.\n"
+                "- If it came from download_url_to_file, inspect final_url, pdf_link_candidates, content_preview, or saved_landing_page_path, then save the landing page as .html if needed.\n"
                 "- Once you have the landing page or local document, use file_read with query and bounded context on the exact phrase or chapter heading instead of shelling out.\n"
                 "- Recover one exact document path, then resume bounded local reading.",
             )
+
+        if tool_name == "jina_web_snapshot":
+            status_code = _extract_http_status_code(details)
+            if status_code is not None and 400 <= status_code < 500:
+                self._steer_once(
+                    "jina-client-error",
+                    "Evaluation steering:\n"
+                    "- jina_web_snapshot hit a proxy or access error on the snapshot service.\n"
+                    "- Do not keep reformulating the same generic search.\n"
+                    "- Try the original URL directly or use download_url_to_file to save it as local .html, then use file_read with query and bounded context on the exact phrase, heading, or version section.\n"
+                    "- If the source is genuinely gated, stay anchored to the exact DOI, title, or domain and spend at most one targeted alternative retrieval step before answering.",
+                )
 
         if tool_name == "download_url_to_file" and str(details.get("error") or "").strip() == "unexpected_content_type":
             self._steer_once(
                 "download-unexpected-content-type",
                 "Evaluation steering:\n"
                 "- The requested file resolved to a different content type than expected, often a landing or verification page.\n"
-                "- Use final_url, pdf_link_candidates, content_preview, or the source landing page as the next step.\n"
-                "- If you save the landing page locally, use file_read with query and bounded context on the exact phrase or chapter heading.",
+                "- Use final_url, pdf_link_candidates, content_preview, saved_landing_page_path, or the source landing page as the next step.\n"
+                "- If you save the landing page locally, use file_read with query and bounded context on the exact phrase or chapter heading.\n"
+                "- Do not retry the same PDF URL without a new concrete lead.",
             )
 
         if tool_name == "calculator":
@@ -339,7 +372,8 @@ class Agent1RuntimeExecutor(AgentExecutor):
             "- If a page is relevant but dense, extract the target field from the exact nearby passage instead of relying on a broad summary of the page.",
             "- For quote-in-document tasks, recover the exact phrase in the exact title, chapter, page, or preview path and answer from the nearby passage only.",
             "- For large local text, HTML, RST, or PDF documents, use file_read with query and bounded context instead of sequential scanning or shell grep.",
-            "- If a tool returns concrete recovery hints such as final_url, pdf_link_candidates, or content_preview, use those exact leads before broad search.",
+            "- If a tool returns concrete recovery hints such as final_url, pdf_link_candidates, or content_preview, plus saved_landing_page_path when present, use those exact leads before broad search.",
+            "- If jina_web_snapshot fails with a 4xx or proxy access error on a known page URL, try the original URL directly or use download_url_to_file to save it as local .html, then inspect it with file_read before broadening search.",
             "- If an exact-source fetch fails and later results only surface tangential names, generic summaries, or unverified numbers, do not turn that drift into the final answer; stay anchored to the DOI, title, quote, domain, or entity chain.",
             (
                 "- Generic web discovery budget for this sample: at most 4 total calls across "
@@ -355,6 +389,7 @@ class Agent1RuntimeExecutor(AgentExecutor):
             "- For counts, distances, comparisons, and max/min selection over a bounded set, extract the concrete inputs and eligible candidates first and compute from those explicit values rather than mental arithmetic or a guessed set.",
             "- Before using calculator for a count or difference, write down the exact source-backed operands and make sure they follow the task's counting convention, such as unique winners, same-line stops, or season-specific measurements.",
             "- Before answering, verify the requested output field and counting convention: exact entity, requested unit, item index, inclusive vs exclusive counts, and requested precision or rounding rule.",
+            "- Translate the requested precision into the final numeric format before answering; for example, nearest 0.001 of the reported unit requires three decimals.",
             "- When the prompt asks for answer text or number only, output only the filled answer field; do not echo the format template, labels, or extra units unless explicitly requested.",
             "- If the candidate answer is still a placeholder, copied template, or generic filler token, treat the field as unverified and use the strongest targeted verification call before answering.",
             "- If the exact requested field is still unverified, spend one targeted verification call on the strongest candidate source before answering.",

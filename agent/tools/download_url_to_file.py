@@ -142,11 +142,12 @@ def _content_type_mismatch_details(
     expected_content_type: str,
     content_type: str,
     final_url: str,
-) -> Dict[str, Any]:
+) -> tuple[Dict[str, Any], Optional[str]]:
     details: Dict[str, Any] = {
         "expected_content_type": expected_content_type,
         "content_type": content_type,
     }
+    html_text: Optional[str] = None
     if content_type == "text/html":
         try:
             preview_bytes = b"".join(response.iter_content(chunk_size=16 * 1024))
@@ -154,7 +155,26 @@ def _content_type_mismatch_details(
             details.update(_extract_html_hints(html_text, final_url))
         except Exception:
             pass
-    return details
+    return details, html_text
+
+
+def _landing_page_output_path(output_path: str) -> str:
+    root, ext = os.path.splitext(str(output_path or "").strip())
+    if ext.lower() == ".html":
+        return output_path
+    if root:
+        return f"{root}.html"
+    return f"{output_path}.html"
+
+
+def _persist_landing_page_html(html_text: str, output_path: str) -> str:
+    landing_page_path = _landing_page_output_path(output_path)
+    temp_path = f"{landing_page_path}.tmp-{uuid.uuid4().hex}"
+    os.makedirs(os.path.dirname(landing_page_path) or ".", exist_ok=True)
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        handle.write(str(html_text or ""))
+    os.replace(temp_path, landing_page_path)
+    return landing_page_path
 
 
 def _content_type_mismatch_recovery_hint(
@@ -290,12 +310,20 @@ class DownloadUrlToFileTool(AgentTool):
                 final_url = _to_text(getattr(response, "url", "")) or url
                 content_type = _normalize_content_type(str(response.headers.get("Content-Type", "")))
                 if expected_content_type and not _matches_expected_content_type(content_type, expected_content_type):
-                    mismatch_details = _content_type_mismatch_details(
+                    mismatch_details, html_text = _content_type_mismatch_details(
                         response=response,
                         expected_content_type=expected_content_type,
                         content_type=content_type,
                         final_url=final_url,
                     )
+                    if content_type == "text/html" and html_text:
+                        try:
+                            mismatch_details["saved_landing_page_path"] = _persist_landing_page_html(
+                                html_text,
+                                output_path,
+                            )
+                        except OSError as exc:
+                            mismatch_details["landing_page_save_error"] = str(exc)
                     recovery_hint = _content_type_mismatch_recovery_hint(
                         content_type=content_type,
                         mismatch_details=mismatch_details,
@@ -317,6 +345,12 @@ class DownloadUrlToFileTool(AgentTool):
                         message += f"; pdf_link_candidates: {', '.join(str(item) for item in candidate_links[:3])}"
                     if content_preview:
                         message += f"; content_preview: {content_preview[:160]}"
+                    saved_landing_page_path = str(mismatch_details.get("saved_landing_page_path") or "").strip()
+                    if saved_landing_page_path:
+                        message += f"; saved_landing_page_path: {saved_landing_page_path}"
+                    landing_page_save_error = str(mismatch_details.get("landing_page_save_error") or "").strip()
+                    if landing_page_save_error:
+                        message += f"; landing_page_save_error: {landing_page_save_error}"
                     if recovery_hint:
                         message += f"; recovery_hint: {recovery_hint}"
                     raise _DownloadToolError(

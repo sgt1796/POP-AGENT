@@ -20,6 +20,8 @@ def test_augment_eval_prompt_includes_verification_and_calculator_guidance():
     assert "recover the exact phrase in the exact title, chapter, page, or preview path" in prompt
     assert "use file_read with query and bounded context" in prompt
     assert "final_url, pdf_link_candidates, or content_preview" in prompt
+    assert "saved_landing_page_path" in prompt
+    assert "If jina_web_snapshot fails with a 4xx or proxy access error" in prompt
     assert "tangential names, generic summaries, or unverified numbers" in prompt
     assert "use a single expression with direct function calls and bindings" in prompt
     assert "do not use import, lambda, __import__, or attribute access like math.sin" in prompt
@@ -31,6 +33,7 @@ def test_augment_eval_prompt_includes_verification_and_calculator_guidance():
     assert "write down the exact source-backed operands" in prompt
     assert "verify the requested output field and counting convention" in prompt
     assert "requested precision or rounding rule" in prompt
+    assert "nearest 0.001 of the reported unit requires three decimals" in prompt
     assert "do not echo the format template, labels, or extra units" in prompt
     assert "placeholder, copied template, or generic filler token" in prompt
     assert "spend one targeted verification call on the strongest candidate source" in prompt
@@ -78,13 +81,27 @@ def test_eval_steering_guard_intervenes_on_hard_blocks_and_budget():
             "result": {"details": {"error": "parse_error"}},
         }
     )
+    guard.on_event(
+        {
+            "type": "tool_execution_end",
+            "toolName": "jina_web_snapshot",
+            "result": {
+                "details": {
+                    "error": "402 Client Error: Payment Required for url: https://r.jina.ai/https://example.com/page",
+                    "jina_status_code": 402,
+                    "url": "https://example.com/page",
+                }
+            },
+        }
+    )
 
-    assert len(agent.messages) == 4
+    assert len(agent.messages) == 5
     texts = [message.content[0].text for message in agent.messages]
     assert "generic web discovery budget is exhausted" in texts[0]
     assert "bash_exec is hard-blocked" in texts[1]
     assert "Calculator is arithmetic-only" in texts[2]
     assert "local artifact could not be parsed" in texts[3]
+    assert "save it as local .html" in texts[4]
 
 
 def test_eval_steering_guard_deduplicates_repeated_signals():
