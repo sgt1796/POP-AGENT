@@ -406,6 +406,46 @@ def test_openalex_works_search_success_with_filter_and_cursor(monkeypatch):
     ]
 
 
+def test_openalex_works_search_treats_doi_query_as_exact_filter(monkeypatch):
+    from agent.tools.search import openalex_works as openalex_mod
+
+    calls = []
+
+    def _fake_urlopen(req, timeout=0):
+        del timeout
+        parsed = urllib_parse.urlparse(req.full_url)
+        query = urllib_parse.parse_qs(parsed.query)
+        calls.append({"path": parsed.path, "query": query})
+        return _FakeUrlResponse(
+            {
+                "meta": {"count": 1},
+                "results": [
+                    {
+                        "id": "https://openalex.org/W777",
+                        "title": "Exact DOI Search Result",
+                        "doi": "https://doi.org/10.1353/book.24372",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(openalex_mod.urllib_request, "urlopen", _fake_urlopen)
+    result = _run(
+        OpenAlexWorksTool(),
+        {"action": "search", "query": "doi:10.1353/book.24372", "per_page": 5},
+    )
+
+    assert result.details["ok"] is True
+    assert result.details["filters"]["exact_doi"] == "10.1353/book.24372"
+    assert result.details["results"][0]["doi"] == "https://doi.org/10.1353/book.24372"
+
+    call = calls[0]
+    assert call["path"] == "/works"
+    assert "search" not in call["query"]
+    assert call["query"]["filter"] == ["doi:https://doi.org/10.1353/book.24372"]
+    assert call["query"]["per-page"] == ["5"]
+
+
 def test_openalex_works_fetch_openalex_id_success(monkeypatch):
     from agent.tools.search import openalex_works as openalex_mod
 

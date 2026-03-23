@@ -479,3 +479,27 @@ def test_generate_html_report_accepts_numbered_text_steps_from_promptfunction(tm
     ]
     persisted = samples[0]["result"]["agent_execution_summary"]
     assert persisted["steps"] == ["Search the web", "Open the relevant page", "Answer the question"]
+
+
+def test_generate_html_report_rejects_numeric_only_steps_from_promptfunction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    class _FakePromptFunction:
+        def __init__(self, sys_prompt: str = "", prompt: str = "", client: str | None = None):
+            del sys_prompt, prompt, client
+
+        def execute(self, *_args, **_kwargs):
+            return {"steps": [46]}
+
+    monkeypatch.setattr(agent_step_summary, "PromptFunction", _FakePromptFunction)
+
+    run_dir = _create_run_dir(tmp_path, include_optional=True, persisted_summary=False)
+    output_path = tmp_path / "report.html"
+    generate_html_report(str(run_dir), str(output_path), summarize_agent_steps=True)
+
+    samples = [
+        json.loads(line)
+        for line in (run_dir / "samples.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    persisted = samples[0]["result"]["agent_execution_summary"]
+    assert persisted["steps"] == []
+    assert persisted["error"] == "PromptFunction returned no usable steps."

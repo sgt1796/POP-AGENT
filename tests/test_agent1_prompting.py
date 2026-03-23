@@ -41,8 +41,10 @@ def test_prompt_includes_core_sections_allowlists_and_tool_rules():
     assert "if a PDF fetch resolves to HTML or a verification/interstitial page" in prompt
     assert "If jina_web_snapshot fails with a 4xx or proxy access error" in prompt
     assert "use file_read query/context on the exact phrase" in prompt
+    assert "Do not invent workspace paths from URLs or domains" in prompt
     assert "If broad search results turn noisy or drift off-domain" in prompt
     assert "tangential names, generic topic summaries, or unverified numbers" in prompt
+    assert "use openalex_works fetch_openalex_record with the DOI or an exact DOI filter" in prompt
     assert "final_url, pdf_link_candidates, content_preview, or saved_landing_page_path" in prompt
     assert "rewrite the expression with direct allowed calls or bindings" in prompt
     assert "Completion Criteria:" in prompt

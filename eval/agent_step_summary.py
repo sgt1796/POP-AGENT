@@ -17,6 +17,7 @@ _MAX_TRACE_CHARS = 16_000
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 _NUMBERED_STEP_RE = re.compile(r"^\s*\d+[\.\):-]\s*")
 _BULLETED_STEP_RE = re.compile(r"^\s*(?:[-*•]+)\s*")
+_NON_ALPHA_STEP_RE = re.compile(r"^[\W\d_]+$")
 _SAMPLE_PROMPT_PREFIX = (
     "You summarize agent execution traces into concise high-level steps for evaluation reports.\n"
     "Return strict JSON only in the form {\"steps\": [\"...\"]}.\n"
@@ -512,11 +513,27 @@ def _normalize_steps(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
     normalized: List[str] = []
+    seen: set[str] = set()
     for item in value:
         text = _NUMBERED_STEP_RE.sub("", str(item or "").strip())
-        if text:
-            normalized.append(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if not _is_usable_step_text(text):
+            continue
+        dedupe_key = text.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(text)
     return normalized
+
+
+def _is_usable_step_text(text: str) -> bool:
+    candidate = str(text or "").strip()
+    if len(candidate) < 4:
+        return False
+    if _NON_ALPHA_STEP_RE.fullmatch(candidate):
+        return False
+    return any(char.isalpha() for char in candidate)
 
 
 def _normalize_string_list(value: Any) -> List[str]:

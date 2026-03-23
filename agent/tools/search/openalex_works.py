@@ -373,6 +373,11 @@ class OpenAlexWorksTool(AgentTool):
     def _build_search_request(self, params: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
         query = _to_text(params.get("query"))
         filters = self._build_search_filters(params)
+        exact_doi = _extract_doi(query)
+        if exact_doi:
+            doi_filter = f"doi:https://doi.org/{exact_doi.lower()}"
+            if not any(str(item or "").strip().lower().startswith("doi:") for item in filters):
+                filters.insert(0, doi_filter)
         if not query and not filters:
             raise ValueError("search requires query or at least one filter")
 
@@ -395,8 +400,10 @@ class OpenAlexWorksTool(AgentTool):
             "per_page": per_page,
             "include_abstract": include_abstract,
         }
-        if query:
+        if query and not exact_doi:
             request_params["search"] = query
+        if exact_doi:
+            summary_filters["exact_doi"] = exact_doi.lower()
         if filters:
             request_params["filter"] = ",".join(filters)
             summary_filters["filter"] = request_params["filter"]

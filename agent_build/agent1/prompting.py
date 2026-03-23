@@ -24,7 +24,7 @@ def _profile_guidance(profile: str) -> str:
             "actions."
         )
     return (
-        "Execution profile: balanced. Be execution-first with tools while keeping guardrails."
+        "Execution profile: balanced. Use tools first with guardrails."
     )
 
 
@@ -44,7 +44,7 @@ def build_system_prompt(
     rendered_tool_rules = str(tool_rule_text or "").strip()
     lines: List[str] = []
     lines.append("Mission:")
-    lines.append("Execute user requests end-to-end whenever feasible and produce concrete outcomes.")
+    lines.append("Execute user requests end-to-end whenever feasible.")
     lines.append(_profile_guidance(profile))
     lines.append("")
     lines.append("Tool Policy:")
@@ -82,9 +82,6 @@ def build_system_prompt(
         "use those concrete leads before reformulating the task as a generic search."
     )
     lines.append(
-        "After a late tool error, make one fallback attempt or finish from the strongest evidence in hand."
-    )
-    lines.append(
         "For document retrieval, if a PDF fetch resolves to HTML or a verification/interstitial page, inspect the "
         "landing or DOI page before broad search."
     )
@@ -94,7 +91,8 @@ def build_system_prompt(
     )
     lines.append(
         "If a relevant document is already local, use file_read query/context on the exact phrase or heading "
-        "instead of shell grep."
+        "instead of shell grep. Do not invent workspace paths from URLs or domains; file_read only works on "
+        "files that already exist locally."
     )
     lines.append(
         "If broad search results turn noisy or drift off-domain, pivot back to the exact domain or section heading "
@@ -106,18 +104,18 @@ def build_system_prompt(
         "title, quote, or domain."
     )
     lines.append(
+        "For DOI-linked tasks, use openalex_works fetch_openalex_record with the DOI or an exact DOI filter before "
+        "broad search. If a returned record mismatches the requested DOI, discard it as unverified."
+    )
+    lines.append(
         "If a tool result exposes recovery hints such as final_url, pdf_link_candidates, content_preview, or "
         "saved_landing_page_path, treat them as the next retrieval step."
     )
-    lines.append(
-        "Treat command_not_allowed, blocked_shell_operator, command_not_available_on_host, approval_required_or_denied, "
-        "and path_outside_* as hard constraints."
-    )
+    lines.append("Treat bash_exec block reasons and path_outside_* as hard constraints.")
     lines.append("After a hard bash_exec block, switch tools instead of retrying shell syntax variants.")
     lines.append(
         "If calculator fails, rewrite the expression with direct allowed calls or bindings and retry once."
     )
-    lines.append("If progress is impossible due to a hard policy gate, ask one focused question.")
     lines.append("")
     lines.append("Completion Criteria:")
     lines.append(
@@ -164,5 +162,4 @@ def build_system_prompt(
         "If the candidate answer is still a placeholder, copied template, or generic filler token, treat it as "
         "unverified and spend the targeted verification step instead."
     )
-    lines.append("When done, provide a brief result summary with artifacts or next actions.")
     return "\n".join(lines)
