@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import inspect
 import os
 import shlex
@@ -357,6 +358,12 @@ class BashExecTool(AgentTool):
             exit_code = proc.returncode
             stdout_text = stdout_raw.decode("utf-8", errors="replace")
             stderr_text = stderr_raw.decode("utf-8", errors="replace")
+            if command_name == "find" and self._looks_like_windows_find_error(stderr_text):
+                handled, fallback_exit_code, fallback_stdout, fallback_stderr = self._fallback_find(argv, exec_cwd)
+                if handled:
+                    exit_code = fallback_exit_code
+                    stdout_text = fallback_stdout
+                    stderr_text = fallback_stderr
             stdout_raw_chars = len(stdout_text)
             stderr_raw_chars = len(stderr_text)
             (
@@ -473,6 +480,8 @@ class BashExecTool(AgentTool):
             return True, 0, f"{cwd}\n", ""
         if command == "ls":
             return self._fallback_ls(argv, cwd)
+        if command == "find":
+            return self._fallback_find(argv, cwd)
         return False, None, "", ""
 
     def _contains_blocked_shell_operator(self, cmd: str) -> bool:
@@ -561,6 +570,146 @@ class BashExecTool(AgentTool):
         stdout = ("\n".join(output_lines) + "\n") if output_lines else ""
         stderr = ("\n".join(error_lines) + "\n") if error_lines else ""
         return True, exit_code, stdout, stderr
+
+    def _looks_like_windows_find_error(self, stderr_text: str) -> bool:
+        lowered = str(stderr_text or "").strip().lower()
+        return "parameter format not correct" in lowered
+
+    def _fallback_find(self, argv: Sequence[str], cwd: str) -> Tuple[bool, int, str, str]:
+        path_tokens, filters, parse_error = self._parse_find_fallback(argv)
+        if parse_error is not None:
+            return True, 2, "", f"{parse_error}\n"
+
+        output_lines: List[str] = []
+        error_lines: List[str] = []
+        exit_code = 0
+        resolved_paths = self._resolve_tokens_as_paths(path_tokens, cwd)
+
+        for raw_token, start_path in zip(path_tokens, resolved_paths):
+            if not os.path.exists(start_path):
+                exit_code = 1
+                error_lines.append(f"find: '{raw_token}': No such file or directory")
+                continue
+
+            for abs_path, depth in self._iter_find_paths(start_path):
+                if not self._find_matches(abs_path, depth, filters):
+                    continue
+                output_lines.append(self._render_find_path(raw_token, start_path, abs_path))
+
+        stdout = ("\n".join(output_lines) + "\n") if output_lines else ""
+        stderr = ("\n".join(error_lines) + "\n") if error_lines else ""
+        return True, exit_code, stdout, stderr
+
+    def _parse_find_fallback(
+        self,
+        argv: Sequence[str],
+    ) -> Tuple[List[str], Dict[str, Any], Optional[str]]:
+        tokens = list(argv[1:])
+        path_tokens: List[str] = []
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token in {"!", "(", ")"} or token.startswith("-"):
+                break
+            path_tokens.append(token)
+            index += 1
+        if not path_tokens:
+            path_tokens = ["."]
+
+        filters: Dict[str, Any] = {
+            "mindepth": 0,
+            "maxdepth": None,
+            "type": None,
+            "name": None,
+            "case_insensitive": False,
+        }
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "-print":
+                index += 1
+                continue
+            if token in {"-name", "-iname"}:
+                if index + 1 >= len(tokens):
+                    return path_tokens, filters, f"find: missing pattern for {token}"
+                filters["name"] = str(tokens[index + 1])
+                filters["case_insensitive"] = token == "-iname"
+                index += 2
+                continue
+            if token == "-type":
+                if index + 1 >= len(tokens):
+                    return path_tokens, filters, "find: missing type for -type"
+                value = str(tokens[index + 1]).strip().lower()
+                if value not in {"f", "d"}:
+                    return path_tokens, filters, f"find: unsupported -type value: {value or '(empty)'}"
+                filters["type"] = value
+                index += 2
+                continue
+            if token in {"-maxdepth", "-mindepth"}:
+                if index + 1 >= len(tokens):
+                    return path_tokens, filters, f"find: missing integer for {token}"
+                try:
+                    value = int(tokens[index + 1])
+                except Exception:
+                    return path_tokens, filters, f"find: invalid integer for {token}: {tokens[index + 1]}"
+                if value < 0:
+                    return path_tokens, filters, f"find: {token} must be >= 0"
+                filters[token[1:]] = value
+                index += 2
+                continue
+            return path_tokens, filters, f"find: unsupported expression: {token}"
+
+        return path_tokens, filters, None
+
+    def _iter_find_paths(self, start_path: str) -> List[Tuple[str, int]]:
+        items: List[Tuple[str, int]] = [(start_path, 0)]
+        if not os.path.isdir(start_path):
+            return items
+
+        for root, dirs, files in os.walk(start_path):
+            dirs.sort()
+            files.sort()
+            rel_root = os.path.relpath(root, start_path)
+            root_depth = 0 if rel_root == "." else rel_root.count(os.sep) + 1
+            for name in dirs:
+                items.append((os.path.join(root, name), root_depth + 1))
+            for name in files:
+                items.append((os.path.join(root, name), root_depth + 1))
+        return items
+
+    def _find_matches(self, abs_path: str, depth: int, filters: Dict[str, Any]) -> bool:
+        mindepth = int(filters.get("mindepth") or 0)
+        maxdepth = filters.get("maxdepth")
+        if depth < mindepth:
+            return False
+        if maxdepth is not None and depth > int(maxdepth):
+            return False
+
+        type_filter = str(filters.get("type") or "").strip().lower()
+        if type_filter == "f" and not os.path.isfile(abs_path):
+            return False
+        if type_filter == "d" and not os.path.isdir(abs_path):
+            return False
+
+        pattern = filters.get("name")
+        if pattern:
+            basename = os.path.basename(abs_path)
+            if bool(filters.get("case_insensitive")):
+                if not fnmatch.fnmatch(basename.lower(), str(pattern).lower()):
+                    return False
+            elif not fnmatch.fnmatchcase(basename, str(pattern)):
+                return False
+        return True
+
+    def _render_find_path(self, raw_token: str, start_path: str, abs_path: str) -> str:
+        rendered_root = raw_token or "."
+        rel_path = os.path.relpath(abs_path, start_path)
+        if rel_path == ".":
+            return rendered_root
+        separator = "\\" if "\\" in rendered_root and "/" not in rendered_root else "/"
+        if rendered_root in {".", "./"}:
+            return f".{separator}{rel_path.replace(os.sep, separator)}"
+        rendered_root = rendered_root.rstrip("/\\")
+        return f"{rendered_root}{separator}{rel_path.replace(os.sep, separator)}"
 
     def _validate_command_policy(self, command: str, argv: Sequence[str], cwd: str) -> Optional[str]:
         if command == "find":

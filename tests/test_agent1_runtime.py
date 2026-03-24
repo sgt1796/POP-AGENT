@@ -290,6 +290,54 @@ def test_create_runtime_session_builds_shared_runtime(monkeypatch):
     assert session.skills
 
 
+def test_create_runtime_session_prewarms_openai_embeddings_when_memory_enabled(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(runtime, "Agent", _FakeAgent)
+    monkeypatch.setattr(runtime, "_prewarm_openai_embedding_imports", lambda: calls.append("prewarm"))
+    monkeypatch.setattr(runtime, "Embedder", lambda use_api: object())
+    monkeypatch.setattr(runtime, "ConversationMemory", lambda *a, **k: object())
+    monkeypatch.setattr(runtime, "DiskMemory", lambda *a, **k: object())
+    monkeypatch.setattr(runtime, "MemoryRetriever", _FakeRetriever)
+    monkeypatch.setattr(runtime, "EmbeddingIngestionWorker", _FakeWorker)
+    monkeypatch.setattr(runtime, "MemorySubscriber", lambda ingestion_worker: SimpleNamespace(on_event=lambda _e: None))
+    monkeypatch.setattr(runtime, "ContextCompressor", lambda *a, **k: SimpleNamespace(maybe_compress=lambda *args, **kwargs: False))
+    monkeypatch.setattr(runtime, "MemorySearchTool", lambda retriever: SimpleNamespace(name="memory_search"))
+    monkeypatch.setattr(runtime, "CalculatorTool", lambda: SimpleNamespace(name="calculator"))
+    monkeypatch.setattr(runtime, "FileReadTool", lambda workspace_root, **kwargs: SimpleNamespace(name="file_read"))
+    monkeypatch.setattr(runtime, "FileWriteTool", lambda workspace_root, **kwargs: SimpleNamespace(name="file_write"))
+    monkeypatch.setattr(
+        runtime,
+        "DownloadUrlToFileTool",
+        lambda workspace_root, **kwargs: SimpleNamespace(name="download_url_to_file"),
+    )
+    monkeypatch.setattr(runtime, "GmailFetchTool", lambda workspace_root: SimpleNamespace(name="gmail_fetch"))
+    monkeypatch.setattr(runtime, "PdfMergeTool", lambda workspace_root: SimpleNamespace(name="pdf_merge"))
+    monkeypatch.setattr(runtime, "AgentMailSendTool", lambda workspace_root, **kwargs: SimpleNamespace(name="agentmail_send"))
+    monkeypatch.setattr(runtime, "JinaWebSnapshotTool", lambda: SimpleNamespace(name="jina_web_snapshot"))
+    monkeypatch.setattr(runtime, "PerplexitySearchTool", lambda: SimpleNamespace(name="perplexity_search"))
+    monkeypatch.setattr(runtime, "OpenAlexWorksTool", lambda: SimpleNamespace(name="openalex_works"))
+    monkeypatch.setattr(runtime, "PerplexityWebSnapshotTool", lambda: SimpleNamespace(name="perplexity_web_snapshot"))
+    monkeypatch.setattr(runtime, "SlowTool", lambda: SimpleNamespace(name="slow"))
+    monkeypatch.setattr(runtime, "FastTool", lambda: SimpleNamespace(name="fast"))
+    monkeypatch.setattr(runtime, "BashExecConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+
+    class _FakeBashExecTool:
+        def __init__(self, config, approval_fn=None):
+            self.name = "bash_exec"
+            self.config = config
+            self.approval_fn = approval_fn
+            self.description = ""
+
+    monkeypatch.setattr(runtime, "BashExecTool", _FakeBashExecTool)
+    monkeypatch.setattr(runtime, "build_system_prompt", lambda **kwargs: "prompt")
+
+    session = runtime.create_runtime_session(enable_event_logger=False)
+
+    assert isinstance(session, RuntimeSession)
+    assert calls == ["prewarm"]
+
+
 def test_create_runtime_session_builds_prompt_from_filtered_tools(monkeypatch):
     captured = {}
 

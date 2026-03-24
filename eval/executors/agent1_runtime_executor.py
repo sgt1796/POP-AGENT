@@ -87,6 +87,7 @@ class _EvalSteeringGuard:
                     "- Generic web discovery tools are now disabled for the rest of this sample.\n"
                     "- Stop reformulating broad searches or reopening the same source family.\n"
                     "- If the likely answer is already in a downloaded or local document, use file_read with query and bounded context on the exact phrase or heading.\n"
+                    "- Do not substitute a plausible name or number from topic-adjacent results when the exact field is still unverified.\n"
                     "- Otherwise use the strongest exact source already found, spend at most one targeted verification step, then answer.",
                 )
 
@@ -111,6 +112,17 @@ class _EvalSteeringGuard:
                 "- If it came from download_url_to_file, inspect final_url, pdf_link_candidates, content_preview, or saved_landing_page_path, then save the landing page as .html if needed.\n"
                 "- Once you have the landing page or local document, use file_read with query and bounded context on the exact phrase or chapter heading instead of shelling out.\n"
                 "- Recover one exact document path, then resume bounded local reading.",
+            )
+
+        if tool_name == "file_read" and str(details.get("error") or "").strip() == "path_not_file":
+            self._steer_once(
+                "file-read-path-not-file",
+                "Evaluation steering:\n"
+                "- file_read only works on concrete files, not directories or workspace roots.\n"
+                "- Do not retry the same directory path with file_read.\n"
+                "- Use an attachment path, saved_landing_page_path, bash_exec ls, or bash_exec rg --files to identify one exact file first.\n"
+                "- Once you have the exact file path, call file_read on that file with query and bounded context.\n"
+                "- If there is no relevant local file, pivot back to the strongest exact source instead of guessing from directory names.",
             )
 
         if tool_name == "jina_web_snapshot":
@@ -139,9 +151,11 @@ class _EvalSteeringGuard:
                     [
                         "Evaluation steering:",
                         "- The requested file resolved to a different content type than expected, often a landing or verification page.",
+                        "- Treat a verification or interstitial page as retrieval failure, not as evidence for the answer.",
                         "- Use final_url, pdf_link_candidates, content_preview, saved_landing_page_path, or the source landing page as the next step.",
                         *extra_lines,
                         "- If you save the landing page locally, use file_read with query and bounded context on the exact phrase or chapter heading.",
+                        "- Do not promote a plausible adjacent person, number, or title from broad search results unless an exact passage confirms it.",
                         "- Do not retry the same PDF URL without a new concrete lead.",
                     ]
                 ),

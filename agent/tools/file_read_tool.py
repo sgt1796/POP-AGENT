@@ -114,6 +114,8 @@ def _resolve_workspace_path(path_value: str, workspace_root: str, allowed_roots:
     if not os.path.exists(absolute):
         raise FileReadError("path_not_found", f"file not found: {path_value}")
     if not os.path.isfile(absolute):
+        if os.path.isdir(absolute):
+            raise FileReadError("path_not_file", f"path is a directory, not a file: {path_value}")
         raise FileReadError("path_not_file", f"path is not a file: {path_value}")
     return absolute
 

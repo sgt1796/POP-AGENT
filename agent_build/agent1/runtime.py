@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import os
 import re
 import uuid
@@ -108,6 +109,14 @@ _STRICT_FORMAT_LABEL_RE = re.compile(r"^\s*(?:final\s+answer|answer)\s*[:\-]\s*"
 _STRICT_NUMERIC_WITH_UNIT_RE = re.compile(
     r"^\s*([+-]?(?:\d+(?:,\d{3})*|\d*\.\d+))\s*(?:[%°]|[A-Za-zµμÅ]+(?:[A-Za-z0-9/%°µμÅ\-/^]*)?)\s*$"
 )
+
+
+def _prewarm_openai_embedding_imports() -> None:
+    """Avoid first-turn import races between chat completions and embedding writes."""
+    try:
+        importlib.import_module("openai.resources.embeddings")
+    except Exception:
+        return
 
 
 class _NoopRetriever:
@@ -755,6 +764,7 @@ def create_runtime_session(
         long_memory_base_path = os.path.join("agent", "mem", "history.jsonl")
 
     if memory_enabled:
+        _prewarm_openai_embedding_imports()
         embedder = Embedder(use_api="openai")
         short_memory = ConversationMemory(embedder=embedder, max_entries_per_session=100, max_sessions=100)
         long_memory = DiskMemory(filepath=long_memory_base_path, embedder=embedder, max_entries=1000)

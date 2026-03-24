@@ -258,6 +258,21 @@ def test_file_read_tool_error_envelope(tmp_path: Path):
     assert result.content[0].text == "file_read error: file not found: missing.txt"
 
 
+def test_file_read_tool_directory_error_is_explicit(tmp_path: Path):
+    (tmp_path / "docs").mkdir()
+    tool = FileReadTool(workspace_root=str(tmp_path))
+
+    result = _run(tool, {"path": "docs"})
+
+    assert result.details == {
+        "ok": False,
+        "error": "path_not_file",
+        "message": "path is a directory, not a file: docs",
+        "path": "docs",
+    }
+    assert result.content[0].text == "file_read error: path is a directory, not a file: docs"
+
+
 def test_read_text_line_window(tmp_path: Path):
     (tmp_path / "notes.txt").write_text("line1\nline2\nline3\nline4\n", encoding="utf-8")
 

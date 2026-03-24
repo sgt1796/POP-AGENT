@@ -240,6 +240,27 @@ def test_timeout_enforced(tmp_path: Path, monkeypatch):
     assert result.details["exit_code"] is not None
 
 
+def test_find_falls_back_when_host_find_is_windows_variant(tmp_path: Path, monkeypatch):
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "data.txt").write_text("world", encoding="utf-8")
+
+    async def _fake_create_subprocess_exec(*argv, **kwargs):
+        del argv, kwargs
+        return _FakeProcess(stderr=b"FIND: Parameter format not correct\r\n", returncode=2)
+
+    monkeypatch.setattr("agent.tools.bash_exec_tool.asyncio.create_subprocess_exec", _fake_create_subprocess_exec)
+
+    tool = _make_tool(tmp_path)
+    result = _run(tool, {"cmd": "find .", "cwd": str(tmp_path)})
+
+    assert result.details["ok"] is True
+    assert result.details["exit_code"] == 0
+    assert "." in result.content[0].text
+    assert "./notes.txt" in result.content[0].text
+    assert "./nested/data.txt" in result.content[0].text
+
+
 def test_output_truncation_flagged(tmp_path: Path, monkeypatch):
     async def _fake_create_subprocess_exec(*argv, **kwargs):
         del argv, kwargs

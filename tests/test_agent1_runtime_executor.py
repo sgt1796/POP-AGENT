@@ -168,3 +168,28 @@ def test_eval_steering_guard_surfaces_exact_landing_page_recovery_hints():
     text = agent.messages[0].content[0].text
     assert "A_Dark_Trace.html" in text
     assert "https://muse.jhu.edu/verify" in text
+
+
+def test_eval_steering_guard_redirects_file_read_directory_misuse():
+    agent = _FakeAgent()
+    guard = _EvalSteeringGuard(agent)
+
+    guard.on_event(
+        {
+            "type": "tool_execution_end",
+            "toolName": "file_read",
+            "result": {
+                "details": {
+                    "error": "path_not_file",
+                    "message": "path is a directory, not a file: C:\\Users\\sgt17\\OneDrive\\Desktop\\POP-agent",
+                    "path": "C:\\Users\\sgt17\\OneDrive\\Desktop\\POP-agent",
+                }
+            },
+        }
+    )
+
+    assert len(agent.messages) == 1
+    text = agent.messages[0].content[0].text
+    assert "file_read only works on concrete files" in text
+    assert "Do not retry the same directory path" in text
+    assert "bash_exec rg --files" in text
