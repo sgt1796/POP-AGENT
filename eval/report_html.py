@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import statistics
 import zipfile
@@ -13,13 +14,15 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 from string import Template
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from eval.agent_step_summary import (
     collect_distinct_tool_names,
     humanize_tool_name,
+    load_run_memory_by_sample,
     normalize_agent_execution_summary,
     persist_agent_execution_summaries,
+    resolve_sample_memory_entries,
     resolve_result_timing,
 )
 from eval.run_analysis import (
@@ -49,8 +52,9 @@ BASE_STYLE = """
     .kv-table { width:100%; border-collapse:collapse; } .kv-table th,.kv-table td { padding:12px 14px; text-align:left; vertical-align:top; border-top:1px solid rgba(31,41,55,.07); } .kv-table tbody tr:first-child th,.kv-table tbody tr:first-child td { border-top:none; } .kv-table th { width:220px; color:var(--muted); font-size:.82rem; text-transform:uppercase; letter-spacing:.06em; }
     pre { margin:0; padding:16px; border-radius:18px; border:1px solid rgba(31,41,55,.08); background:rgba(31,41,55,.04); overflow:auto; white-space:pre-wrap; word-break:break-word; line-height:1.55; font-family:var(--mono); font-size:.88rem; }
     .plain-list { margin:0; padding-left:22px; } .plain-list li { margin-top:8px; line-height:1.6; } .plain-list li:first-child { margin-top:0; }
-    .timeline { display:grid; gap:14px; } .timeline-item { padding:16px 18px; border-radius:20px; border:1px solid rgba(31,41,55,.08); background:rgba(255,255,255,.72); } .timeline-head { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:8px; } .timeline-meta { color:var(--muted); font-size:.92rem; line-height:1.5; margin-bottom:8px; } .timeline-copy { line-height:1.6; white-space:pre-wrap; }
-    .raw-toggle { margin-top:16px; border:1px solid rgba(31,41,55,.08); border-radius:20px; background:rgba(255,255,255,.62); padding:14px 16px; } .raw-toggle summary { cursor:pointer; font-weight:700; }
+    .timeline-tree { display:grid; gap:14px; } .timeline-span { padding:16px 18px; border-radius:22px; border:1px solid rgba(31,41,55,.08); background:rgba(255,255,255,.76); box-shadow:inset 0 1px 0 rgba(255,255,255,.55); } .timeline-span--agent { border-color:rgba(28,124,125,.18); background:linear-gradient(180deg, rgba(221,241,237,.78), rgba(255,255,255,.76)); } .timeline-span--turn { border-color:rgba(53,110,169,.16); } .timeline-span--message { border-color:rgba(106,114,128,.16); } .timeline-span--tool_execution,.timeline-span--tool { border-color:rgba(196,136,36,.18); background:linear-gradient(180deg, rgba(255,249,238,.90), rgba(255,255,255,.76)); } .timeline-span--event { border-color:rgba(198,91,57,.16); }
+    .timeline-span__head { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:8px; } .timeline-span__meta { color:var(--muted); font-size:.92rem; line-height:1.5; margin-bottom:8px; } .timeline-span__copy { line-height:1.6; white-space:pre-wrap; } .timeline-span__children { display:grid; gap:12px; margin-top:14px; padding-left:14px; border-left:1px solid rgba(31,41,55,.08); }
+    .timeline-json,.raw-toggle { margin-top:14px; border:1px solid rgba(31,41,55,.08); border-radius:18px; background:rgba(255,255,255,.62); padding:12px 14px; } .timeline-json summary,.raw-toggle summary { cursor:pointer; font-weight:700; display:inline-flex; align-items:center; min-height:34px; padding:0 12px; border-radius:999px; background:rgba(31,41,55,.05); }
     .charts-unavailable .chart-empty { display:block; } .charts-unavailable canvas { display:none !important; }
     @media (max-width:1100px) { .hero-grid { grid-template-columns:1fr; } .metric-grid,.chart-grid,.subpanel-grid,.columns { grid-template-columns:1fr 1fr; } .chart-grid .chart:first-child { grid-column:1 / -1; } } @media (max-width:760px) { .page { width:min(100% - 16px, 1480px); margin:16px auto 24px; } .hero,.panel { padding:20px; } .metric-grid,.chart-grid,.subpanel-grid,.columns { grid-template-columns:1fr; } .score { width:190px; height:190px; } .section-head { flex-direction:column; align-items:flex-start; } }
   </style>
@@ -64,6 +68,7 @@ class RunArtifacts:
     manifest: Dict[str, Any] = field(default_factory=dict)
     errors: List[Dict[str, Any]] = field(default_factory=list)
     events_by_sample: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    memory_by_sample: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -104,6 +109,7 @@ class SampleView:
     attachments: List[Dict[str, Any]]
     error_record: Optional[Dict[str, Any]]
     events: List[Dict[str, Any]]
+    memory_entries: List[Dict[str, Any]]
     agent_started_at: Optional[str]
     agent_ended_at: Optional[str]
     agent_tool_names: List[str]
@@ -111,6 +117,16 @@ class SampleView:
     normalized_prediction: Any
     normalized_ground_truth: Any
     raw_sample: Dict[str, Any]
+
+
+@dataclass
+class TimelineSpan:
+    span_id: str
+    span_type: str
+    start_event: Optional[Dict[str, Any]] = None
+    end_event: Optional[Dict[str, Any]] = None
+    member_events: List[Dict[str, Any]] = field(default_factory=list)
+    children: List["TimelineSpan"] = field(default_factory=list)
 
 
 def _read_run_data(run_dir_or_zip: str) -> RunArtifacts:
@@ -185,6 +201,7 @@ def _read_run_data_from_dir(run_dir: str) -> RunArtifacts:
         manifest=_load_json_file_if_exists(os.path.join(run_dir, "manifest.json")),
         errors=_load_jsonl_file_if_exists(os.path.join(run_dir, "errors.jsonl")),
         events_by_sample=_group_events_by_sample(_load_jsonl_file_if_exists(os.path.join(run_dir, "events.jsonl"))),
+        memory_by_sample=load_run_memory_by_sample(run_dir),
     )
 
 
@@ -202,6 +219,7 @@ def _read_run_data_from_zip(zip_path: str) -> RunArtifacts:
             manifest=_load_json_zip_if_exists(zf, _find_zip_member(zf, "manifest.json")),
             errors=_load_jsonl_zip(zf, _find_zip_member(zf, "errors.jsonl")),
             events_by_sample=_group_events_by_sample(_load_jsonl_zip(zf, _find_zip_member(zf, "events.jsonl"))),
+            memory_by_sample={},
         )
 
 
@@ -323,6 +341,7 @@ def _build_sample_views(artifacts: RunArtifacts, sample_dir_name: str) -> List[S
         warnings = [str(item).strip() for item in usage.get("warnings", []) if str(item).strip()] if isinstance(usage.get("warnings"), list) else []
         attachments = [item for item in usage.get("attachments", []) if isinstance(item, dict)] if isinstance(usage.get("attachments"), list) else []
         sample_events = list(artifacts.events_by_sample.get(str(sample_record.get("sample_id") or f"sample-{index}"), []))
+        memory_entries = resolve_sample_memory_entries(artifacts.memory_by_sample, str(sample_record.get("sample_id") or f"sample-{index}"))
         agent_execution_summary = normalize_agent_execution_summary(result.get("agent_execution_summary"))
         agent_tool_names = list(agent_execution_summary.get("tool_names") or collect_distinct_tool_names(sample_events))
         failure_analysis = result.get("failure_analysis") if isinstance(result.get("failure_analysis"), dict) else {}
@@ -382,6 +401,7 @@ def _build_sample_views(artifacts: RunArtifacts, sample_dir_name: str) -> List[S
                 attachments=attachments,
                 error_record=errors_by_sample.get(sample_id),
                 events=sample_events,
+                memory_entries=memory_entries,
                 agent_started_at=agent_started_at,
                 agent_ended_at=agent_ended_at,
                 agent_tool_names=agent_tool_names,
@@ -752,37 +772,6 @@ def _render_failure_analysis(sample: SampleView) -> str:
     return _kv_table(rows)
 
 
-def _event_summary(event_record: Dict[str, Any]) -> Tuple[str, str, str]:
-    event = event_record.get("event") if isinstance(event_record.get("event"), dict) else {}
-    event_type = str(event.get("type") or "unknown")
-    if event_type.startswith("tool_execution"):
-        tool_name = _display(event.get("toolName"))
-        args = event.get("args")
-        preview = _truncate(json.dumps(args, sort_keys=True, ensure_ascii=True), 180) if isinstance(args, dict) else "n/a"
-        if event_type.endswith("end"):
-            result = event.get("result")
-            if isinstance(result, dict):
-                details = result.get("details")
-                if isinstance(details, dict) and details.get("error"):
-                    preview = _display(details.get("error"))
-        return (event_type.replace("_", " ").title(), f"Tool: {tool_name}", preview)
-
-    message = event.get("message") if isinstance(event.get("message"), dict) else {}
-    if event_type.startswith("message"):
-        return (
-            event_type.replace("_", " ").title(),
-            f"Role: {_display(message.get('role'))}",
-            _truncate(_message_preview(message) or "n/a", 220),
-        )
-
-    if event_type == "turn_end":
-        tool_results = event.get("toolResults")
-        if isinstance(tool_results, list):
-            return ("Turn End", "Aggregated tool results", f"{len(tool_results)} tool result(s)")
-
-    return (event_type.replace("_", " ").title(), "n/a", "n/a")
-
-
 def _message_preview(message: Dict[str, Any]) -> str:
     content = message.get("content")
     if not isinstance(content, list):
@@ -807,22 +796,551 @@ def _message_preview(message: Dict[str, Any]) -> str:
 def _timeline(sample: SampleView) -> str:
     if not sample.events:
         return '<p class="empty">No event trace was captured for this sample.</p>'
-    items = []
-    for event_record in sample.events:
-        title, meta, preview = _event_summary(event_record)
-        items.append(
-            '<article class="timeline-item">'
-            '<div class="timeline-head">'
-            f"{_pill(str((event_record.get('event') or {}).get('type') or 'unknown').upper(), 'neutral')}"
-            f"<strong>{_escape(title)}</strong>"
-            f'<span class="subtle mono">#{_escape(str(_to_int(event_record.get("event_index"))))}</span>'
-            "</div>"
-            f'<p class="timeline-meta">{_escape(meta)}</p>'
-            f'<p class="timeline-copy">{_escape(preview)}</p>'
-            "</article>"
-        )
+    spans = _build_timeline_spans(sample.events)
+    rendered = "".join(_render_timeline_span(span) for span in spans if _should_render_timeline_span(span))
     raw = json.dumps(sample.events, indent=2, sort_keys=True, ensure_ascii=True)
-    return '<div class="timeline">' + "".join(items) + f'</div><details class="raw-toggle"><summary>Show raw event JSON</summary><pre>{_escape(raw)}</pre></details>'
+    return (
+        '<div class="timeline-tree">'
+        + (rendered or '<p class="empty">No displayable timeline spans were generated for this sample.</p>')
+        + '</div>'
+        + f'<details class="raw-toggle"><summary>Show raw event JSON</summary><pre>{_escape(raw)}</pre></details>'
+    )
+
+
+def _build_timeline_spans(events: Sequence[Dict[str, Any]]) -> List[TimelineSpan]:
+    roots: List[TimelineSpan] = []
+    stack: List[TimelineSpan] = []
+    next_id = 1
+
+    def _new_span(span_type: str, *, start_event: Optional[Dict[str, Any]] = None, end_event: Optional[Dict[str, Any]] = None) -> TimelineSpan:
+        nonlocal next_id
+        span = TimelineSpan(
+            span_id=f"span-{next_id}",
+            span_type=span_type,
+            start_event=start_event,
+            end_event=end_event,
+            member_events=[],
+            children=[],
+        )
+        next_id += 1
+        return span
+
+    def _attach(span: TimelineSpan) -> None:
+        if stack:
+            stack[-1].children.append(span)
+        else:
+            roots.append(span)
+
+    for event_record in events:
+        event = _timeline_event(event_record)
+        event_type = str(event.get("type") or "").strip()
+        if not event_type:
+            continue
+
+        start_type = _timeline_start_span_type(event_type)
+        if start_type:
+            span = _new_span(start_type, start_event=event_record)
+            span.member_events.append(event_record)
+            _attach(span)
+            stack.append(span)
+            continue
+
+        if event_type == "message_update":
+            if stack:
+                stack[-1].member_events.append(event_record)
+            elif not _timeline_is_low_signal_event(event_record):
+                span = _new_span("event", start_event=event_record)
+                span.member_events.append(event_record)
+                _attach(span)
+            continue
+
+        end_type = _timeline_end_span_type(event_type)
+        if end_type:
+            match_index = _find_matching_timeline_span_index(stack, end_type, event_record)
+            if match_index is None:
+                span = _new_span(end_type, end_event=event_record)
+                span.member_events.append(event_record)
+                _attach(span)
+                continue
+            while len(stack) - 1 > match_index:
+                stack.pop()
+            span = stack.pop()
+            span.end_event = event_record
+            span.member_events.append(event_record)
+            continue
+
+        span = _new_span("event", start_event=event_record)
+        span.member_events.append(event_record)
+        _attach(span)
+
+    return roots
+
+
+def _find_matching_timeline_span_index(
+    stack: Sequence[TimelineSpan],
+    span_type: str,
+    event_record: Dict[str, Any],
+) -> Optional[int]:
+    end_event = _timeline_event(event_record)
+    end_role = _timeline_message_role(end_event)
+    end_tool_name = str(end_event.get("toolName") or "").strip()
+    end_call_id = str(end_event.get("toolCallId") or "").strip()
+    for index in range(len(stack) - 1, -1, -1):
+        span = stack[index]
+        if span.span_type != span_type:
+            continue
+        start_event = _timeline_event(span.start_event)
+        if span_type == "message":
+            start_role = _timeline_message_role(start_event)
+            if start_role and end_role and start_role != end_role:
+                continue
+        if span_type == "tool_execution":
+            start_tool_name = str(start_event.get("toolName") or "").strip()
+            start_call_id = str(start_event.get("toolCallId") or "").strip()
+            if start_call_id and end_call_id and start_call_id != end_call_id:
+                continue
+            if start_tool_name and end_tool_name and start_tool_name != end_tool_name:
+                continue
+        return index
+    return None
+
+
+def _render_timeline_span(span: TimelineSpan) -> str:
+    label = _timeline_span_label(span)
+    tone = _timeline_span_pill_tone(span)
+    preview = _timeline_span_preview(span)
+    meta_parts = [part for part in (_timeline_span_time_text(span), _timeline_span_detail_text(span)) if part]
+    json_payload = _timeline_span_payload(span)
+    children_html = "".join(_render_timeline_span(child) for child in span.children if _should_render_timeline_span(child))
+    copy_html = f'<p class="timeline-span__copy">{_escape(preview)}</p>' if preview else ""
+    children_block = f'<div class="timeline-span__children">{children_html}</div>' if children_html else ""
+    return (
+        f'<article class="timeline-span timeline-span--{_escape(span.span_type)}">'
+        '<div class="timeline-span__head">'
+        f"{_pill(_timeline_span_badge(span), tone)}"
+        f"<strong>{_escape(label)}</strong>"
+        f'<span class="subtle mono">{_escape(_timeline_span_index_label(span))}</span>'
+        "</div>"
+        + (f'<p class="timeline-span__meta">{_escape(" | ".join(meta_parts))}</p>' if meta_parts else "")
+        + copy_html
+        + f'<details class="timeline-json"><summary>Show JSON</summary>{_json_block(json_payload)}</details>'
+        + children_block
+        + "</article>"
+    )
+
+
+def _should_render_timeline_span(span: TimelineSpan) -> bool:
+    if span.span_type == "event" and _timeline_is_low_signal_event(span.start_event or span.end_event or {}):
+        return False
+    return True
+
+
+def _timeline_span_payload(span: TimelineSpan) -> Dict[str, Any]:
+    child_refs = [
+        {
+            "span_id": child.span_id,
+            "span_type": child.span_type,
+            "label": _timeline_span_label(child),
+            "event_indices": _timeline_span_event_indices(child),
+        }
+        for child in span.children
+    ]
+    unmatched_member_events = [
+        event_record
+        for event_record in span.member_events
+        if event_record is not span.start_event and event_record is not span.end_event
+    ]
+    return {
+        "span_id": span.span_id,
+        "span_type": span.span_type,
+        "label": _timeline_span_label(span),
+        "event_indices": _timeline_span_event_indices(span),
+        "start_event_index": _timeline_event_index(span.start_event),
+        "end_event_index": _timeline_event_index(span.end_event),
+        "summary_fields": {
+            "badge": _timeline_span_badge(span),
+            "label": _timeline_span_label(span),
+            "time": _timeline_span_time_text(span),
+            "details": _timeline_span_detail_text(span),
+            "preview": _timeline_span_preview(span),
+        },
+        "start_event": span.start_event,
+        "end_event": span.end_event,
+        "child_refs": child_refs,
+        "unmatched_member_events": unmatched_member_events,
+    }
+
+
+def _timeline_span_label(span: TimelineSpan) -> str:
+    if span.span_type == "agent":
+        return "Agent Run"
+    if span.span_type == "turn":
+        return "Turn"
+    if span.span_type == "message":
+        role = _timeline_message_role(_timeline_event(span.end_event or span.start_event))
+        return f"Message · {role.title()}" if role else "Message"
+    if span.span_type == "tool_execution":
+        tool_name = str(_timeline_event(span.end_event or span.start_event).get("toolName") or "").strip()
+        return f"Tool · {humanize_tool_name(tool_name) or tool_name}" if tool_name else "Tool Execution"
+    event_type = str(_timeline_event(span.start_event or span.end_event).get("type") or "event").replace("_", " ").title()
+    return f"Event · {event_type}"
+
+
+def _timeline_span_badge(span: TimelineSpan) -> str:
+    if span.span_type == "tool_execution":
+        return "TOOL"
+    return span.span_type.upper()
+
+
+def _timeline_span_pill_tone(span: TimelineSpan) -> str:
+    if span.span_type == "agent":
+        return "success"
+    if span.span_type == "turn":
+        return "info"
+    if span.span_type == "tool_execution":
+        event = _timeline_event(span.end_event or span.start_event)
+        return "danger" if _timeline_tool_error_text(event) else "warning"
+    if span.span_type == "event":
+        return "danger"
+    return "neutral"
+
+
+def _timeline_span_index_label(span: TimelineSpan) -> str:
+    start_index = _timeline_event_index(span.start_event)
+    end_index = _timeline_event_index(span.end_event)
+    if start_index is not None and end_index is not None and start_index != end_index:
+        return f"#{start_index}-{end_index}"
+    if start_index is not None:
+        return f"#{start_index}"
+    if end_index is not None:
+        return f"#{end_index}"
+    return "#n/a"
+
+
+def _timeline_span_time_text(span: TimelineSpan) -> str:
+    start_ts = _timeline_first_timestamp(span.start_event)
+    end_ts = _timeline_first_timestamp(span.end_event)
+    if start_ts and end_ts and start_ts != end_ts:
+        return f"{_fmt_ts(start_ts)} -> {_fmt_ts(end_ts)}"
+    if start_ts:
+        return _fmt_ts(start_ts)
+    if end_ts:
+        return _fmt_ts(end_ts)
+    return ""
+
+
+def _timeline_span_detail_text(span: TimelineSpan) -> str:
+    if span.span_type == "tool_execution":
+        event = _timeline_event(span.end_event or span.start_event)
+        tool_name = humanize_tool_name(str(event.get("toolName") or "").strip()) or _display(event.get("toolName"))
+        return f"Tool: {tool_name}"
+    if span.span_type == "message":
+        role = _timeline_message_role(_timeline_event(span.end_event or span.start_event))
+        return f"Role: {role}" if role else ""
+    if span.span_type in {"agent", "turn"}:
+        counts = _timeline_child_counts(span)
+        fragments = []
+        if counts.get("turn"):
+            fragments.append(f"{counts['turn']} turn(s)")
+        if counts.get("message"):
+            fragments.append(f"{counts['message']} message(s)")
+        if counts.get("tool_execution"):
+            fragments.append(f"{counts['tool_execution']} tool box(es)")
+        unmatched = len([event for event in span.member_events if event is not span.start_event and event is not span.end_event])
+        if unmatched:
+            fragments.append(f"{unmatched} hidden subevent(s)")
+        return ", ".join(fragments)
+    event_type = str(_timeline_event(span.start_event or span.end_event).get("type") or "unknown").replace("_", " ")
+    return event_type
+
+
+def _timeline_span_preview(span: TimelineSpan) -> str:
+    if span.span_type == "tool_execution":
+        return _timeline_tool_preview(span)
+    if span.span_type == "message":
+        preview = _message_preview(_timeline_message_payload(span))
+        if preview:
+            return _truncate(preview, 220)
+        if span.children:
+            return f"Contains {len(span.children)} nested span(s)."
+        return ""
+    if span.span_type in {"agent", "turn"}:
+        counts = _timeline_child_counts(span)
+        fragments = []
+        if counts.get("turn"):
+            fragments.append(f"{counts['turn']} turn(s)")
+        if counts.get("message"):
+            fragments.append(f"{counts['message']} message box(es)")
+        if counts.get("tool_execution"):
+            fragments.append(f"{counts['tool_execution']} tool execution(s)")
+        return ", ".join(fragments)
+    event = _timeline_event(span.start_event or span.end_event)
+    return _timeline_event_preview(event)
+
+
+def _timeline_tool_preview(span: TimelineSpan) -> str:
+    event = _timeline_event(span.end_event or span.start_event)
+    tool_name = str(event.get("toolName") or "").strip()
+    phrase = _timeline_tool_phrase(tool_name, _timeline_tool_args(span))
+    error_text = _timeline_tool_error_text(event)
+    result_text = _timeline_tool_result_preview(event)
+    if error_text:
+        return _sentence_case(f"{phrase}; error: {error_text}") if phrase else _sentence_case(error_text)
+    if result_text:
+        return _sentence_case(f"{phrase}; result: {result_text}") if phrase else _sentence_case(result_text)
+    return _sentence_case(phrase)
+
+
+def _timeline_tool_phrase(tool_name: str, args: Dict[str, Any]) -> str:
+    lowered = str(tool_name or "").strip().lower()
+    target = _timeline_args_preview(args)
+    if lowered == "file_read":
+        path_value = _timeline_first_non_empty(args, ("workspace_path", "path", "local_path"))
+        query_value = _timeline_first_non_empty(args, ("query",))
+        line_start = _to_int(args.get("line_start"))
+        line_count = _to_int(args.get("line_count"))
+        file_label = _timeline_basename(path_value) or "a local file"
+        if query_value:
+            return f'search {file_label} for "{_truncate(query_value, 80)}"'
+        if line_start > 0 and line_count > 0:
+            return f"read {file_label} at lines {line_start}-{line_start + max(line_count - 1, 0)}"
+        return f"read {file_label}"
+    if lowered == "calculator":
+        expression = _timeline_first_non_empty(args, ("expression",))
+        return f"calculate {_truncate(expression, 120)}" if expression else "calculate the requested value"
+    if lowered in {"perplexity_search", "search_engine", "openalex_works"}:
+        return f"search for {_truncate(target, 120)}" if target else f"search with {humanize_tool_name(tool_name) or tool_name}"
+    if lowered in {"download_url_to_file"}:
+        return f"download {_truncate(target, 120)}" if target else "download the target file"
+    if lowered in {"jina_web_snapshot", "web_snapshot", "web_browser"}:
+        return f"open {_truncate(target, 120)}" if target else f"open with {humanize_tool_name(tool_name) or tool_name}"
+    if target:
+        return f"use {humanize_tool_name(tool_name) or tool_name} on {_truncate(target, 120)}"
+    return f"use {humanize_tool_name(tool_name) or tool_name}"
+
+
+def _timeline_tool_args(span: TimelineSpan) -> Dict[str, Any]:
+    start_event = _timeline_event(span.start_event)
+    end_event = _timeline_event(span.end_event)
+    if isinstance(start_event.get("args"), dict):
+        return dict(start_event.get("args") or {})
+    if isinstance(end_event.get("args"), dict):
+        return dict(end_event.get("args") or {})
+    return {}
+
+
+def _timeline_tool_result_preview(event: Dict[str, Any]) -> str:
+    result = event.get("result") if isinstance(event.get("result"), dict) else {}
+    if not isinstance(result, dict):
+        return ""
+    details = result.get("details") if isinstance(result.get("details"), dict) else {}
+    if isinstance(details, dict):
+        error_text = str(details.get("error") or "").strip()
+        if error_text:
+            return error_text
+        result_text = str(details.get("result_text") or "").strip()
+        if result_text:
+            return result_text
+    content = result.get("content")
+    if isinstance(content, list):
+        texts = [str(item.get("text") or "").strip() for item in content if isinstance(item, dict) and str(item.get("type") or "") == "text" and str(item.get("text") or "").strip()]
+        if texts:
+            joined = " ".join(texts)
+            if joined.startswith("{") and joined.endswith("}"):
+                try:
+                    parsed = json.loads(joined)
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    preferred = _timeline_first_non_empty(parsed, ("content_preview", "workspace_path", "path", "saved_landing_page_path", "final_url", "error"))
+                    if preferred:
+                        return _truncate(preferred, 180)
+            return _truncate(joined, 180)
+    return ""
+
+
+def _timeline_tool_error_text(event: Dict[str, Any]) -> str:
+    for key in ("error", "message", "reason"):
+        value = event.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    result = event.get("result")
+    if isinstance(result, dict):
+        details = result.get("details")
+        if isinstance(details, dict):
+            text = str(details.get("error") or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _timeline_event_preview(event: Dict[str, Any]) -> str:
+    event_type = str(event.get("type") or "").strip()
+    if event_type.startswith("message"):
+        preview = _message_preview(event.get("message") if isinstance(event.get("message"), dict) else {})
+        return _truncate(preview, 220) if preview else ""
+    if event_type.startswith("tool_execution") or event_type == "tool_policy_blocked":
+        phrase = _timeline_tool_phrase(str(event.get("toolName") or "").strip(), event.get("args") if isinstance(event.get("args"), dict) else {})
+        error_text = _timeline_tool_error_text(event)
+        if error_text:
+            return _sentence_case(f"{phrase}; error: {error_text}") if phrase else _sentence_case(error_text)
+        result_text = _timeline_tool_result_preview(event)
+        if result_text:
+            return _sentence_case(f"{phrase}; result: {result_text}") if phrase else _sentence_case(result_text)
+        return _sentence_case(phrase)
+    tool_results = event.get("toolResults")
+    if isinstance(tool_results, list) and event_type == "turn_end":
+        return f"{len(tool_results)} tool result(s)"
+    return ""
+
+
+def _timeline_child_counts(span: TimelineSpan) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for child in span.children:
+        counts[child.span_type] = counts.get(child.span_type, 0) + 1
+    return counts
+
+
+def _timeline_span_event_indices(span: TimelineSpan) -> List[int]:
+    values = [_timeline_event_index(event_record) for event_record in span.member_events]
+    deduped = sorted({value for value in values if value is not None})
+    return deduped
+
+
+def _timeline_event(event_record: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(event_record, dict):
+        return {}
+    event = event_record.get("event")
+    return event if isinstance(event, dict) else event_record
+
+
+def _timeline_start_span_type(event_type: str) -> str:
+    mapping = {
+        "agent_start": "agent",
+        "turn_start": "turn",
+        "message_start": "message",
+        "tool_execution_start": "tool_execution",
+    }
+    return mapping.get(str(event_type or "").strip(), "")
+
+
+def _timeline_end_span_type(event_type: str) -> str:
+    mapping = {
+        "agent_end": "agent",
+        "turn_end": "turn",
+        "message_end": "message",
+        "tool_execution_end": "tool_execution",
+    }
+    return mapping.get(str(event_type or "").strip(), "")
+
+
+def _timeline_message_payload(span: TimelineSpan) -> Dict[str, Any]:
+    for event_record in (span.end_event, span.start_event):
+        event = _timeline_event(event_record)
+        message = event.get("message")
+        if isinstance(message, dict):
+            return message
+    return {}
+
+
+def _timeline_message_role(event: Dict[str, Any]) -> str:
+    message = event.get("message") if isinstance(event.get("message"), dict) else {}
+    return str(message.get("role") or "").strip().lower()
+
+
+def _timeline_event_index(event_record: Optional[Dict[str, Any]]) -> Optional[int]:
+    if not isinstance(event_record, dict):
+        return None
+    raw = event_record.get("event_index")
+    if raw in (None, ""):
+        return None
+    return _to_int(raw)
+
+
+def _timeline_first_timestamp(value: Any) -> str:
+    found: List[str] = []
+    _timeline_collect_timestamps(value, found)
+    return found[0] if found else ""
+
+
+def _timeline_collect_timestamps(value: Any, found: List[str]) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "timestamp":
+                timestamp = _timeline_normalize_timestamp(child)
+                if timestamp:
+                    found.append(timestamp)
+            _timeline_collect_timestamps(child, found)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _timeline_collect_timestamps(item, found)
+
+
+def _timeline_normalize_timestamp(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.utcfromtimestamp(float(value)).replace(microsecond=0).isoformat() + "+00:00"
+        except Exception:
+            return ""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text).isoformat()
+    except Exception:
+        return ""
+
+
+def _timeline_args_preview(args: Dict[str, Any]) -> str:
+    for key in ("query", "q", "url", "open", "uri", "source_url", "final_url", "path", "workspace_path", "local_path", "expression", "title", "doi", "id"):
+        value = _timeline_first_non_empty(args, (key,))
+        if value:
+            return value
+    if args:
+        return _truncate(json.dumps(args, sort_keys=True, ensure_ascii=True), 180)
+    return ""
+
+
+def _timeline_first_non_empty(mapping: Dict[str, Any], keys: Sequence[str]) -> str:
+    for key in keys:
+        value = str(mapping.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _timeline_basename(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parts = [part for part in re.split(r"[\\/]+", text) if part]
+    return parts[-1] if parts else text
+
+
+def _timeline_is_low_signal_event(event_record: Any) -> bool:
+    event = _timeline_event(event_record if isinstance(event_record, dict) else {})
+    event_type = str(event.get("type") or "").strip()
+    if event_type != "message_update":
+        return False
+    assistant_event = event.get("assistantMessageEvent") if isinstance(event.get("assistantMessageEvent"), dict) else {}
+    assistant_type = str(assistant_event.get("type") or "").strip()
+    message = event.get("message") if isinstance(event.get("message"), dict) else {}
+    preview = _message_preview(message)
+    if assistant_type in {"text_start", "text_end"} and not preview.strip():
+        return True
+    return preview.strip() == ""
+
+
+def _sentence_case(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text[0].upper() + text[1:]
 
 
 def _correlation_matrix_table(run_analysis: Dict[str, Any]) -> str:
@@ -1344,7 +1862,7 @@ def _render_sample_html(summary: Dict[str, Any], manifest: Dict[str, Any], sampl
       {_json_block(error_payload)}
     </section>
     <section class="panel">
-      <div class="section-head"><div><h2>Event Timeline</h2><p class="section-copy">Curated event sequence followed by the full raw event stream behind a toggle.</p></div></div>
+      <div class="section-head"><div><h2>Event Timeline</h2><p class="section-copy">Nested execution boxes grouped by agent, turn, message, and tool spans, with per-box JSON and the full raw event stream behind a toggle.</p></div></div>
       {_timeline(sample)}
       <details class="raw-toggle"><summary>Show raw sample payload</summary>{_json_block(sample.raw_sample)}</details>
     </section>

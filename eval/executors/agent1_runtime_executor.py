@@ -79,10 +79,12 @@ class _EvalSteeringGuard:
         if tool_name in _GENERIC_WEB_DISCOVERY_TOOLS:
             self._generic_web_calls += 1
             if self._generic_web_calls >= self._generic_web_budget:
+                self._disable_generic_web_tools()
                 self._steer_once(
                     "generic-web-budget",
                     "Evaluation steering:\n"
                     "- The generic web discovery budget is exhausted for this sample.\n"
+                    "- Generic web discovery tools are now disabled for the rest of this sample.\n"
                     "- Stop reformulating broad searches or reopening the same source family.\n"
                     "- If the likely answer is already in a downloaded or local document, use file_read with query and bounded context on the exact phrase or heading.\n"
                     "- Otherwise use the strongest exact source already found, spend at most one targeted verification step, then answer.",
@@ -124,13 +126,25 @@ class _EvalSteeringGuard:
                 )
 
         if tool_name == "download_url_to_file" and str(details.get("error") or "").strip() == "unexpected_content_type":
+            saved_landing_page_path = str(details.get("saved_landing_page_path") or "").strip()
+            final_url = str(details.get("final_url") or "").strip()
+            extra_lines: List[str] = []
+            if saved_landing_page_path:
+                extra_lines.append(f"- The landing page was saved locally at: {saved_landing_page_path}")
+            if final_url:
+                extra_lines.append(f"- The resolved URL was: {final_url}")
             self._steer_once(
                 "download-unexpected-content-type",
-                "Evaluation steering:\n"
-                "- The requested file resolved to a different content type than expected, often a landing or verification page.\n"
-                "- Use final_url, pdf_link_candidates, content_preview, saved_landing_page_path, or the source landing page as the next step.\n"
-                "- If you save the landing page locally, use file_read with query and bounded context on the exact phrase or chapter heading.\n"
-                "- Do not retry the same PDF URL without a new concrete lead.",
+                "\n".join(
+                    [
+                        "Evaluation steering:",
+                        "- The requested file resolved to a different content type than expected, often a landing or verification page.",
+                        "- Use final_url, pdf_link_candidates, content_preview, saved_landing_page_path, or the source landing page as the next step.",
+                        *extra_lines,
+                        "- If you save the landing page locally, use file_read with query and bounded context on the exact phrase or chapter heading.",
+                        "- Do not retry the same PDF URL without a new concrete lead.",
+                    ]
+                ),
             )
 
         if tool_name == "calculator":
@@ -155,6 +169,16 @@ class _EvalSteeringGuard:
                 timestamp=time.time(),
             )
         )
+
+    def _disable_generic_web_tools(self) -> None:
+        remove_tool = getattr(self._agent, "remove_tool", None)
+        if not callable(remove_tool):
+            return
+        for tool_name in _GENERIC_WEB_DISCOVERY_TOOLS:
+            try:
+                remove_tool(tool_name)
+            except Exception:
+                continue
 
 
 class Agent1RuntimeExecutor(AgentExecutor):

@@ -4,9 +4,21 @@ from eval.executors.agent1_runtime_executor import Agent1RuntimeExecutor, _EvalS
 class _FakeAgent:
     def __init__(self) -> None:
         self.messages = []
+        self.tools = {
+            "perplexity_search",
+            "jina_web_snapshot",
+            "perplexity_web_snapshot",
+            "file_read",
+        }
 
     def steer(self, message) -> None:
         self.messages.append(message)
+
+    def remove_tool(self, name: str) -> bool:
+        if name in self.tools:
+            self.tools.remove(name)
+            return True
+        return False
 
 
 def test_augment_eval_prompt_includes_verification_and_calculator_guidance():
@@ -98,10 +110,15 @@ def test_eval_steering_guard_intervenes_on_hard_blocks_and_budget():
     assert len(agent.messages) == 5
     texts = [message.content[0].text for message in agent.messages]
     assert "generic web discovery budget is exhausted" in texts[0]
+    assert "tools are now disabled" in texts[0]
     assert "bash_exec is hard-blocked" in texts[1]
     assert "Calculator is arithmetic-only" in texts[2]
     assert "local artifact could not be parsed" in texts[3]
     assert "save it as local .html" in texts[4]
+    assert "perplexity_search" not in agent.tools
+    assert "jina_web_snapshot" not in agent.tools
+    assert "perplexity_web_snapshot" not in agent.tools
+    assert "file_read" in agent.tools
 
 
 def test_eval_steering_guard_deduplicates_repeated_signals():
@@ -127,3 +144,27 @@ def test_eval_steering_guard_deduplicates_repeated_signals():
     )
 
     assert len(agent.messages) == 2
+
+
+def test_eval_steering_guard_surfaces_exact_landing_page_recovery_hints():
+    agent = _FakeAgent()
+    guard = _EvalSteeringGuard(agent)
+
+    guard.on_event(
+        {
+            "type": "tool_execution_end",
+            "toolName": "download_url_to_file",
+            "result": {
+                "details": {
+                    "error": "unexpected_content_type",
+                    "saved_landing_page_path": "C:\\Users\\sgt17\\OneDrive\\Desktop\\POP-agent\\A_Dark_Trace.html",
+                    "final_url": "https://muse.jhu.edu/verify?url=%2Fpub%2F258%2Foa_monograph%2Fbook%2F24372%2Fpdf",
+                }
+            },
+        }
+    )
+
+    assert len(agent.messages) == 1
+    text = agent.messages[0].content[0].text
+    assert "A_Dark_Trace.html" in text
+    assert "https://muse.jhu.edu/verify" in text

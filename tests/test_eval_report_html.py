@@ -76,7 +76,218 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _create_run_dir(tmp_path: Path, *, include_optional: bool = True, persisted_summary: bool = False, include_timing: bool = True) -> Path:
+def _safe_id(value: str) -> str:
+    text = str(value or "sample")
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in text)
+
+
+def _write_memory_trace(run_dir: Path, *, sample_index: int, sample_id: str, rows: list[dict]) -> None:
+    memory_dir = run_dir / "_memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    path = memory_dir / f"run123_sample_{sample_index:06d}_{_safe_id(sample_id)}.jsonl"
+    _write_jsonl(path, rows)
+
+
+def _sample_ok_events(*, nested: bool) -> list[dict]:
+    if not nested:
+        return [
+            {"sample_id": "sample-ok", "event_index": 0, "event": {"type": "agent_start", "timestamp": "2026-03-18T20:01:00+00:00"}},
+            {
+                "sample_id": "sample-ok",
+                "event_index": 1,
+                "event": {
+                    "type": "tool_execution_start",
+                    "toolName": "search_engine",
+                    "args": {"query": "Prompt A"},
+                    "timestamp": "2026-03-18T20:01:01+00:00",
+                },
+            },
+            {
+                "sample_id": "sample-ok",
+                "event_index": 2,
+                "event": {
+                    "type": "tool_execution_end",
+                    "toolName": "search_engine",
+                    "result": {"details": {"ok": True}},
+                    "timestamp": "2026-03-18T20:01:02+00:00",
+                },
+            },
+            {
+                "sample_id": "sample-ok",
+                "event_index": 3,
+                "event": {
+                    "type": "tool_execution_start",
+                    "toolName": "web_browser",
+                    "args": {"open": "https://example.test"},
+                    "timestamp": "2026-03-18T20:01:03+00:00",
+                },
+            },
+            {
+                "sample_id": "sample-ok",
+                "event_index": 4,
+                "event": {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Answer A"}],
+                        "timestamp": "2026-03-18T20:01:04+00:00",
+                    },
+                },
+            },
+        ]
+
+    return [
+        {"sample_id": "sample-ok", "event_index": 0, "event": {"type": "agent_start", "timestamp": "2026-03-18T20:01:00+00:00"}},
+        {"sample_id": "sample-ok", "event_index": 1, "event": {"type": "turn_start", "timestamp": "2026-03-18T20:01:00+00:00"}},
+        {
+            "sample_id": "sample-ok",
+            "event_index": 2,
+            "event": {
+                "type": "message_start",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": ""}],
+                    "timestamp": "2026-03-18T20:01:00+00:00",
+                },
+            },
+        },
+        {
+            "sample_id": "sample-ok",
+            "event_index": 3,
+            "event": {
+                "type": "message_update",
+                "assistantMessageEvent": {
+                    "type": "text_start",
+                    "contentIndex": 0,
+                    "partial": {"role": "assistant", "content": [{"type": "text", "text": ""}]},
+                },
+                "message": {"role": "assistant", "content": [{"type": "text", "text": ""}]},
+            },
+        },
+        {
+            "sample_id": "sample-ok",
+            "event_index": 4,
+            "event": {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "toolCall", "name": "search_engine", "arguments": {"query": "Prompt A"}}],
+                    "timestamp": "2026-03-18T20:01:01+00:00",
+                },
+            },
+        },
+        {
+            "sample_id": "sample-ok",
+            "event_index": 5,
+            "event": {
+                "type": "tool_execution_start",
+                "toolCallId": "call-1",
+                "toolName": "search_engine",
+                "args": {"query": "Prompt A"},
+                "timestamp": "2026-03-18T20:01:01+00:00",
+            },
+        },
+        {
+            "sample_id": "sample-ok",
+            "event_index": 6,
+            "event": {
+                "type": "tool_execution_end",
+                "toolCallId": "call-1",
+                "toolName": "search_engine",
+                "result": {"details": {"ok": True}},
+                "timestamp": "2026-03-18T20:01:02+00:00",
+            },
+        },
+        {
+            "sample_id": "sample-ok",
+            "event_index": 7,
+            "event": {
+                "type": "turn_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "toolCall", "name": "search_engine", "arguments": {"query": "Prompt A"}}],
+                    "timestamp": "2026-03-18T20:01:02+00:00",
+                },
+                "toolResults": [{"toolName": "search_engine"}],
+            },
+        },
+        {"sample_id": "sample-ok", "event_index": 8, "event": {"type": "turn_start", "timestamp": "2026-03-18T20:01:03+00:00"}},
+        {
+            "sample_id": "sample-ok",
+            "event_index": 9,
+            "event": {
+                "type": "message_start",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": ""}],
+                    "timestamp": "2026-03-18T20:01:03+00:00",
+                },
+            },
+        },
+        {
+            "sample_id": "sample-ok",
+            "event_index": 10,
+            "event": {
+                "type": "message_update",
+                "assistantMessageEvent": {
+                    "type": "text_start",
+                    "contentIndex": 0,
+                    "partial": {"role": "assistant", "content": [{"type": "text", "text": ""}]},
+                },
+                "message": {"role": "assistant", "content": [{"type": "text", "text": ""}]},
+            },
+        },
+        {
+            "sample_id": "sample-ok",
+            "event_index": 11,
+            "event": {
+                "type": "message_update",
+                "assistantMessageEvent": {
+                    "type": "text_delta",
+                    "contentIndex": 0,
+                    "delta": "Answer A",
+                    "partial": {"role": "assistant", "content": [{"type": "text", "text": "Answer A"}]},
+                },
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "Answer A"}]},
+            },
+        },
+        {
+            "sample_id": "sample-ok",
+            "event_index": 12,
+            "event": {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Answer A"}],
+                    "timestamp": "2026-03-18T20:01:04+00:00",
+                },
+            },
+        },
+        {
+            "sample_id": "sample-ok",
+            "event_index": 13,
+            "event": {
+                "type": "turn_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Answer A"}],
+                    "timestamp": "2026-03-18T20:01:04+00:00",
+                },
+            },
+        },
+        {"sample_id": "sample-ok", "event_index": 14, "event": {"type": "agent_end", "timestamp": "2026-03-18T20:01:04+00:00"}},
+    ]
+
+
+def _create_run_dir(
+    tmp_path: Path,
+    *,
+    include_optional: bool = True,
+    persisted_summary: bool = False,
+    include_timing: bool = True,
+    include_memory: bool = False,
+    nested_events: bool = False,
+) -> Path:
     run_dir = tmp_path / "run"
     run_dir.mkdir(parents=True)
     samples = [
@@ -166,50 +377,8 @@ def _create_run_dir(tmp_path: Path, *, include_optional: bool = True, persisted_
         )
         _write_jsonl(
             run_dir / "events.jsonl",
-            [
-                {"sample_id": "sample-ok", "event_index": 0, "event": {"type": "agent_start", "timestamp": "2026-03-18T20:01:00+00:00"}},
-                {
-                    "sample_id": "sample-ok",
-                    "event_index": 1,
-                    "event": {
-                        "type": "tool_execution_start",
-                        "toolName": "search_engine",
-                        "args": {"query": "Prompt A"},
-                        "timestamp": "2026-03-18T20:01:01+00:00",
-                    },
-                },
-                {
-                    "sample_id": "sample-ok",
-                    "event_index": 2,
-                    "event": {
-                        "type": "tool_execution_end",
-                        "toolName": "search_engine",
-                        "result": {"details": {"ok": True}},
-                        "timestamp": "2026-03-18T20:01:02+00:00",
-                    },
-                },
-                {
-                    "sample_id": "sample-ok",
-                    "event_index": 3,
-                    "event": {
-                        "type": "tool_execution_start",
-                        "toolName": "web_browser",
-                        "args": {"open": "https://example.test"},
-                        "timestamp": "2026-03-18T20:01:03+00:00",
-                    },
-                },
-                {
-                    "sample_id": "sample-ok",
-                    "event_index": 4,
-                    "event": {
-                        "type": "message_end",
-                        "message": {
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": "Answer A"}],
-                            "timestamp": "2026-03-18T20:01:04+00:00",
-                        },
-                    },
-                },
+            _sample_ok_events(nested=nested_events)
+            + [
                 {
                     "sample_id": "sample-error",
                     "event_index": 0,
@@ -222,6 +391,44 @@ def _create_run_dir(tmp_path: Path, *, include_optional: bool = True, persisted_
                 },
             ],
         )
+        if include_memory:
+            _write_memory_trace(
+                run_dir,
+                sample_index=0,
+                sample_id="sample-ok",
+                rows=[
+                    {
+                        "text": "user: Prompt A",
+                        "session_id": "session-a",
+                        "memory_type": "message",
+                        "timestamp": 1773883260.0,
+                    },
+                    {
+                        "text": "tool_execution_start search_engine",
+                        "session_id": "session-a",
+                        "memory_type": "tool_call",
+                        "timestamp": 1773883261.0,
+                    },
+                    {
+                        "text": "tool_execution_end search_engine error=False",
+                        "session_id": "session-a",
+                        "memory_type": "tool_call",
+                        "timestamp": 1773883262.0,
+                    },
+                    {
+                        "text": "tool_execution_start web_browser",
+                        "session_id": "session-a",
+                        "memory_type": "tool_call",
+                        "timestamp": 1773883263.0,
+                    },
+                    {
+                        "text": "assistant: Answer A",
+                        "session_id": "session-a",
+                        "memory_type": "message",
+                        "timestamp": 1773883264.0,
+                    },
+                ],
+            )
     return run_dir
 
 
@@ -329,12 +536,45 @@ def test_generate_html_report_summarizes_agent_steps_and_persists(tmp_path: Path
     assert persisted["step_count"] == 3
     assert persisted["tool_names"] == ["search_engine", "web_browser"]
     assert persisted["tool_count"] == 2
-    assert persisted["source"] == "promptfunction"
+    assert persisted["source"] == "event+promptfunction"
     assert "generated_at" in persisted
 
     html = (tmp_path / "report_samples" / "0001_sample-ok.html").read_text(encoding="utf-8")
     assert "Search the web" in html
     assert "Open the relevant page" in html
+
+
+def test_generate_html_report_summarizes_agent_steps_from_memory_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    class _FakePromptFunction:
+        execute_calls: list[str] = []
+
+        def __init__(self, sys_prompt: str = "", prompt: str = "", client: str | None = None):
+            del sys_prompt, prompt, client
+
+        def execute(self, trace_text: str, **_kwargs):
+            _FakePromptFunction.execute_calls.append(trace_text)
+            return json.dumps({"steps": ["Search for the target", "Open the page", "Answer"]})
+
+    monkeypatch.setattr(agent_step_summary, "PromptFunction", _FakePromptFunction)
+
+    run_dir = _create_run_dir(tmp_path, include_optional=True, persisted_summary=False, include_memory=True)
+    output_path = tmp_path / "memory.html"
+    generate_html_report(str(run_dir), str(output_path), summarize_agent_steps=True)
+
+    assert _FakePromptFunction.execute_calls
+    trace_text = _FakePromptFunction.execute_calls[0]
+    assert "Condensed execution trace:" in trace_text
+    assert "tool=search_engine" in trace_text
+    assert "tool=web_browser" in trace_text
+    assert "turn_end tool_results" not in trace_text
+
+    samples = [
+        json.loads(line)
+        for line in (run_dir / "samples.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    persisted = samples[0]["result"]["agent_execution_summary"]
+    assert persisted["source"] == "memory+promptfunction"
 
 
 def test_generate_html_report_summary_overrides_provider_and_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -406,14 +646,21 @@ def test_generate_html_report_marks_summary_failures_without_aborting(tmp_path: 
     generate_html_report(str(run_dir), str(output_path), summarize_agent_steps=True)
 
     html = (tmp_path / "report_samples" / "0001_sample-ok.html").read_text(encoding="utf-8")
-    assert "Agent step summarization failed: prompt failure" in html
+    assert "Search for Prompt A" in html
+    assert "Agent step summarization failed" not in html
 
     samples = [
         json.loads(line)
         for line in (run_dir / "samples.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert samples[0]["result"]["agent_execution_summary"]["error"] == "prompt failure"
+    persisted = samples[0]["result"]["agent_execution_summary"]
+    assert persisted["source"] == "event_fallback"
+    assert persisted["steps"] == [
+        "Search for Prompt A",
+        "Open https://example.test",
+        "Return the final answer Answer A",
+    ]
 
 
 def test_generate_html_report_hides_level_breakdown_without_level_metadata(tmp_path: Path):
@@ -481,7 +728,7 @@ def test_generate_html_report_accepts_numbered_text_steps_from_promptfunction(tm
     assert persisted["steps"] == ["Search the web", "Open the relevant page", "Answer the question"]
 
 
-def test_generate_html_report_rejects_numeric_only_steps_from_promptfunction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_generate_html_report_falls_back_to_event_steps_when_prompt_output_is_unusable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     class _FakePromptFunction:
         def __init__(self, sys_prompt: str = "", prompt: str = "", client: str | None = None):
             del sys_prompt, prompt, client
@@ -501,5 +748,53 @@ def test_generate_html_report_rejects_numeric_only_steps_from_promptfunction(tmp
         if line.strip()
     ]
     persisted = samples[0]["result"]["agent_execution_summary"]
-    assert persisted["steps"] == []
-    assert persisted["error"] == "PromptFunction returned no usable steps."
+    assert persisted["source"] == "event_fallback"
+    assert persisted["steps"] == [
+        "Search for Prompt A",
+        "Open https://example.test",
+        "Return the final answer Answer A",
+    ]
+    assert "error" not in persisted
+
+
+def test_generate_html_report_falls_back_to_memory_steps_when_prompt_output_is_unusable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    class _FakePromptFunction:
+        def __init__(self, sys_prompt: str = "", prompt: str = "", client: str | None = None):
+            del sys_prompt, prompt, client
+
+        def execute(self, *_args, **_kwargs):
+            return {"steps": [46]}
+
+    monkeypatch.setattr(agent_step_summary, "PromptFunction", _FakePromptFunction)
+
+    run_dir = _create_run_dir(tmp_path, include_optional=True, persisted_summary=False, include_memory=True)
+    output_path = tmp_path / "memory_fallback.html"
+    generate_html_report(str(run_dir), str(output_path), summarize_agent_steps=True)
+
+    samples = [
+        json.loads(line)
+        for line in (run_dir / "samples.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    persisted = samples[0]["result"]["agent_execution_summary"]
+    assert persisted["source"] == "memory_fallback"
+    assert persisted["steps"] == [
+        "Search for Prompt A",
+        "Open https://example.test",
+        "Return the final answer Answer A",
+    ]
+
+
+def test_generate_html_report_renders_nested_timeline_boxes_with_per_box_json(tmp_path: Path):
+    run_dir = _create_run_dir(tmp_path, include_optional=True, persisted_summary=True, nested_events=True)
+    output_path = tmp_path / "nested.html"
+    generate_html_report(str(run_dir), str(output_path))
+
+    html = (tmp_path / "nested_samples" / "0001_sample-ok.html").read_text(encoding="utf-8")
+    assert "Agent Run" in html
+    assert "Turn" in html
+    assert "Message · Assistant" in html
+    assert "Tool · Search Engine" in html
+    assert "Show JSON" in html
+    assert "Show raw event JSON" in html
+    assert "Event · Message Update" not in html

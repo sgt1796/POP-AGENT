@@ -17,8 +17,8 @@ executor_options:
   log_level: simple
   model_override: 
     #provider: gemini
-    #id: gemini-3-pro-preview
+    #id: gemini-3-flash-preview
     provider: openai
     id: gpt-5.4-mini
-  thinking_level: medium
+  thinking_level: high
 redact_patterns: []
