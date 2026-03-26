@@ -5,6 +5,8 @@ POP-Agent is a Python agent runtime built on top of `pop-python`. It provides a 
 This repository includes:
 - A reusable core agent package in `agent/`.
 - A runnable runtime in `agent_build/agent1/`.
+- A FastAPI web adapter in `agent_build/agent1/web/`.
+- A separate CopilotKit frontend in `frontend/copilotkit-app/`.
 - Evaluation utilities in `eval/`.
 
 ---
@@ -47,6 +49,29 @@ python run_tui.py
 ### 3) Run the default runtime module
 ```bash
 python -m agent_build.agent1.agent1
+```
+
+### 4) Run the web adapter + CopilotKit frontend
+Install backend deps first:
+```bash
+pip install -r requirements.txt
+```
+
+Backend:
+```bash
+uvicorn agent_build.agent1.web.app:app --reload --port 8000
+```
+
+Frontend:
+```bash
+cd frontend/copilotkit-app
+npm install
+NEXT_PUBLIC_POP_AGENT_API_BASE_URL=http://localhost:8000 npm run dev
+```
+
+Single-command helper:
+```bash
+python run_web_ui.py
 ```
 
 ---
@@ -94,6 +119,7 @@ POP_AGENT_AGENTMAIL_TO_EMAIL=you@example.com
 .
 ├── agent/                  # Core agent package (loop, state, tools, scheduler, memory)
 ├── agent_build/agent1/     # Ready-to-run runtime + scheduled runner entrypoints
+├── frontend/copilotkit-app # Next.js + CopilotKit web frontend
 ├── eval/                   # Evaluation framework, configs, benchmarks, executors
 ├── tests/                  # Test suite
 ├── run_tui.py              # TUI entrypoint
@@ -112,6 +138,7 @@ Common runtime environment variables:
 - `OPENALEX_EMAIL` (optional)
 - `OPENALEX_API_KEY` (optional)
 - `POP_AGENT_SCHEDULER_PERSISTENT` (`1`/`0`, default daemon-friendly behavior)
+- `POP_AGENT_WEB_PORT` (optional FastAPI port override, default `8000`)
 
 Scheduler artifacts:
 - Jobs: `agent/mem/scheduled_jobs.json`

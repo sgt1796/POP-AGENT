@@ -7,3 +7,6 @@ google-auth
 croniter
 tzdata
 pandas
+fastapi
+uvicorn
+ag-ui-protocol
