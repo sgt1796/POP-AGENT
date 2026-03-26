@@ -65,6 +65,8 @@ class _EvalSteeringGuard:
         self._agent = agent
         self._generic_web_budget = max(1, int(generic_web_budget))
         self._generic_web_calls = 0
+        self._generic_web_budget_exhausted = False
+        self._missing_file_reads = 0
         self._sent_keys: set[str] = set()
 
     def on_event(self, event: Dict[str, Any]) -> None:
@@ -79,6 +81,7 @@ class _EvalSteeringGuard:
         if tool_name in _GENERIC_WEB_DISCOVERY_TOOLS:
             self._generic_web_calls += 1
             if self._generic_web_calls >= self._generic_web_budget:
+                self._generic_web_budget_exhausted = True
                 self._disable_generic_web_tools()
                 self._steer_once(
                     "generic-web-budget",
@@ -125,6 +128,34 @@ class _EvalSteeringGuard:
                 "- If there is no relevant local file, pivot back to the strongest exact source instead of guessing from directory names.",
             )
 
+        if tool_name == "file_read" and str(details.get("error") or "").strip() == "path_not_found":
+            self._missing_file_reads += 1
+            if self._missing_file_reads >= 2:
+                self._steer_once(
+                    "file-read-path-not-found-repeat",
+                    "Evaluation steering:\n"
+                    "- file_read path_not_found means the file does not exist locally at that path.\n"
+                    "- Do not keep inventing sibling filenames or guessing download names.\n"
+                    "- Recover one exact existing path from attachments, download_url_to_file results, or a file listing before retrying file_read.\n"
+                    "- If no exact local file exists, pivot back to the strongest exact source instead of probing more filenames.",
+                )
+
+        if tool_name == "file_read" and self._generic_web_budget_exhausted:
+            query_match_count = details.get("metadata", {}).get("query_match_count")
+            try:
+                match_count = int(query_match_count)
+            except Exception:
+                match_count = 0
+            if match_count > 0:
+                self._steer_once(
+                    "file-read-local-match",
+                    "Evaluation steering:\n"
+                    "- A local read returned explicit matches for your query.\n"
+                    "- First verify that this is the exact requested artifact or section.\n"
+                    "- If it is, extract the requested field from the returned passage and answer instead of reopening broad search.\n"
+                    "- If it is close but not the exact source, do at most one targeted local read on the exact artifact you already found.",
+                )
+
         if tool_name == "jina_web_snapshot":
             status_code = _extract_http_status_code(details)
             if status_code is not None and 400 <= status_code < 500:
@@ -139,8 +170,11 @@ class _EvalSteeringGuard:
 
         if tool_name == "download_url_to_file" and str(details.get("error") or "").strip() == "unexpected_content_type":
             saved_landing_page_path = str(details.get("saved_landing_page_path") or "").strip()
+            saved_landing_page_workspace_path = str(details.get("saved_landing_page_workspace_path") or "").strip()
             final_url = str(details.get("final_url") or "").strip()
             extra_lines: List[str] = []
+            if saved_landing_page_workspace_path:
+                extra_lines.append(f"- The landing page workspace path is: {saved_landing_page_workspace_path}")
             if saved_landing_page_path:
                 extra_lines.append(f"- The landing page was saved locally at: {saved_landing_page_path}")
             if final_url:
@@ -160,6 +194,17 @@ class _EvalSteeringGuard:
                     ]
                 ),
             )
+
+        if tool_name == "download_url_to_file" and details.get("ok") and self._generic_web_budget_exhausted:
+            local_path = str(details.get("workspace_path") or details.get("saved_path") or "").strip()
+            if local_path:
+                self._steer_once(
+                    "download-success-local-followup",
+                    "Evaluation steering:\n"
+                    f"- You now have a local artifact at: {local_path}\n"
+                    "- Inspect this exact local file next with file_read on the target phrase, heading, or field before any more search reformulation.\n"
+                    "- If this is the exact requested source, extract the field from that local read and answer.",
+                )
 
         if tool_name == "calculator":
             error_text = str(details.get("error") or "").strip().lower()
@@ -410,6 +455,7 @@ class Agent1RuntimeExecutor(AgentExecutor):
             "- If a page is relevant but dense, extract the target field from the exact nearby passage instead of relying on a broad summary of the page.",
             "- For quote-in-document tasks, recover the exact phrase in the exact title, chapter, page, or preview path and answer from the nearby passage only.",
             "- For large local text, HTML, RST, or PDF documents, use file_read with query and bounded context instead of sequential scanning or shell grep.",
+            "- Save downloaded pages, documents, and scratch scripts under downloads/ with a descriptive name unless the task already provides an exact path.",
             "- If a tool returns concrete recovery hints such as final_url, pdf_link_candidates, or content_preview, plus saved_landing_page_path when present, use those exact leads before broad search.",
             "- If jina_web_snapshot fails with a 4xx or proxy access error on a known page URL, try the original URL directly or use download_url_to_file to save it as local .html, then inspect it with file_read before broadening search.",
             "- If an exact-source fetch fails and later results only surface tangential names, generic summaries, or unverified numbers, do not turn that drift into the final answer; stay anchored to the DOI, title, quote, domain, or entity chain.",
@@ -421,6 +467,7 @@ class Agent1RuntimeExecutor(AgentExecutor):
             "- Once that budget is spent, give the best supported final answer instead of reformulating the same search.",
             "- Treat bash_exec as local-shell inspection only. Do not use it for network fetches, Python one-liners, grep pipelines, or shell syntax variants.",
             "- If bash_exec is blocked, that is a hard constraint for this sample; switch tools immediately instead of retrying shell alternatives.",
+            "- If file_read says a path is missing, stop inventing sibling filenames; recover one exact existing file path first.",
             "- For calculator, use a single expression with direct function calls and bindings; do not use import, lambda, __import__, or attribute access like math.sin.",
             "- If calculator returns an unsupported syntax/function error, rewrite the expression with direct allowed calls or bindings and retry once before answering.",
             "- Do not use calculator to open files, inspect text, or simulate scripting; extract evidence first, then compute from the explicit values only.",
@@ -428,6 +475,7 @@ class Agent1RuntimeExecutor(AgentExecutor):
             "- Before using calculator for a count or difference, write down the exact source-backed operands and make sure they follow the task's counting convention, such as unique winners, same-line stops, or season-specific measurements.",
             "- Before answering, verify the requested output field and counting convention: exact entity, requested unit, item index, inclusive vs exclusive counts, and requested precision or rounding rule.",
             "- Translate the requested precision into the final numeric format before answering; for example, nearest 0.001 of the reported unit requires three decimals.",
+            "- When a bounded local read already returns the exact phrase or a small set of matches in the right artifact, extract the requested field from that passage and answer instead of reopening broad search.",
             "- When the prompt asks for answer text or number only, output only the filled answer field; do not echo the format template, labels, or extra units unless explicitly requested.",
             "- If the candidate answer is still a placeholder, copied template, or generic filler token, treat the field as unverified and use the strongest targeted verification call before answering.",
             "- If the exact requested field is still unverified, spend one targeted verification call on the strongest candidate source before answering.",

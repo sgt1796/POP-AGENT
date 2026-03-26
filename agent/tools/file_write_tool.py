@@ -197,13 +197,20 @@ def write(
 
 class FileWriteTool(AgentTool):
     name = "file_write"
-    description = "Write, append, and find/replace UTF-8 text files in the workspace or allowed roots."
+    description = (
+        "Write, append, and find/replace UTF-8 text files in the workspace or allowed roots. "
+        "Prefer downloads/<name> for scratch scripts or generated artifacts unless editing a project file."
+    )
     parameters = {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "File path relative to the workspace root or an absolute path inside allowed roots.",
+                "description": (
+                    "File path relative to the workspace root or an absolute path inside allowed roots. "
+                    "Prefer downloads/<descriptive_name> for scratch scripts or generated files unless the task "
+                    "names a project file."
+                ),
             },
             "action": {
                 "type": "string",

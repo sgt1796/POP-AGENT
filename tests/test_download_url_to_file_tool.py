@@ -76,10 +76,12 @@ def test_download_url_to_file_success(tmp_path: Path, monkeypatch):
 
     assert result.details["ok"] is True
     assert result.details["saved_path"] == str(target.resolve())
+    assert result.details["workspace_path"] == "downloads/paper.pdf"
     assert result.details["bytes_written"] == len(expected_bytes)
     assert result.details["content_type"] == "application/pdf"
     assert result.details["final_url"] == "https://example.org/paper.pdf"
     assert result.details["sha256"] == hashlib.sha256(expected_bytes).hexdigest()
+    assert "workspace_path=downloads/paper.pdf" in result.content[0].text
     assert target.read_bytes() == expected_bytes
 
 
@@ -143,11 +145,13 @@ def test_download_url_to_file_rejects_unexpected_content_type(tmp_path: Path, mo
     assert result.details["pdf_link_candidates"] == ["https://muse.jhu.edu/pub/258/oa_monograph/book/24372/pdf"]
     saved_path = Path(result.details["saved_landing_page_path"])
     assert saved_path == (tmp_path / "downloads" / "file.html")
+    assert result.details["saved_landing_page_workspace_path"] == "downloads/file.html"
     assert saved_path.read_text(encoding="utf-8").startswith("<html>")
     assert "landing page title" in result.content[0].text
     assert "final_url" in result.content[0].text
     assert "content_preview" in result.content[0].text
     assert "saved_landing_page_path" in result.content[0].text
+    assert "saved_landing_page_workspace_path" in result.content[0].text
     assert "recovery_hint" in result.content[0].text
     assert "retry one of the exact PDF links before broad search" in result.details["recovery_hint"]
     assert not (tmp_path / "downloads" / "file.pdf").exists()
@@ -215,10 +219,12 @@ def test_download_url_to_file_flags_verification_page_with_recovery_hint(tmp_pat
     assert result.details["error"] == "unexpected_content_type"
     assert result.details["html_title"] == "Project MUSE -- Verification required!"
     assert Path(result.details["saved_landing_page_path"]).exists()
+    assert result.details["saved_landing_page_workspace_path"] == "downloads/file.html"
     assert "verification/interstitial page" in result.details["recovery_hint"]
     assert "source landing page before broad search" in result.details["recovery_hint"]
-    assert "file_read" in result.details["next_step"]
+    assert result.details["next_step"] == "use file_read on downloads/file.html or inspect the final_url before broad search"
     assert "saved_landing_page_path" in result.content[0].text
+    assert "saved_landing_page_workspace_path" in result.content[0].text
     assert "recovery_hint" in result.content[0].text
     assert "next_step" in result.content[0].text
 

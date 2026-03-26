@@ -31,6 +31,7 @@ def test_augment_eval_prompt_includes_verification_and_calculator_guidance():
     assert "extract the target field from the exact nearby passage" in prompt
     assert "recover the exact phrase in the exact title, chapter, page, or preview path" in prompt
     assert "use file_read with query and bounded context" in prompt
+    assert "Save downloaded pages, documents, and scratch scripts under downloads/" in prompt
     assert "final_url, pdf_link_candidates, or content_preview" in prompt
     assert "saved_landing_page_path" in prompt
     assert "If jina_web_snapshot fails with a 4xx or proxy access error" in prompt
@@ -40,12 +41,14 @@ def test_augment_eval_prompt_includes_verification_and_calculator_guidance():
     assert "rewrite the expression with direct allowed calls or bindings" in prompt
     assert "Treat bash_exec as local-shell inspection only." in prompt
     assert "If bash_exec is blocked, that is a hard constraint" in prompt
+    assert "stop inventing sibling filenames" in prompt
     assert "Do not use calculator to open files, inspect text, or simulate scripting" in prompt
     assert "eligible candidates first and compute from those explicit values" in prompt
     assert "write down the exact source-backed operands" in prompt
     assert "verify the requested output field and counting convention" in prompt
     assert "requested precision or rounding rule" in prompt
     assert "nearest 0.001 of the reported unit requires three decimals" in prompt
+    assert "small set of matches in the right artifact" in prompt
     assert "do not echo the format template, labels, or extra units" in prompt
     assert "placeholder, copied template, or generic filler token" in prompt
     assert "spend one targeted verification call on the strongest candidate source" in prompt
@@ -193,3 +196,80 @@ def test_eval_steering_guard_redirects_file_read_directory_misuse():
     assert "file_read only works on concrete files" in text
     assert "Do not retry the same directory path" in text
     assert "bash_exec rg --files" in text
+
+
+def test_eval_steering_guard_redirects_repeated_missing_file_guesses():
+    agent = _FakeAgent()
+    guard = _EvalSteeringGuard(agent)
+
+    for _ in range(2):
+        guard.on_event(
+            {
+                "type": "tool_execution_end",
+                "toolName": "file_read",
+                "result": {
+                    "details": {
+                        "error": "path_not_found",
+                        "message": "file not found: downloads/fan_showdown.csv",
+                        "path": "downloads/fan_showdown.csv",
+                    }
+                },
+            }
+        )
+
+    assert len(agent.messages) == 1
+    text = agent.messages[0].content[0].text
+    assert "path_not_found means the file does not exist locally" in text
+    assert "Do not keep inventing sibling filenames" in text
+    assert "download_url_to_file results" in text
+
+
+def test_eval_steering_guard_pushes_local_follow_up_after_budget_exhaustion():
+    agent = _FakeAgent()
+    guard = _EvalSteeringGuard(agent, generic_web_budget=1)
+
+    guard.on_event({"type": "tool_execution_end", "toolName": "perplexity_search", "result": {"details": {}}})
+    guard.on_event(
+        {
+            "type": "tool_execution_end",
+            "toolName": "download_url_to_file",
+            "result": {
+                "details": {
+                    "ok": True,
+                    "workspace_path": "downloads/A_Dark_Trace.pdf",
+                    "saved_path": "C:\\Users\\sgt17\\OneDrive\\Desktop\\POP-agent\\downloads\\A_Dark_Trace.pdf",
+                }
+            },
+        }
+    )
+
+    assert len(agent.messages) == 2
+    text = agent.messages[1].content[0].text
+    assert "You now have a local artifact at: downloads/A_Dark_Trace.pdf" in text
+    assert "Inspect this exact local file next with file_read" in text
+
+
+def test_eval_steering_guard_pushes_answer_after_local_query_hit():
+    agent = _FakeAgent()
+    guard = _EvalSteeringGuard(agent, generic_web_budget=1)
+
+    guard.on_event({"type": "tool_execution_end", "toolName": "perplexity_search", "result": {"details": {}}})
+    guard.on_event(
+        {
+            "type": "tool_execution_end",
+            "toolName": "file_read",
+            "result": {
+                "details": {
+                    "ok": True,
+                    "metadata": {
+                        "query_match_count": 1,
+                    },
+                }
+            },
+        }
+    )
+
+    assert len(agent.messages) == 2
+    text = agent.messages[1].content[0].text
+    assert "local read returned explicit matches for your query" in text
+    assert "extract the requested field from the returned passage and answer" in text

@@ -46,6 +46,14 @@ def _resolve_output_path(output_path: str, workspace_root: str, allowed_roots: S
     return resolved
 
 
+def _workspace_relative_path(path: str, workspace_root: str) -> str:
+    try:
+        rel = os.path.relpath(path, workspace_root)
+    except Exception:
+        rel = path
+    return str(rel).replace("\\", "/")
+
+
 def _to_positive_int(value: Any, name: str) -> int:
     try:
         parsed = int(value)
@@ -218,7 +226,7 @@ class DownloadUrlToFileTool(AgentTool):
     name = "download_url_to_file"
     description = (
         "Download an http/https URL to a workspace or allowed-root file path (streaming, redirects supported). "
-        "Useful after openalex_works returns best_oa_pdf_url."
+        "Prefer downloads/<name> for ad hoc artifacts. Useful after openalex_works returns best_oa_pdf_url."
     )
     parameters = {
         "type": "object",
@@ -226,7 +234,10 @@ class DownloadUrlToFileTool(AgentTool):
             "url": {"type": "string", "description": "HTTP or HTTPS URL to download."},
             "output_path": {
                 "type": "string",
-                "description": "Workspace-relative or absolute output path inside the workspace or allowed roots.",
+                "description": (
+                    "Workspace-relative or absolute output path inside the workspace or allowed roots. "
+                    "Prefer downloads/<descriptive_name> for downloaded artifacts unless the task names a path."
+                ),
             },
             "timeout_s": {"type": "number", "description": "Optional request timeout in seconds (default 30)."},
             "max_bytes": {"type": "integer", "description": "Optional maximum bytes to write (default 50MB)."},
@@ -322,6 +333,10 @@ class DownloadUrlToFileTool(AgentTool):
                                 html_text,
                                 output_path,
                             )
+                            mismatch_details["saved_landing_page_workspace_path"] = _workspace_relative_path(
+                                mismatch_details["saved_landing_page_path"],
+                                self.workspace_root,
+                            )
                         except OSError as exc:
                             mismatch_details["landing_page_save_error"] = str(exc)
                     recovery_hint = _content_type_mismatch_recovery_hint(
@@ -346,14 +361,24 @@ class DownloadUrlToFileTool(AgentTool):
                     if content_preview:
                         message += f"; content_preview: {content_preview[:160]}"
                     saved_landing_page_path = str(mismatch_details.get("saved_landing_page_path") or "").strip()
+                    saved_landing_page_workspace_path = str(
+                        mismatch_details.get("saved_landing_page_workspace_path") or ""
+                    ).strip()
                     next_step = ""
-                    if saved_landing_page_path:
+                    if saved_landing_page_workspace_path:
+                        next_step = (
+                            f"use file_read on {saved_landing_page_workspace_path} or inspect the final_url before broad search"
+                        )
+                        mismatch_details["next_step"] = next_step
+                    elif saved_landing_page_path:
                         next_step = (
                             f"use file_read on {saved_landing_page_path} or inspect the final_url before broad search"
                         )
                         mismatch_details["next_step"] = next_step
                     if saved_landing_page_path:
                         message += f"; saved_landing_page_path: {saved_landing_page_path}"
+                    if saved_landing_page_workspace_path:
+                        message += f"; saved_landing_page_workspace_path: {saved_landing_page_workspace_path}"
                     landing_page_save_error = str(mismatch_details.get("landing_page_save_error") or "").strip()
                     if landing_page_save_error:
                         message += f"; landing_page_save_error: {landing_page_save_error}"
@@ -434,13 +459,15 @@ class DownloadUrlToFileTool(AgentTool):
                 },
             )
 
+        workspace_path = _workspace_relative_path(output_path, self.workspace_root)
         return self._ok(
             (
                 f"download_url_to_file: saved {bytes_written} bytes to {output_path} "
-                f"(content_type={content_type})"
+                f"(workspace_path={workspace_path}, content_type={content_type})"
             ),
             {
                 "saved_path": output_path,
+                "workspace_path": workspace_path,
                 "bytes_written": bytes_written,
                 "content_type": content_type,
                 "final_url": final_url,

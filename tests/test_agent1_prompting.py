@@ -33,6 +33,7 @@ def test_prompt_includes_core_sections_allowlists_and_tool_rules():
     assert "Allowed bash_exec read commands: cat, ls." in prompt
     assert "Allowed bash_exec write commands: touch." in prompt
     assert "Allowed bash_exec git subcommands: status." in prompt
+    assert "Place downloaded files and scratch scripts under downloads/" in prompt
     assert "Enabled Tool Rules:" in prompt
     assert "[calculator-rules]" in prompt
     assert "Missing Capability Flow:" in prompt
@@ -42,6 +43,7 @@ def test_prompt_includes_core_sections_allowlists_and_tool_rules():
     assert "If jina_web_snapshot fails with a 4xx or proxy access error" in prompt
     assert "use file_read query/context on the exact phrase" in prompt
     assert "Do not invent workspace paths from URLs or domains" in prompt
+    assert "do not keep guessing sibling filenames" in prompt
     assert "If broad search results turn noisy or drift off-domain" in prompt
     assert "tangential names, generic topic summaries, or unverified numbers" in prompt
     assert "use openalex_works fetch_openalex_record with the DOI or an exact DOI filter" in prompt
@@ -53,6 +55,7 @@ def test_prompt_includes_core_sections_allowlists_and_tool_rules():
     assert "satisfies every stated filter, boundary, membership rule" in prompt
     assert "compact evidence table of eligible entities" in prompt
     assert "nearby passage containing the quoted phrase or cited section" in prompt
+    assert "small set of matches in the relevant artifact" in prompt
     assert "identify the exact source-backed operands and labels" in prompt
     assert "Honor the exact requested precision" in prompt
     assert "nearest 0.001 of the reported unit requires three decimals" in prompt

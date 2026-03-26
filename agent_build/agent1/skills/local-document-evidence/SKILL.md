@@ -20,3 +20,4 @@ scope: turn
 Treat staged attachments, downloaded files, and workspace-local documents as primary evidence before remote fetches.
 If the target artifact already exists locally, read it first and answer from the explicit nearby passage or field instead of rediscovering the same source on the web.
 When a local document contains the target phrase, inspect the surrounding passage and answer from the explicit attribution there rather than from unrelated names elsewhere in the file.
+If a bounded local read already returns the exact phrase or heading in the right artifact, extract the requested field from that passage and answer instead of restarting broad search.
