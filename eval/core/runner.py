@@ -84,6 +84,23 @@ async def run_evaluation_async(
             "split": cfg.split,
         },
     )
+    shuffle_enabled = bool(getattr(cfg, "benchmark_options", {}).get("shuffle", False))
+    if shuffle_enabled and cfg.seed is not None:
+        _emit_progress(
+            progress_callback,
+            {
+                "type": "sampling_notice",
+                "benchmark": cfg.benchmark,
+                "split": cfg.split,
+                "shuffle": True,
+                "deterministic_shuffle": True,
+                "seed": cfg.seed,
+                "message": (
+                    "shuffle=true with a non-null seed produces a deterministic shuffled order; "
+                    "unset seed for a different order each run"
+                ),
+            },
+        )
     benchmark_samples = benchmark_adapter.load_samples(
         split=cfg.split,
         limit=cfg.limit,

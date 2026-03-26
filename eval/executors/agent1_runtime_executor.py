@@ -17,6 +17,12 @@ _GENERIC_WEB_DISCOVERY_TOOLS = {
     "jina_web_snapshot",
     "perplexity_web_snapshot",
 }
+_DEFAULT_EVAL_EXCLUDE_TOOLS = {
+    "agentmail_send",
+    "gmail_fetch",
+    "memory_search",
+    "pdf_merge",
+}
 _HARD_BASH_BLOCK_REASONS = {
     "command_not_allowed",
     "blocked_shell_operator",
@@ -26,6 +32,22 @@ _HARD_BASH_BLOCK_REASONS = {
 _CALCULATOR_IO_ERROR_SNIPPETS = (
     "only direct function calls are allowed",
     "function not allowed",
+)
+_GMAIL_UNAVAILABLE_ERROR_SNIPPETS = (
+    "token file not found",
+    "requires google-auth",
+    "cannot be refreshed",
+    "invalid_grant",
+)
+_SEARCH_INTERSTITIAL_MARKERS = (
+    "anomaly-modal",
+    "anomaly.js",
+    "bots use duckduckgo too",
+    "please complete the following challenge",
+    "captcha",
+    "verify you are human",
+    "www.bing.com/search",
+    "duckduckgo.com/html/",
 )
 _HTTP_STATUS_RE = re.compile(r"\b([45]\d{2})\b")
 
@@ -58,6 +80,15 @@ def _extract_http_status_code(details: Dict[str, Any]) -> Optional[int]:
         except Exception:
             return None
     return None
+
+
+def _looks_like_search_interstitial(details: Dict[str, Any]) -> bool:
+    if not isinstance(details, dict):
+        return False
+    content = str(details.get("content") or "").strip().lower()
+    if not content:
+        return False
+    return any(marker in content for marker in _SEARCH_INTERSTITIAL_MARKERS)
 
 
 class _EvalSteeringGuard:
@@ -107,6 +138,19 @@ class _EvalSteeringGuard:
                     "- If you already have a likely source, verify it directly and answer.",
                 )
 
+        if tool_name == "gmail_fetch":
+            error_text = str(details.get("error") or "").strip().lower()
+            if error_text and any(snippet in error_text for snippet in _GMAIL_UNAVAILABLE_ERROR_SNIPPETS):
+                self._steer_once(
+                    "gmail-fetch-unavailable",
+                    "Evaluation steering:\n"
+                    "- gmail_fetch is unavailable in this environment for this sample.\n"
+                    "- Do not spend more steps on Gmail auth, token bootstrap, or mailbox fallbacks.\n"
+                    "- Use benchmark attachments, downloaded artifacts, and direct source pages instead.\n"
+                    "- Do not treat local Gmail cache files as substitute evidence unless the task explicitly asks for email content.",
+                )
+                self._remove_tools_once("gmail-fetch-remove-tool", ["gmail_fetch"])
+
         if tool_name == "file_read" and str(details.get("error") or "").strip() == "parse_error":
             self._steer_once(
                 "file-read-parse-error",
@@ -147,14 +191,24 @@ class _EvalSteeringGuard:
             except Exception:
                 match_count = 0
             if match_count > 0:
-                self._steer_once(
-                    "file-read-local-match",
-                    "Evaluation steering:\n"
-                    "- A local read returned explicit matches for your query.\n"
-                    "- First verify that this is the exact requested artifact or section.\n"
-                    "- If it is, extract the requested field from the returned passage and answer instead of reopening broad search.\n"
-                    "- If it is close but not the exact source, do at most one targeted local read on the exact artifact you already found.",
-                )
+                if _looks_like_search_interstitial(details):
+                    self._steer_once(
+                        "file-read-search-interstitial",
+                        "Evaluation steering:\n"
+                        "- This local HTML looks like a search-engine interstitial or results page, not the target source.\n"
+                        "- Do not treat keyword matches from search-result HTML, CAPTCHA pages, or anti-bot challenges as evidence for the final answer.\n"
+                        "- Go back to the strongest exact source URL or spend at most one targeted alternative retrieval step on the real source.\n"
+                        "- Only answer from a verified page, document passage, or structured record.",
+                    )
+                else:
+                    self._steer_once(
+                        "file-read-local-match",
+                        "Evaluation steering:\n"
+                        "- A local read returned explicit matches for your query.\n"
+                        "- First verify that this is the exact requested artifact or section.\n"
+                        "- If it is, extract the requested field from the returned passage and answer instead of reopening broad search.\n"
+                        "- If it is close but not the exact source, do at most one targeted local read on the exact artifact you already found.",
+                    )
 
         if tool_name == "jina_web_snapshot":
             status_code = _extract_http_status_code(details)
@@ -229,6 +283,19 @@ class _EvalSteeringGuard:
             )
         )
 
+    def _remove_tools_once(self, key: str, tool_names: List[str]) -> None:
+        if key in self._sent_keys:
+            return
+        self._sent_keys.add(key)
+        remove_tool = getattr(self._agent, "remove_tool", None)
+        if not callable(remove_tool):
+            return
+        for tool_name in tool_names:
+            try:
+                remove_tool(tool_name)
+            except Exception:
+                continue
+
     def _disable_generic_web_tools(self) -> None:
         remove_tool = getattr(self._agent, "remove_tool", None)
         if not callable(remove_tool):
@@ -257,6 +324,11 @@ class Agent1RuntimeExecutor(AgentExecutor):
         opts = dict(executor_options or {})
         warnings: List[str] = []
         events: List[Dict[str, Any]] = []
+        include_tools = self._coerce_tool_list(opts.get("include_tools"))
+        exclude_tools = self._merge_eval_tool_excludes(
+            include_tools=include_tools,
+            exclude_tools=self._coerce_tool_list(opts.get("exclude_tools")),
+        )
 
         memory_dir = os.path.join(
             run_dir,
@@ -268,8 +340,8 @@ class Agent1RuntimeExecutor(AgentExecutor):
             long_memory_base_path=str(opts.get("long_memory_base_path") or memory_dir),
             enable_memory=self._coerce_optional_bool(opts.get("enable_memory"), default=True),
             enable_auto_title=self._coerce_optional_bool(opts.get("enable_auto_title"), default=False),
-            include_tools=self._coerce_tool_list(opts.get("include_tools")),
-            exclude_tools=self._coerce_tool_list(opts.get("exclude_tools")),
+            include_tools=include_tools,
+            exclude_tools=exclude_tools,
             model_override=self._coerce_optional_dict(opts.get("model_override")),
             bash_prompt_approval=self._coerce_optional_bool(opts.get("bash_prompt_approval"), default=False),
             log_level=self._coerce_optional_str(opts.get("log_level"), default="quiet"),
@@ -570,6 +642,31 @@ class Agent1RuntimeExecutor(AgentExecutor):
         if isinstance(value, list):
             return [str(item).strip() for item in value if str(item).strip()]
         return None
+
+    def _merge_eval_tool_excludes(
+        self,
+        *,
+        include_tools: Optional[List[str]],
+        exclude_tools: Optional[List[str]],
+    ) -> Optional[List[str]]:
+        explicit_includes = {str(item).strip() for item in list(include_tools or []) if str(item).strip()}
+        merged: List[str] = []
+        seen: set[str] = set()
+
+        for name in list(exclude_tools or []):
+            normalized = str(name).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(normalized)
+
+        for name in sorted(_DEFAULT_EVAL_EXCLUDE_TOOLS):
+            if name in explicit_includes or name in seen:
+                continue
+            seen.add(name)
+            merged.append(name)
+
+        return merged or None
 
     def _coerce_optional_bool(self, value: Any, *, default: Optional[bool]) -> Optional[bool]:
         if value is None:

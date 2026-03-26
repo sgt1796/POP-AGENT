@@ -1,7 +1,7 @@
 benchmark: gaia
 split: validation
 limit: 3
-seed: 111  # Set explicitly for reproducible shuffle. Leave commented out for non-deterministic order.
+seed: null  # Leave null for non-deterministic shuffle. Set an int only when you want the same shuffled order every run.
 timeout_s: 180.0
 output_root: eval/runs
 run_id: null
@@ -16,9 +16,9 @@ executor_options:
   bash_prompt_approval: false
   log_level: simple
   model_override: 
-    provider: gemini
-    id: gemini-3.1-pro-preview
-    #provider: openai
-    #id: gpt-5.4-mini
+    #provider: gemini
+    #id: gemini-3.1-pro-preview
+    provider: openai
+    id: gpt-5.4-mini
   thinking_level: high
 redact_patterns: []

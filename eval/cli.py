@@ -266,6 +266,14 @@ def _build_progress_printer():
             )
             return
 
+        if event_type == "sampling_notice":
+            print(
+                "[eval] sampling notice "
+                f"benchmark={event.get('benchmark')} split={event.get('split')} "
+                f"seed={event.get('seed')} message={event.get('message')}"
+            )
+            return
+
         if event_type == "samples_loaded":
             print(f"[eval] loaded samples count={event.get('count')}")
             return

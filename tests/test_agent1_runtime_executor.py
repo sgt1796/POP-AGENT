@@ -5,6 +5,7 @@ class _FakeAgent:
     def __init__(self) -> None:
         self.messages = []
         self.tools = {
+            "gmail_fetch",
             "perplexity_search",
             "jina_web_snapshot",
             "perplexity_web_snapshot",
@@ -273,3 +274,59 @@ def test_eval_steering_guard_pushes_answer_after_local_query_hit():
     text = agent.messages[1].content[0].text
     assert "local read returned explicit matches for your query" in text
     assert "extract the requested field from the returned passage and answer" in text
+
+
+def test_eval_steering_guard_rejects_search_interstitial_matches():
+    agent = _FakeAgent()
+    guard = _EvalSteeringGuard(agent, generic_web_budget=1)
+
+    guard.on_event({"type": "tool_execution_end", "toolName": "perplexity_search", "result": {"details": {}}})
+    guard.on_event(
+        {
+            "type": "tool_execution_end",
+            "toolName": "file_read",
+            "result": {
+                "details": {
+                    "ok": True,
+                    "metadata": {
+                        "query_match_count": 2,
+                    },
+                    "content": (
+                        "--- match 1 lines 35-40 ---\n"
+                        "37: <form id=\"img-form\" action=\"//duckduckgo.com/anomaly.js?...\">\n"
+                        "38: <form id=\"challenge-form\" action=\"//duckduckgo.com/anomaly.js?...\">\n"
+                        "39: <div class=\"anomaly-modal__mask\">"
+                    ),
+                }
+            },
+        }
+    )
+
+    assert len(agent.messages) == 2
+    text = agent.messages[1].content[0].text
+    assert "search-engine interstitial or results page" in text
+    assert "Do not treat keyword matches" in text
+
+
+def test_eval_steering_guard_disables_gmail_fetch_after_auth_error():
+    agent = _FakeAgent()
+    guard = _EvalSteeringGuard(agent)
+
+    guard.on_event(
+        {
+            "type": "tool_execution_end",
+            "toolName": "gmail_fetch",
+            "result": {
+                "details": {
+                    "ok": False,
+                    "error": "token file not found. Run a one-time Gmail OAuth bootstrap to create token.json, then retry.",
+                }
+            },
+        }
+    )
+
+    assert len(agent.messages) == 1
+    text = agent.messages[0].content[0].text
+    assert "gmail_fetch is unavailable" in text
+    assert "Do not spend more steps on Gmail auth" in text
+    assert "gmail_fetch" not in agent.tools

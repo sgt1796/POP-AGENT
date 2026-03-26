@@ -143,6 +143,90 @@ def test_executor_allows_reenabling_memory_and_auto_title(monkeypatch, tmp_path)
     assert seen_overrides[0].enable_auto_title is True
 
 
+def test_executor_applies_default_eval_tool_exclusions(monkeypatch, tmp_path):
+    seen_overrides = []
+
+    def _fake_create_runtime_session(*, log_level=None, enable_event_logger=True, overrides=None, **kwargs):
+        del log_level, enable_event_logger, kwargs
+        seen_overrides.append(overrides)
+        return _FakeSession(agent=_FakeAgent())
+
+    async def _fake_run_user_turn(session, prompt, on_warning=None):
+        del session, prompt, on_warning
+        return "pred"
+
+    async def _fake_shutdown_runtime_session(session):
+        del session
+        return None
+
+    monkeypatch.setattr(agent_runtime, "create_runtime_session", _fake_create_runtime_session)
+    monkeypatch.setattr(agent_runtime, "run_user_turn", _fake_run_user_turn)
+    monkeypatch.setattr(agent_runtime, "shutdown_runtime_session", _fake_shutdown_runtime_session)
+
+    executor = Agent1RuntimeExecutor()
+
+    async def _run() -> None:
+        sample = BenchmarkSample(sample_id="a", prompt="q", ground_truth="g")
+        await executor.run_sample(
+            sample,
+            timeout_s=5,
+            sample_index=0,
+            run_id="run",
+            run_dir=str(tmp_path),
+            executor_options={},
+        )
+
+    asyncio.run(_run())
+
+    assert len(seen_overrides) == 1
+    assert set(seen_overrides[0].exclude_tools or []) >= {
+        "agentmail_send",
+        "gmail_fetch",
+        "memory_search",
+        "pdf_merge",
+    }
+
+
+def test_executor_allows_explicit_tool_include_to_override_default_exclusion(monkeypatch, tmp_path):
+    seen_overrides = []
+
+    def _fake_create_runtime_session(*, log_level=None, enable_event_logger=True, overrides=None, **kwargs):
+        del log_level, enable_event_logger, kwargs
+        seen_overrides.append(overrides)
+        return _FakeSession(agent=_FakeAgent())
+
+    async def _fake_run_user_turn(session, prompt, on_warning=None):
+        del session, prompt, on_warning
+        return "pred"
+
+    async def _fake_shutdown_runtime_session(session):
+        del session
+        return None
+
+    monkeypatch.setattr(agent_runtime, "create_runtime_session", _fake_create_runtime_session)
+    monkeypatch.setattr(agent_runtime, "run_user_turn", _fake_run_user_turn)
+    monkeypatch.setattr(agent_runtime, "shutdown_runtime_session", _fake_shutdown_runtime_session)
+
+    executor = Agent1RuntimeExecutor()
+
+    async def _run() -> None:
+        sample = BenchmarkSample(sample_id="a", prompt="q", ground_truth="g")
+        await executor.run_sample(
+            sample,
+            timeout_s=5,
+            sample_index=0,
+            run_id="run",
+            run_dir=str(tmp_path),
+            executor_options={"include_tools": ["gmail_fetch", "file_read"]},
+        )
+
+    asyncio.run(_run())
+
+    assert len(seen_overrides) == 1
+    assert seen_overrides[0].include_tools == ["gmail_fetch", "file_read"]
+    assert "gmail_fetch" not in set(seen_overrides[0].exclude_tools or [])
+
+
 def test_executor_forwards_enable_event_logger_option(monkeypatch, tmp_path):
     seen_values = []
 

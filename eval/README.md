@@ -365,6 +365,7 @@ Default executor behavior:
 - timeout honored per sample
 - continue on error (unless fail-fast)
 - per-sample isolation by default
+- non-essential eval tools are excluded by default: `memory_search`, `gmail_fetch`, `pdf_merge`, `agentmail_send`
 
 ### Runtime overrides supported (through executor options)
 
@@ -388,6 +389,8 @@ python -m eval.cli run \
   --executor-option exclude_tools='["gmail_fetch","pdf_merge","memory_search"]' \
   --executor-option model_override='{"provider":"openai","id":"gpt-5-mini","api":null}'
 ```
+
+If you explicitly include one of the default-excluded tools, the executor will not auto-exclude it for that run.
 
 ## Config reference (`EvalConfig`)
 

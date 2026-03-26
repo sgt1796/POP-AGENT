@@ -137,3 +137,31 @@ def test_runner_emits_progress_events(tmp_path: Path):
     assert event_types.count("sample_start") == 2
     assert event_types.count("sample_end") == 2
     assert event_types[-1] == "run_complete"
+
+
+def test_runner_emits_sampling_notice_for_deterministic_shuffle(tmp_path: Path):
+    cfg = EvalConfig(
+        benchmark="fake",
+        split="validation",
+        output_root=str(tmp_path),
+        continue_on_error=True,
+        executor="echo",
+        seed=111,
+        benchmark_options={"shuffle": True},
+    )
+    events = []
+
+    summary = run_evaluation(
+        cfg,
+        adapter=_FakeAdapter(),
+        executor=_FakeExecutor(),
+        progress_callback=events.append,
+    )
+
+    assert summary.total == 2
+    sampling_events = [event for event in events if event.get("type") == "sampling_notice"]
+    assert len(sampling_events) == 1
+    sampling_event = sampling_events[0]
+    assert sampling_event["deterministic_shuffle"] is True
+    assert sampling_event["seed"] == 111
+    assert "deterministic shuffled order" in sampling_event["message"]
