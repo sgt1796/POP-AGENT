@@ -127,7 +127,7 @@ class _FakeAgent:
         self._tools = []
         self._subscribers = []
         self.prompts = []
-        self.state = SimpleNamespace(messages=[])
+        self.state = SimpleNamespace(messages=[], error=None)
 
     def set_model(self, model):
         self._model = model
@@ -152,6 +152,7 @@ class _FakeAgent:
 
     async def prompt(self, text):
         self.prompts.append(text)
+        self.state.error = None
         self.state.messages.append(
             SimpleNamespace(role="assistant", content=[TextContent(type="text", text="ok")], error_message=None)
         )
@@ -164,11 +165,38 @@ class _ReplyAgent(_FakeAgent):
 
     async def prompt(self, text):
         self.prompts.append(text)
+        self.state.error = None
         self.state.messages.append(
             SimpleNamespace(
                 role="assistant",
                 content=[TextContent(type="text", text=self._reply)],
                 error_message=None,
+            )
+        )
+
+
+class _ReplySequenceAgent(_FakeAgent):
+    def __init__(self, replies):
+        super().__init__()
+        self._replies = list(replies)
+
+    async def prompt(self, text):
+        self.prompts.append(text)
+        payload = self._replies.pop(0)
+        if isinstance(payload, dict):
+            reply = str(payload.get("text", ""))
+            error_message = payload.get("error_message")
+            self.state.error = error_message
+        else:
+            reply = str(payload)
+            error_message = None
+            self.state.error = None
+        content = [TextContent(type="text", text=reply)] if reply else []
+        self.state.messages.append(
+            SimpleNamespace(
+                role="assistant",
+                content=content,
+                error_message=error_message,
             )
         )
 
@@ -938,6 +966,85 @@ def test_run_user_turn_keeps_units_for_non_strict_requests():
     reply = asyncio.run(run_user_turn(session, "What is the distance in angstroms?"))
 
     assert reply == "1.456 Å"
+
+
+def test_run_user_turn_retries_strict_final_answer_when_underprecision():
+    agent = _ReplySequenceAgent(["1.46", "1.456"])
+    retriever = _FakeRetriever()
+    worker = _FakeWorker()
+    warnings = []
+
+    session = RuntimeSession(
+        agent=agent,
+        retriever=retriever,
+        ingestion_worker=worker,
+        active_session_id="default",
+        context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
+        top_k=3,
+        bash_prompt_approval=True,
+        execution_profile="balanced",
+        include_demo_tools=False,
+        unsubscribe_log=lambda: None,
+        unsubscribe_memory=lambda: None,
+        unsubscribe_approval=lambda: None,
+    )
+
+    reply = asyncio.run(
+        run_user_turn(
+            session,
+            (
+                "Return only the final answer to the task.\n"
+                "Output format requirements:\n"
+                "- Exactly one line.\n"
+                "- Include only the answer text or number.\n"
+                "Report the answer in Angstroms, rounded to the nearest picometer.\n"
+                "Remember: output exactly one line containing only the final answer."
+            ),
+            on_warning=warnings.append,
+        )
+    )
+
+    assert reply == "1.456"
+    assert len(agent.prompts) == 2
+    assert any("under-precision strict final answer" in warning for warning in warnings)
+
+
+def test_run_user_turn_retries_after_empty_assistant_response():
+    agent = _ReplySequenceAgent(
+        [
+            {
+                "text": "",
+                "error_message": (
+                    "Gemini returned an empty response without text or tool calls for a tool-enabled request."
+                ),
+            },
+            {"text": "4192", "error_message": None},
+        ]
+    )
+    retriever = _FakeRetriever()
+    worker = _FakeWorker()
+    warnings = []
+
+    session = RuntimeSession(
+        agent=agent,
+        retriever=retriever,
+        ingestion_worker=worker,
+        active_session_id="default",
+        context_compressor=SimpleNamespace(maybe_compress=lambda *a, **k: False),
+        top_k=3,
+        bash_prompt_approval=True,
+        execution_profile="balanced",
+        include_demo_tools=False,
+        unsubscribe_log=lambda: None,
+        unsubscribe_memory=lambda: None,
+        unsubscribe_approval=lambda: None,
+    )
+
+    reply = asyncio.run(run_user_turn(session, "Return only the final answer to the task.", on_warning=warnings.append))
+
+    assert reply == "4192"
+    assert len(agent.prompts) == 2
+    assert any("empty assistant response" in warning for warning in warnings)
 
 
 class _FakeMemory:

@@ -346,6 +346,12 @@ class DownloadUrlToFileTool(AgentTool):
                     if content_preview:
                         message += f"; content_preview: {content_preview[:160]}"
                     saved_landing_page_path = str(mismatch_details.get("saved_landing_page_path") or "").strip()
+                    next_step = ""
+                    if saved_landing_page_path:
+                        next_step = (
+                            f"use file_read on {saved_landing_page_path} or inspect the final_url before broad search"
+                        )
+                        mismatch_details["next_step"] = next_step
                     if saved_landing_page_path:
                         message += f"; saved_landing_page_path: {saved_landing_page_path}"
                     landing_page_save_error = str(mismatch_details.get("landing_page_save_error") or "").strip()
@@ -353,6 +359,8 @@ class DownloadUrlToFileTool(AgentTool):
                         message += f"; landing_page_save_error: {landing_page_save_error}"
                     if recovery_hint:
                         message += f"; recovery_hint: {recovery_hint}"
+                    if next_step:
+                        message += f"; next_step: {next_step}"
                     raise _DownloadToolError(
                         "unexpected_content_type",
                         message,

@@ -53,7 +53,7 @@ from agent.memory import (
     build_augmented_prompt,
     format_memory_sections,
 )
-from .message_utils import extract_latest_assistant_text, extract_texts
+from .message_utils import extract_texts
 from .prompting import build_system_prompt, resolve_execution_profile
 from .skill_registry import SkillSpec, load_skills, render_skill_text, select_system_skills, select_turn_skills
 from .usage_reporting import format_turn_usage_line, usage_delta
@@ -109,6 +109,20 @@ _STRICT_FORMAT_LABEL_RE = re.compile(r"^\s*(?:final\s+answer|answer)\s*[:\-]\s*"
 _STRICT_NUMERIC_WITH_UNIT_RE = re.compile(
     r"^\s*([+-]?(?:\d+(?:,\d{3})*|\d*\.\d+))\s*(?:[%°]|[A-Za-zµμÅ]+(?:[A-Za-z0-9/%°µμÅ\-/^]*)?)\s*$"
 )
+_STRICT_PLAIN_NUMBER_RE = re.compile(r"^\s*[+-]?(?:(?:\d+(?:,\d{3})*)(?:\.\d+)?|\.\d+)\s*$")
+_EXPLICIT_DECIMAL_PLACES_RE = re.compile(
+    r"\b(?:(\d+)|one|two|three|four|five|six)\s+decimal places?\b",
+    re.IGNORECASE,
+)
+_NEAREST_DECIMAL_STEP_RE = re.compile(r"\bnearest\s+0\.(0*1)\b", re.IGNORECASE)
+_DECIMAL_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+}
 
 
 def _prewarm_openai_embedding_imports() -> None:
@@ -288,6 +302,116 @@ def _normalize_strict_final_answer(user_message: str, reply: str) -> str:
     if _STRICT_ANSWER_TEXT_OR_NUMBER_MARKER in str(user_message or "").lower():
         normalized = _strip_numeric_units_from_strict_answer(normalized)
     return normalized.strip()
+
+
+def _extract_latest_assistant_message_since(agent: Agent, start_index: int) -> Any:
+    messages = list(getattr(getattr(agent, "state", None), "messages", []) or [])
+    safe_start = max(0, int(start_index or 0))
+    for message in reversed(messages[safe_start:]):
+        if getattr(message, "role", None) == "assistant":
+            return message
+    return None
+
+
+def _extract_assistant_text(message: Any) -> str:
+    if not message:
+        return ""
+    return "\n".join([text for text in extract_texts(message) if text.strip()]).strip()
+
+
+def _extract_assistant_error_text(message: Any, agent: Agent) -> str:
+    if message is not None:
+        error_message = str(getattr(message, "error_message", "") or "").strip()
+        if error_message:
+            return error_message
+    return str(getattr(getattr(agent, "state", None), "error", "") or "").strip()
+
+
+def _extract_numeric_answer_parts(text: str) -> List[str]:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return []
+    parts = [part.strip() for part in normalized.split(",")]
+    if not parts:
+        return []
+    if not all(_STRICT_PLAIN_NUMBER_RE.fullmatch(part) for part in parts):
+        return []
+    return parts
+
+
+def _count_decimal_places(token: str) -> int:
+    normalized = str(token or "").strip().replace(",", "")
+    if "." not in normalized:
+        return 0
+    return len(normalized.split(".", 1)[1])
+
+
+def _infer_required_decimal_places(user_message: str) -> Optional[int]:
+    text = str(user_message or "").strip().lower()
+    if not text:
+        return None
+
+    required: Optional[int] = None
+    for match in _NEAREST_DECIMAL_STEP_RE.finditer(text):
+        decimals = len(match.group(1))
+        required = max(required or 0, decimals)
+
+    for match in _EXPLICIT_DECIMAL_PLACES_RE.finditer(text):
+        raw = str(match.group(1) or match.group(0).split(" ", 1)[0]).strip().lower()
+        count = int(raw) if raw.isdigit() else _DECIMAL_WORDS.get(raw)
+        if count is not None:
+            required = max(required or 0, count)
+
+    if "nearest picometer" in text and ("angstrom" in text or "ångström" in text):
+        required = max(required or 0, 3)
+
+    return required
+
+
+def _strict_numeric_answer_is_underprecision(user_message: str, reply: str) -> bool:
+    required = _infer_required_decimal_places(user_message)
+    if required is None or required <= 0:
+        return False
+    parts = _extract_numeric_answer_parts(reply)
+    if not parts:
+        return False
+    return any(_count_decimal_places(part) < required for part in parts)
+
+
+def _build_retry_prompt(
+    user_message: str,
+    *,
+    empty_response: bool,
+    required_decimal_places: Optional[int],
+) -> str:
+    lines: List[str] = []
+    if empty_response:
+        lines.append("Your previous response was empty or unusable.")
+    if required_decimal_places is not None:
+        lines.append(
+            "Your previous response did not satisfy the required numeric precision. "
+            f"Return the verified final answer with at least {required_decimal_places} decimal places and do not round early."
+        )
+    lines.append("Use the evidence already gathered in this conversation first.")
+    lines.append("Make at most one additional targeted tool call only if the exact requested field is still unverified.")
+    if _looks_like_strict_final_answer_request(user_message):
+        lines.append("Follow the original task's output-format rules exactly and return only the corrected final answer.")
+    else:
+        lines.append("Return the corrected final answer now.")
+    return "\n".join(lines)
+
+
+async def _prompt_and_capture_reply(
+    session: RuntimeSession,
+    prompt_text: str,
+    *,
+    start_index: int,
+) -> tuple[str, str]:
+    await session.agent.prompt(prompt_text)
+    assistant_message = _extract_latest_assistant_message_since(session.agent, start_index)
+    reply = _extract_assistant_text(assistant_message)
+    error_message = _extract_assistant_error_text(assistant_message, session.agent)
+    return reply, error_message
 
 
 def _skills_root() -> str:
@@ -1119,12 +1243,38 @@ async def run_user_turn(
     if matched_turn_skills and session.debug_log is not None:
         session.debug_log("[skills] matched " + ", ".join(skill.name for skill in matched_turn_skills))
     augmented_prompt = build_augmented_prompt(user_message, memory_text, skill_text=skill_text)
-    await session.agent.prompt(augmented_prompt)
+    initial_start_index = len(list(getattr(getattr(session.agent, "state", None), "messages", []) or []))
+    initial_reply, _ = await _prompt_and_capture_reply(
+        session,
+        augmented_prompt,
+        start_index=initial_start_index,
+    )
+    reply = _normalize_strict_final_answer(user_message, initial_reply)
 
-    reply = extract_latest_assistant_text(session.agent)
+    empty_response = not bool(reply.strip())
+    required_decimal_places = _infer_required_decimal_places(user_message)
+    needs_precision_retry = _strict_numeric_answer_is_underprecision(user_message, reply)
+    if empty_response or needs_precision_retry:
+        if on_warning is not None:
+            reason = "empty assistant response" if empty_response else "under-precision strict final answer"
+            on_warning(f"[retry] attempting one recovery retry after {reason}")
+        retry_prompt = _build_retry_prompt(
+            user_message,
+            empty_response=empty_response,
+            required_decimal_places=required_decimal_places if needs_precision_retry else None,
+        )
+        retry_start_index = len(list(getattr(getattr(session.agent, "state", None), "messages", []) or []))
+        retry_reply, _ = await _prompt_and_capture_reply(
+            session,
+            retry_prompt,
+            start_index=retry_start_index,
+        )
+        normalized_retry = _normalize_strict_final_answer(user_message, retry_reply)
+        if normalized_retry.strip():
+            reply = normalized_retry
+
     if not reply:
         reply = "(no assistant text returned)"
-    reply = _normalize_strict_final_answer(user_message, reply)
     if (
         session.auto_title_enabled
         and session.auto_session_id is not None

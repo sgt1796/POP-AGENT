@@ -55,3 +55,21 @@ def test_calculator_supports_inverse_trig_calls():
 
     assert result.details["ok"] is True
     assert result.details["result_type"] == "float"
+
+
+def test_calculator_reports_hint_for_module_prefixed_calls():
+    result = _run({"expression": "round(math.sqrt(4), 3)"})
+
+    assert result.details["ok"] is False
+    assert result.details["error"] == "only direct function calls are allowed"
+    assert "Hint:" in result.content[0].text
+    assert "sqrt(...)" in result.details["hint"]
+
+
+def test_calculator_reports_hint_for_bindings_container_access():
+    result = _run({"expression": "[p for p in bindings['props']]"})
+
+    assert result.details["ok"] is False
+    assert result.details["error"] == "name not allowed: bindings"
+    assert "bindings" in result.details["hint"]
+    assert "reference props directly" in result.details["hint"]

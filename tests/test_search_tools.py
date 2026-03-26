@@ -296,6 +296,42 @@ def test_jina_web_snapshot_falls_back_to_direct_http_when_jina_is_unavailable(mo
     ]
 
 
+def test_jina_web_snapshot_preserves_links_summary_on_direct_http_fallback(monkeypatch):
+    calls: list[str] = []
+
+    def _fake_get(url: str, headers: Dict[str, str] | None = None, timeout: float = 0):
+        calls.append(url)
+        if url.startswith("https://r.jina.ai/"):
+            return _FakeRequestsResponse(text="", status_code=402, url=url)
+        assert url == "https://muse.jhu.edu/book/24372"
+        return _FakeRequestsResponse(
+            text=(
+                "<html><body>"
+                "<h1>A Dark Trace</h1>"
+                "<a href=\"/chapter/abc\">Chapter 2. Dark Traces</a>"
+                "<a href=\"https://muse.jhu.edu/chapter/def\">Chapter 3. Repressed Desires</a>"
+                "</body></html>"
+            ),
+            status_code=200,
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            url=url,
+        )
+
+    monkeypatch.setattr("agent.tools.search.jina_web_snapshot.requests.get", _fake_get)
+    result = _run(JinaWebSnapshotTool(), {"web_url": "https://muse.jhu.edu/book/24372", "links_at_end": True})
+
+    assert result.details["ok"] is True
+    assert result.details["fallback_source"] == "direct_http"
+    assert result.details["direct_links_appended"] is True
+    assert result.details["direct_link_count"] == 2
+    assert "Links:" in result.content[0].text
+    assert "Chapter 2. Dark Traces -> https://muse.jhu.edu/chapter/abc" in result.content[0].text
+    assert calls == [
+        "https://r.jina.ai/https://muse.jhu.edu/book/24372",
+        "https://muse.jhu.edu/book/24372",
+    ]
+
+
 def test_perplexity_web_snapshot_stub_response():
     result = _run(PerplexityWebSnapshotTool(), {"url": "https://example.com"})
     assert result.details["ok"] is False

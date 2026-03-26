@@ -217,7 +217,10 @@ def test_download_url_to_file_flags_verification_page_with_recovery_hint(tmp_pat
     assert Path(result.details["saved_landing_page_path"]).exists()
     assert "verification/interstitial page" in result.details["recovery_hint"]
     assert "source landing page before broad search" in result.details["recovery_hint"]
+    assert "file_read" in result.details["next_step"]
+    assert "saved_landing_page_path" in result.content[0].text
     assert "recovery_hint" in result.content[0].text
+    assert "next_step" in result.content[0].text
 
 
 def test_download_url_to_file_enforces_max_bytes(tmp_path: Path, monkeypatch):

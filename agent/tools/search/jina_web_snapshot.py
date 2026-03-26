@@ -16,6 +16,7 @@ _DIRECT_HTML_TAG_RE = re.compile(r"(?is)<[^>]+>")
 _DIRECT_HTML_BREAK_RE = re.compile(r"(?i)<br\s*/?>")
 _DIRECT_HTML_BLOCK_CLOSE_RE = re.compile(r"(?i)</(?:p|div|section|article|aside|header|footer|main|li|ul|ol|h[1-6]|tr|table|blockquote)>")
 _DIRECT_HTML_DROP_RE = re.compile(r"(?is)<(?:script|style|noscript)[^>]*>.*?</(?:script|style|noscript)>|<!--.*?-->")
+_DIRECT_HTML_LINK_RE = re.compile(r"""(?is)<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>""")
 
 
 def _to_bool(value: Any, default: bool) -> bool:
@@ -113,7 +114,42 @@ def _html_to_text(html_text: str) -> str:
     return text.strip()
 
 
-def _fetch_direct_page_text(web_url: str, *, http_timeout_s: float) -> tuple[str, Dict[str, Any]]:
+def _extract_direct_links(html_text: str, base_url: str, *, limit: int = 40) -> list[dict[str, str]]:
+    links: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_href, raw_label in _DIRECT_HTML_LINK_RE.findall(str(html_text or "")):
+        href = str(raw_href or "").strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        absolute_url = requests.compat.urljoin(base_url, href)
+        label = _html_to_text(raw_label)
+        label = " ".join(label.split()).strip()
+        if not label:
+            label = absolute_url
+        key = (absolute_url, label)
+        if key in seen:
+            continue
+        seen.add(key)
+        links.append({"text": label[:200], "url": absolute_url})
+        if len(links) >= limit:
+            break
+    return links
+
+
+def _append_link_summary(text: str, links: list[dict[str, str]]) -> str:
+    if not links:
+        return text
+    lines = [text.strip(), "", "Links:"]
+    for item in links:
+        label = str(item.get("text") or "").strip() or str(item.get("url") or "").strip()
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        lines.append(f"- {label} -> {url}")
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
+def _fetch_direct_page_text(web_url: str, *, http_timeout_s: float, links_at_end: bool) -> tuple[str, Dict[str, Any]]:
     response = requests.get(
         web_url,
         timeout=http_timeout_s,
@@ -122,14 +158,29 @@ def _fetch_direct_page_text(web_url: str, *, http_timeout_s: float) -> tuple[str
     response.raise_for_status()
     content_type = _normalize_content_type(response.headers.get("Content-Type", ""))
     raw_text = str(getattr(response, "text", "") or "")
-    snapshot_text = _html_to_text(raw_text) if content_type in {"text/html", "application/xhtml+xml"} else raw_text.strip()
+    direct_links: list[dict[str, str]] = []
+    if content_type in {"text/html", "application/xhtml+xml"}:
+        snapshot_text = _html_to_text(raw_text)
+        if links_at_end:
+            direct_links = _extract_direct_links(raw_text, str(getattr(response, "url", "") or web_url))
+            snapshot_text = _append_link_summary(snapshot_text, direct_links)
+    else:
+        snapshot_text = raw_text.strip()
     if not snapshot_text:
         raise ValueError("direct fetch returned empty text")
-    return snapshot_text, {
+    details: Dict[str, Any] = {
         "fallback_source": "direct_http",
         "direct_url": str(getattr(response, "url", "") or web_url),
         "direct_content_type": content_type or None,
     }
+    if direct_links:
+        details["direct_links_appended"] = True
+        details["direct_link_count"] = len(direct_links)
+        details["direct_links"] = direct_links
+    else:
+        details["direct_links_appended"] = False
+        details["direct_link_count"] = 0
+    return snapshot_text, details
 
 
 def _extract_status_code(exc: Exception) -> Optional[int]:
@@ -256,7 +307,11 @@ class JinaWebSnapshotTool(AgentTool):
                 exclude_selector=kwargs["exclude_selector"],
             ):
                 try:
-                    snapshot, fallback_details = _fetch_direct_page_text(web_url, http_timeout_s=http_timeout_s)
+                    snapshot, fallback_details = _fetch_direct_page_text(
+                        web_url,
+                        http_timeout_s=http_timeout_s,
+                        links_at_end=bool(kwargs["links_at_end"]),
+                    )
                     fallback_details["jina_error"] = str(exc)
                     fallback_details["jina_status_code"] = status_code
                 except Exception as fallback_exc:

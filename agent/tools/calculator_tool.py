@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import math
+import re
 from typing import Any, Dict, Optional
 
 from ..agent_types import AgentTool, AgentToolResult, TextContent
@@ -106,6 +107,44 @@ def _truncate_text(value: str, limit: int = 4000) -> tuple[str, bool]:
     if len(value) <= limit:
         return value, False
     return value[: limit - 16] + "... [truncated]", True
+
+
+def _build_error_hint(message: str, *, expression: str, binding_names: list[str]) -> str:
+    text = str(message or "").strip()
+    expr = str(expression or "").strip()
+    if not text:
+        return ""
+
+    if text == "only direct function calls are allowed":
+        match = re.search(r"\bmath\.([A-Za-z_][A-Za-z0-9_]*)", expr)
+        if match:
+            return f"use direct calls such as {match.group(1)}(...) instead of math.{match.group(1)}(...)"
+        return "use direct calls such as sqrt(...), round(...), or sum(...) without module prefixes"
+
+    if text == "name not allowed: bindings":
+        match = re.search(r"""bindings\[['"]([^'"]+)['"]\]""", expr)
+        if match:
+            key = match.group(1)
+            return (
+                f"pass bindings={{\"{key}\": ...}} and reference {key} directly in the expression "
+                f"instead of bindings[\"{key}\"]"
+            )
+        return "pass data through the bindings parameter and reference each bound name directly in the expression"
+
+    if text.startswith("function not allowed: "):
+        func_name = text.split(":", 1)[1].strip()
+        if func_name == "math":
+            return "module prefixes are blocked; call functions directly such as sqrt(...) or acos(...)"
+        return "use direct allowed calls such as sqrt(...), round(...), sum(...), len(...), min(...), or max(...)"
+
+    if text.startswith("name not allowed: "):
+        bad_name = text.split(":", 1)[1].strip()
+        if binding_names:
+            available = ", ".join(binding_names[:8])
+            return f"reference an allowed binding or builtin name instead; available bindings: {available}"
+        if bad_name:
+            return f"bind {bad_name!r} through the bindings parameter if it is input data"
+    return ""
 
 
 def _sanitize_binding_key(key: Any) -> str:
@@ -284,7 +323,10 @@ class CalculatorTool(AgentTool):
         )
 
     def _error(self, message: str, *, expression: str, binding_names: list[str]) -> AgentToolResult:
+        hint = _build_error_hint(message, expression=expression, binding_names=binding_names)
         text = f"calculator error: {message}"
+        if hint:
+            text += f". Hint: {hint}"
         return AgentToolResult(
             content=[TextContent(type="text", text=text)],
             details={
@@ -292,5 +334,6 @@ class CalculatorTool(AgentTool):
                 "error": message,
                 "expression": expression,
                 "binding_names": binding_names,
+                "hint": hint,
             },
         )
