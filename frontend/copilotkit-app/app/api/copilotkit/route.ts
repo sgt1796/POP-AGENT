@@ -12,11 +12,14 @@ async function handle(request: NextRequest) {
   const agent = new HttpAgent({
     url: `${getBackendBaseUrl()}/api/agui/default?session_id=${encodeURIComponent(sessionId)}`,
   });
+  const agents = {
+    // The app currently installs a direct @ag-ui/client version that lags the one bundled by
+    // CopilotKit. Runtime behavior is already working, but the constructor types diverge.
+    default: agent as never,
+  };
 
   const runtime = new CopilotRuntime({
-    agents: {
-      default: agent,
-    },
+    agents,
   });
 
   const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({

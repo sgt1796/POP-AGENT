@@ -15,6 +15,9 @@ downloads/
 eggs/
 .eggs/
 lib/
+!frontend/copilotkit-app/lib/
+frontend/copilotkit-app/lib/*
+!frontend/copilotkit-app/lib/types.ts
 lib64/
 parts/
 sdist/

@@ -1,5 +1,7 @@
 "use client";
 
+import { useMemo, useState, type CSSProperties } from "react";
+
 import type {
   ActivityEvent,
   ApprovalCardSpec,
@@ -7,11 +9,43 @@ import type {
   ResultTableSpec,
   SchedulerStatusSpec,
   SessionSwitcherSpec,
+  StatGridSpec,
   ToolProgressListSpec,
 } from "@/lib/types";
 
 function statusClass(status: string) {
   return `status-pill status-${status}`;
+}
+
+function cardClassName(className?: string) {
+  return className ? `card ${className}` : "card";
+}
+
+function statToneClass(tone: StatGridSpec["props"]["items"][number]["tone"]) {
+  const status =
+    tone === "positive"
+      ? "success"
+      : tone === "negative"
+        ? "danger"
+        : tone === "warning"
+          ? "warning"
+          : "info";
+  return statusClass(status);
+}
+
+type EventFeedLimit = 5 | 10 | 50 | "all";
+
+const EVENT_FEED_LIMITS: EventFeedLimit[] = [5, 10, 50, "all"];
+
+function formatEventTimestamp(timestamp: number) {
+  if (!timestamp) {
+    return "";
+  }
+  const date = new Date(timestamp * 1000);
+  return date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 export function ApprovalCard({
@@ -66,9 +100,9 @@ export function ToolProgressList({ spec }: { spec: ToolProgressListSpec }) {
   );
 }
 
-export function ResultTable({ spec }: { spec: ResultTableSpec }) {
+export function ResultTable({ spec, className }: { spec: ResultTableSpec; className?: string }) {
   return (
-    <section className="card">
+    <section className={cardClassName(className)}>
       <div className="panel-head">
         <h3>{spec.props.title}</h3>
       </div>
@@ -96,9 +130,34 @@ export function ResultTable({ spec }: { spec: ResultTableSpec }) {
   );
 }
 
-export function PlanChecklist({ spec }: { spec: PlanChecklistSpec }) {
+export function StatGrid({ spec, className }: { spec: StatGridSpec; className?: string }) {
+  const columnCount = Math.max(1, Math.min(spec.props.columns || 1, 4, spec.props.items.length || 1));
+  const gridStyle = {
+    "--stat-grid-columns": columnCount,
+  } as CSSProperties & { "--stat-grid-columns": number };
+
   return (
-    <section className="card">
+    <section className={cardClassName(className)}>
+      <div className="panel-head">
+        <h3>{spec.props.title}</h3>
+        <span className="meta-line">{spec.props.items.length} metrics</span>
+      </div>
+      <div className="stat-grid" style={gridStyle}>
+        {spec.props.items.map((item, index) => (
+          <article className="stat-tile" key={`${item.label}-${index}`}>
+            <p className="stat-label">{item.label}</p>
+            <strong className="stat-value">{item.value}</strong>
+            {item.delta ? <span className={statToneClass(item.tone)}>{item.delta}</span> : null}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function PlanChecklist({ spec, className }: { spec: PlanChecklistSpec; className?: string }) {
+  return (
+    <section className={cardClassName(className)}>
       <div className="panel-head">
         <h3>{spec.props.title}</h3>
       </div>
@@ -186,17 +245,54 @@ export function SchedulerStatus({ spec }: { spec: SchedulerStatusSpec }) {
 }
 
 export function EventFeed({ events }: { events: ActivityEvent[] }) {
+  const [limit, setLimit] = useState<EventFeedLimit>(10);
+  const orderedEvents = useMemo(() => [...events].reverse(), [events]);
+  const visibleEvents = useMemo(() => {
+    if (limit === "all") {
+      return orderedEvents;
+    }
+    return orderedEvents.slice(0, limit);
+  }, [limit, orderedEvents]);
+
   return (
     <section className="card">
       <div className="panel-head">
-        <h3>Recent Events</h3>
+        <div>
+          <h3>Recent Events</h3>
+          <p className="meta-line">
+            Showing {visibleEvents.length} of {orderedEvents.length}
+          </p>
+        </div>
+        <div className="event-feed-controls">
+          {EVENT_FEED_LIMITS.map((candidateLimit) => (
+            <button
+              key={`event-limit-${candidateLimit}`}
+              type="button"
+              className={`event-feed-button${limit === candidateLimit ? " active" : ""}`}
+              onClick={() => setLimit(candidateLimit)}
+            >
+              {candidateLimit === "all" ? "All" : candidateLimit}
+            </button>
+          ))}
+        </div>
       </div>
       <ul className="event-feed">
-        {events.length === 0 ? <li className="meta-line">No runtime events yet.</li> : null}
-        {events.map((event) => (
+        {visibleEvents.length === 0 ? <li className="meta-line">No runtime events yet.</li> : null}
+        {visibleEvents.map((event) => (
           <li key={event.id}>
-            <span className={statusClass(event.status)}>{event.type}</span>
-            <span>{event.label}</span>
+            <details className="event-entry">
+              <summary className="event-summary">
+                <div className="event-summary-main">
+                  <span className={statusClass(event.status)}>{event.type}</span>
+                  <span className="event-summary-label">{event.label}</span>
+                </div>
+                <span className="meta-line">{formatEventTimestamp(event.timestamp)}</span>
+              </summary>
+              <div className="event-detail">
+                <p>{event.label}</p>
+                {event.detail ? <p className="meta-line">{event.detail}</p> : null}
+              </div>
+            </details>
           </li>
         ))}
       </ul>

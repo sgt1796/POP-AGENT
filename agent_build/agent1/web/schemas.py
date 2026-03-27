@@ -74,6 +74,24 @@ class ResultTableSpec(BaseModel):
     props: ResultTableProps
 
 
+class StatGridItem(BaseModel):
+    label: str
+    value: str
+    delta: str | None = None
+    tone: Literal["positive", "negative", "neutral", "warning"] = "neutral"
+
+
+class StatGridProps(BaseModel):
+    title: str
+    columns: int = Field(default=4, ge=1, le=4)
+    items: list[StatGridItem]
+
+
+class StatGridSpec(BaseModel):
+    type: Literal["StatGrid"] = "StatGrid"
+    props: StatGridProps
+
+
 class PlanChecklistItem(BaseModel):
     label: str
     status: Literal["pending", "in_progress", "done", "blocked"] = "pending"
@@ -133,6 +151,7 @@ UIComponent = (
     ApprovalCardSpec
     | ToolProgressListSpec
     | ResultTableSpec
+    | StatGridSpec
     | PlanChecklistSpec
     | SessionSwitcherSpec
     | SchedulerStatusSpec
@@ -167,4 +186,3 @@ class TurnRequest(BaseModel):
 
 class ApprovalDecisionRequest(BaseModel):
     approved: bool
-

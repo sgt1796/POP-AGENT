@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import re
 
-from .schemas import PlanChecklistItem, PlanChecklistProps, PlanChecklistSpec, ResultTableProps, ResultTableSpec
+from .schemas import (
+    PlanChecklistItem,
+    PlanChecklistProps,
+    PlanChecklistSpec,
+    ResultTableProps,
+    ResultTableSpec,
+    StatGridItem,
+    StatGridProps,
+    StatGridSpec,
+)
 
 
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
@@ -16,7 +25,14 @@ _CHECKLIST_TITLE_RE = re.compile(
     r"\b(plan|checklist|todo|to-do|next steps?|action items?|tasks?)\b",
     re.IGNORECASE,
 )
+_METRIC_TITLE_RE = re.compile(
+    r"\b(market|markets|overview|snapshot|kpi|benchmark|performance|metrics?|indices?|index)\b",
+    re.IGNORECASE,
+)
+_METRIC_VALUE_RE = re.compile(r"^(?P<label>[^:|]{1,80}):\s*(?P<value>.+)$")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_PERCENT_DELTA_RE = re.compile(r"(?P<delta>[+-]\s*\d[\d,]*(?:\.\d+)?%)")
+_SIGNED_DELTA_RE = re.compile(r"(?P<delta>[+-]\s*\d[\d,]*(?:\.\d+)?)")
 _MARKDOWN_INLINE_PATTERNS = (
     (re.compile(r"`([^`]+)`"), r"\1"),
     (re.compile(r"\*\*([^*]+)\*\*"), r"\1"),
@@ -70,11 +86,11 @@ _TASK_START_VERBS = {
 }
 
 
-def extract_structured_ui(text: str) -> ResultTableSpec | PlanChecklistSpec | None:
+def extract_structured_ui(text: str) -> ResultTableSpec | StatGridSpec | PlanChecklistSpec | None:
     value = str(text or "").strip()
     if not value:
         return None
-    return _extract_result_table(value) or _extract_plan_checklist(value)
+    return _extract_result_table(value) or _extract_stat_grid(value) or _extract_plan_checklist(value)
 
 
 def _extract_result_table(text: str) -> ResultTableSpec | None:
@@ -158,6 +174,44 @@ def _extract_plan_checklist(text: str) -> PlanChecklistSpec | None:
     return PlanChecklistSpec(
         props=PlanChecklistProps(
             title=title,
+            items=items,
+        )
+    )
+
+
+def _extract_stat_grid(text: str) -> StatGridSpec | None:
+    lines = text.splitlines()
+    items: list[StatGridItem] = []
+    list_start: int | None = None
+
+    for index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if not stripped:
+            if items:
+                break
+            continue
+        list_match = _LIST_LINE_RE.match(stripped)
+        candidate_value = list_match.group(1) if list_match is not None else stripped
+        parsed_item = _parse_stat_grid_item(candidate_value)
+        if parsed_item is None:
+            if items:
+                break
+            continue
+        if list_start is None:
+            list_start = index
+        items.append(parsed_item)
+
+    if len(items) < 2:
+        return None
+
+    title = _find_nearest_title(lines, list_start or 0, fallback="Key Metrics")
+    if len(items) < 3 and not _looks_like_metric_title(title):
+        return None
+
+    return StatGridSpec(
+        props=StatGridProps(
+            title=title,
+            columns=min(4, max(1, len(items))),
             items=items,
         )
     )
@@ -249,3 +303,75 @@ def _looks_like_task_label(value: str) -> bool:
         return False
     first = re.sub(r"^[^A-Za-z]+|[^A-Za-z]+$", "", words[0].lower())
     return first in _TASK_START_VERBS
+
+
+def _parse_stat_grid_item(value: str) -> StatGridItem | None:
+    normalized = _normalize_markdown_text(value)
+    match = _METRIC_VALUE_RE.match(normalized)
+    if match is None:
+        return None
+    label = _clean_label(match.group("label"))
+    metric_value, delta = _split_metric_value(match.group("value"))
+    if not label or not _looks_like_metric_value(metric_value, delta):
+        return None
+    return StatGridItem(
+        label=label,
+        value=metric_value,
+        delta=delta,
+        tone=_metric_tone(metric_value, delta),
+    )
+
+
+def _split_metric_value(value: str) -> tuple[str, str | None]:
+    text = _normalize_markdown_text(value)
+    if not text:
+        return "", None
+
+    parenthetical_match = re.search(r"\(([^()]*)\)", text)
+    if parenthetical_match is not None:
+        delta = _extract_delta(parenthetical_match.group(1))
+        if delta:
+            base_value = text[: parenthetical_match.start()].strip(" -|,;")
+            return base_value or text, delta
+
+    delta = _extract_delta(text)
+    if delta:
+        base_value = text.replace(delta, "", 1).strip(" -|,;()")
+        if base_value:
+            return base_value, delta
+    return text, None
+
+
+def _extract_delta(value: str) -> str | None:
+    for pattern in (_PERCENT_DELTA_RE, _SIGNED_DELTA_RE):
+        match = pattern.search(value)
+        if match is not None:
+            return re.sub(r"\s+", "", match.group("delta"))
+    return None
+
+
+def _looks_like_metric_title(value: str) -> bool:
+    return bool(_METRIC_TITLE_RE.search(_normalize_markdown_text(value)))
+
+
+def _looks_like_metric_value(value: str, delta: str | None) -> bool:
+    normalized_value = _normalize_markdown_text(value)
+    if not normalized_value or not re.search(r"\d", normalized_value):
+        return False
+    if delta:
+        return True
+    numeric_tokens = re.findall(r"\d[\d,]*(?:\.\d+)?", normalized_value)
+    if not numeric_tokens:
+        return False
+    if len(numeric_tokens) > 1:
+        return True
+    return bool(re.fullmatch(r"[<>~]?\s*[+-]?\d[\d,]*(?:\.\d+)?(?:\s*[A-Za-z]+)?", normalized_value))
+
+
+def _metric_tone(value: str, delta: str | None) -> str:
+    candidate = str(delta or value).strip()
+    if candidate.startswith("+"):
+        return "positive"
+    if candidate.startswith("-"):
+        return "negative"
+    return "neutral"

@@ -51,13 +51,52 @@ def test_extract_plan_checklist_from_markdown_heading_and_numbered_steps() -> No
     ]
 
 
-def test_ignore_markdown_summary_bullets_that_are_not_tasks() -> None:
+def test_extract_stat_grid_from_market_summary_bullets() -> None:
     spec = extract_structured_ui(
         """
 ### **Market Overview (March 26, 2026)**
 * **Dow Jones Industrial Average:** 45,960.11 (-1.01% | -469.38 pts)
 * **S&P 500:** 6,477.16 (-1.74% | -114.74 pts)
 * **Nasdaq Composite:** 21,408.08 (-2.38% | -521.75 pts)
+"""
+    )
+    assert spec is not None
+    assert spec.type == "StatGrid"
+    assert spec.props.title == "Market Overview (March 26, 2026)"
+    assert spec.props.columns == 3
+    assert spec.props.items[0].label == "Dow Jones Industrial Average"
+    assert spec.props.items[0].value == "45,960.11"
+    assert spec.props.items[0].delta == "-1.01%"
+    assert spec.props.items[0].tone == "negative"
+
+
+def test_extract_stat_grid_from_plain_metric_lines() -> None:
+    spec = extract_structured_ui(
+        """
+Market Overview (Demo)
+Dow Jones Industrial Average: 45,960.11 (-1.01% | -469.38 pts)
+S&P 500: 6,477.16 (-1.74% | -114.74 pts)
+Nasdaq Composite: 21,408.08 (-2.38% | -521.75 pts)
+"""
+    )
+    assert spec is not None
+    assert spec.type == "StatGrid"
+    assert spec.props.title == "Market Overview (Demo)"
+    assert spec.props.columns == 3
+    assert [item.label for item in spec.props.items] == [
+        "Dow Jones Industrial Average",
+        "S&P 500",
+        "Nasdaq Composite",
+    ]
+
+
+def test_ignore_non_metric_summary_bullets() -> None:
+    spec = extract_structured_ui(
+        """
+### Executive Summary
+* Primary Risk: Elevated geopolitical uncertainty
+* Market Bias: Risk-off
+* Action: Stay defensive until volatility cools
 """
     )
     assert spec is None

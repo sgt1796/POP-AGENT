@@ -39,9 +39,13 @@ Important files:
 - `app/api/pop-agent/sessions/[sessionId]/approval/route.ts`
   - Proxy for approval actions.
 - `components/chat-shell.tsx`
-  - Main page composition. Combines generated UI, chat, events, sessions, scheduler, approvals, and tool activity.
+  - Main page composition. Builds the workspace columns, tracks generated UI entries by assistant transcript message ID, and wires chat/events/sidebar cards into the dock system.
 - `components/copilot-chat-panel.tsx`
   - Thin CopilotKit wrapper around `CopilotChat`.
+- `components/generated-ui-chat.tsx`
+  - Generated UI docking model. Matches extracted cards to assistant messages, derives dynamic drop zones from rendered panels, and manages drag/drop state.
+- `components/generated-ui-assistant-message.tsx`
+  - Custom CopilotKit assistant message wrapper that attaches the inline generated UI card or moved-note to the matching assistant message.
 - `components/pop-ui-renderer.tsx`
   - Generated assistant UI renderer.
 - `components/ui-cards.tsx`
@@ -90,7 +94,7 @@ The frontend depends on these Python files:
 3. `session_service.py` publishes serialized `SessionSnapshot` payloads whenever the session changes.
 4. `ChatShell` consumes the latest snapshot and updates:
    - header status
-   - generated assistant card
+   - generated assistant UI entries
    - recent events
    - approvals
    - tool progress
@@ -100,9 +104,11 @@ The frontend depends on these Python files:
 ## Generated Assistant UI
 
 The assistant can currently generate one structured card per response through `ui_spec`.
+The frontend preserves those cards across the conversation as per-message generated UI entries, so older assistant replies can still keep their own card after later replies arrive.
 
 Supported generated card types:
 
+- `StatGrid`
 - `PlanChecklist`
 - `ResultTable`
 
@@ -116,14 +122,17 @@ These are distinct from runtime-managed cards such as:
 ### How Generated UI Works Today
 
 1. The assistant finishes a normal text reply.
-2. `session_service.py` stores that reply in `last_message`.
-3. `ui_extraction.py` tries to infer a structured card from the reply text.
-4. If extraction succeeds, the snapshot includes `ui_spec`.
-5. `pop-ui-renderer.tsx` renders the corresponding card above the chat.
+2. `session_service.py` stores that reply in `last_message`, appends it to `transcript`, and extracts one `ui_spec` from the same reply text.
+3. `ChatShell` records that `ui_spec` as a generated UI entry keyed by the assistant transcript message ID.
+4. `generated-ui-assistant-message.tsx` attaches that entry back to the matching CopilotKit assistant message.
+5. If the card stays inline, it renders directly under that assistant message.
+6. If the user drags it out, `generated-ui-chat.tsx` docks it into a workspace insertion point and replaces the inline card with a single muted "Generated UI moved to ..." note.
+7. Drop targets are derived from the currently rendered panels in the main column and sidebar, so cards can move above, below, or between existing boxes without hardcoding fixed slots.
 
 ### Important Limitation
 
 `ui_spec` is singular. The assistant can only generate one card per answer today.
+The frontend can keep multiple generated cards across the conversation, but still only one new structured card can be extracted from each assistant reply.
 
 If the system needs richer output, the next step is to move to `ui_specs: UIComponent[]`.
 
@@ -156,6 +165,24 @@ The extractor is now stricter:
 - plain report bullets stay in chat markdown
 - actual plans/checklists still promote to `PlanChecklist`
 - markdown tables still promote to `ResultTable`
+
+### Generated UI Workspace Fix
+
+The original generated UI behavior only supported a few hardcoded dock positions and could mis-bind extracted cards to the wrong assistant messages.
+
+The current implementation now:
+
+- tracks generated UI entries by assistant transcript message ID
+- matches cards back onto CopilotKit messages by message identity and normalized content
+- keeps one moved-note per message instead of repeating the same note across later assistant replies
+- derives drop targets from the rendered workspace panels instead of baking positions into the component
+- lets the user move cards above, below, or between the currently visible dashboard boxes
+
+### SSR Safety Fix
+
+The custom assistant message integration was split so the CopilotKit message renderer stays in a client-only component.
+
+This avoids pulling browser-only A2UI code into the server render path and prevents `CustomEvent is not defined` during Next.js SSR.
 
 ## Running The UI
 
@@ -248,11 +275,11 @@ If you want the assistant to render a new card such as `StatGrid` or `SourceList
 
 ## Recommended Next Improvements
 
-1. Add `StatGrid` as the first new assistant-generated card type.
-2. Replace `ui_spec` with `ui_specs`.
-3. Move from markdown heuristics to an explicit validated A2UI payload.
+1. Replace `ui_spec` with `ui_specs` so one assistant reply can intentionally emit multiple cards.
+2. Move from markdown heuristics to an explicit validated A2UI payload.
+3. Persist dock placement per generated UI entry if layout state should survive reloads.
 4. Add citations as a `SourceList` component rather than keeping them only in prose.
-5. Add frontend test coverage for the renderers.
+5. Add frontend test coverage for the generated UI docking and message-assignment logic.
 
 ## Troubleshooting
 
@@ -277,6 +304,18 @@ That usually means the markdown extractor promoted the answer into `PlanChecklis
 ### The answer should be structured, but it stays plain markdown
 
 That is the intended fallback when extraction confidence is low. The current system prefers preserving the chat answer over generating a misleading card.
+
+If a reply should have generated a card but did not, first check whether `ui_extraction.py` recognizes the markdown pattern. The frontend only renders generated UI when the snapshot includes `ui_spec`.
+
+### Generated UI repeats or attaches to the wrong message
+
+That usually means the browser is still running stale dev state from before a frontend change.
+
+Try this in order:
+
+- restart `next dev`
+- create a new session from the `Sessions` card
+- retry with a fresh assistant reply that should extract to `StatGrid`, `ResultTable`, or `PlanChecklist`
 
 ### Browser console shows `favicon.ico 404`
 
