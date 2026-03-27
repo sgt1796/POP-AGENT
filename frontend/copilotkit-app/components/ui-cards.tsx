@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type CSSProperties } from "react";
+import { Fragment, useMemo, useState, type CSSProperties } from "react";
 
 import type {
   ActivityEvent,
@@ -36,6 +36,24 @@ function statToneClass(tone: StatGridSpec["props"]["items"][number]["tone"]) {
 type EventFeedLimit = 5 | 10 | 50 | "all";
 
 const EVENT_FEED_LIMITS: EventFeedLimit[] = [5, 10, 50, "all"];
+
+function InlineMarkdownText({ text }: { text: string }) {
+  const parts = text.split(/(\*\*.+?\*\*)/g).filter(Boolean);
+  if (parts.length <= 1) {
+    return <>{text}</>;
+  }
+  return (
+    <>
+      {parts.map((part, index) => {
+        const match = /^\*\*(.+?)\*\*$/.exec(part);
+        if (!match) {
+          return <Fragment key={`${part}-${index}`}>{part}</Fragment>;
+        }
+        return <strong key={`${match[1]}-${index}`}>{match[1]}</strong>;
+      })}
+    </>
+  );
+}
 
 function formatEventTimestamp(timestamp: number) {
   if (!timestamp) {
@@ -111,7 +129,9 @@ export function ResultTable({ spec, className }: { spec: ResultTableSpec; classN
           <thead>
             <tr>
               {spec.props.columns.map((column) => (
-                <th key={column}>{column}</th>
+                <th key={column}>
+                  <InlineMarkdownText text={column} />
+                </th>
               ))}
             </tr>
           </thead>
@@ -119,7 +139,9 @@ export function ResultTable({ spec, className }: { spec: ResultTableSpec; classN
             {spec.props.rows.map((row, rowIndex) => (
               <tr key={`${spec.props.title}-${rowIndex}`}>
                 {row.map((cell, columnIndex) => (
-                  <td key={`${rowIndex}-${columnIndex}`}>{cell}</td>
+                  <td key={`${rowIndex}-${columnIndex}`}>
+                    <InlineMarkdownText text={cell} />
+                  </td>
                 ))}
               </tr>
             ))}

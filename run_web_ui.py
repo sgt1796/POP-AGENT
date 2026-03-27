@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -11,6 +12,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 FRONTEND_DIR = ROOT / "frontend" / "copilotkit-app"
+
+
+def _resolve_frontend_command(os_name: str | None = None) -> str:
+    platform_name = os_name or os.name
+    candidates = ("npm.cmd", "npm", "npm.exe") if platform_name == "nt" else ("npm",)
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    raise FileNotFoundError(
+        "Could not find npm in PATH. Install Node.js and make sure npm is available."
+    )
 
 
 def _spawn_backend(env: dict[str, str], backend_port: str) -> subprocess.Popen[bytes]:
@@ -33,7 +46,7 @@ def _spawn_backend(env: dict[str, str], backend_port: str) -> subprocess.Popen[b
 def _spawn_frontend(env: dict[str, str], frontend_port: str) -> subprocess.Popen[bytes]:
     return subprocess.Popen(
         [
-            "npm",
+            _resolve_frontend_command(),
             "run",
             "dev",
             "--",
