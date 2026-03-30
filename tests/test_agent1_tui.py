@@ -1,6 +1,8 @@
 from agent_build.agent1.tui import (
     _InputHistory,
+    _insert_text_at_cursor,
     _looks_like_markdown_text,
+    _normalize_pasted_chat_text,
     _render_transcript_entry,
     _show_pending_tool_line,
 )
@@ -103,3 +105,14 @@ def test_show_pending_tool_line_hides_pending_output_for_quiet_and_simple():
     assert _show_pending_tool_line("full") is True
     assert _show_pending_tool_line("stream") is True
     assert _show_pending_tool_line("debug") is True
+
+
+def test_normalize_pasted_chat_text_replaces_newlines_with_literal_markers():
+    assert _normalize_pasted_chat_text("line1\nline2") == "line1\\nline2"
+    assert _normalize_pasted_chat_text("line1\r\nline2\rline3") == "line1\\nline2\\nline3"
+
+
+def test_insert_text_at_cursor_inserts_in_middle_and_tracks_cursor():
+    updated, cursor = _insert_text_at_cursor("hello world", 5, "\\n")
+    assert updated == "hello\\n world"
+    assert cursor == 7

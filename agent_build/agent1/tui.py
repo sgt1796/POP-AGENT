@@ -86,6 +86,21 @@ def _show_pending_tool_line(activity_level: str) -> bool:
     return normalized not in {"quiet", "simple"}
 
 
+def _normalize_pasted_chat_text(text: str) -> str:
+    value = str(text or "")
+    if not value:
+        return ""
+    return value.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
+
+
+def _insert_text_at_cursor(value: str, cursor: int, text: str) -> Tuple[str, int]:
+    original = str(value or "")
+    inserted = str(text or "")
+    index = max(0, min(int(cursor), len(original)))
+    updated = f"{original[:index]}{inserted}{original[index:]}"
+    return updated, index + len(inserted)
+
+
 @dataclass
 class _QueuedApproval:
     kind: str
@@ -1031,6 +1046,20 @@ def run_tui() -> int:
             finally:
                 self._applying_history_value = False
 
+        def _insert_chat_input_text(self, text: str) -> None:
+            inserted = str(text or "")
+            if not inserted:
+                return
+            current = self._chat_input.value
+            cursor = getattr(self._chat_input, "cursor_position", len(current))
+            updated, new_cursor = _insert_text_at_cursor(current, cursor, inserted)
+            self._applying_history_value = True
+            try:
+                self._chat_input.value = updated
+                self._chat_input.cursor_position = new_cursor
+            finally:
+                self._applying_history_value = False
+
         def _navigate_input_history(self, *, direction: str) -> bool:
             if direction == "up":
                 candidate = self._input_history.move_up(self._chat_input.value)
@@ -1056,6 +1085,23 @@ def run_tui() -> int:
             if self._navigate_input_history(direction=event.key):
                 event.stop()
                 event.prevent_default()
+
+        def on_paste(self, event: Any) -> None:
+            if not hasattr(self, "_chat_input"):
+                return
+            if self.focused is not self._chat_input:
+                return
+            if self._chat_input.disabled:
+                return
+            pasted_text = getattr(event, "text", None)
+            if pasted_text is None:
+                return
+            normalized = _normalize_pasted_chat_text(pasted_text)
+            if normalized == str(pasted_text):
+                return
+            event.stop()
+            event.prevent_default()
+            self._insert_chat_input_text(normalized)
 
         def on_input_changed(self, event: Input.Changed) -> None:
             if event.input.id != "chat_input":
